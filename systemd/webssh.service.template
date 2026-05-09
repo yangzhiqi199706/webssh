@@ -1,0 +1,17 @@
+[Unit]
+Description=WebSSH Independent Service
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=__INSTALL_DIR__/app
+EnvironmentFile=__INSTALL_DIR__/config/.env
+ExecStart=__INSTALL_DIR__/runtime/node/bin/node __INSTALL_DIR__/app/server.js
+Restart=always
+RestartSec=3
+User=__RUN_USER__
+StandardOutput=append:__INSTALL_DIR__/logs/webssh.out.log
+StandardError=append:__INSTALL_DIR__/logs/webssh.err.log
+
+[Install]
+WantedBy=multi-user.target

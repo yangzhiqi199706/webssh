@@ -1,0 +1,3 @@
+cd /root/webssh-offline-linux-x64-v1.0.0
+chmod +x scripts/build-offline-tar.sh
+./scripts/build-offline-tar.sh

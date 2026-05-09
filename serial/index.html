@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+    <head>
+        <link rel="stylesheet" href="/node_modules/@xterm/xterm/css/xterm.css" />
+        <link rel="stylesheet" href="./assets/css/styles.css" />
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>远程串口调试 · Web SSH</title>
+        <style>
+            #top-bar,
+            #bottom-bar {
+                background-color: #0f172a;
+                color: #e5e7eb;
+                border-color: #1f2937 !important;
+            }
+            body {
+                background-color: #020617;
+            }
+            .toolbar-button,
+            .toolbar-input,
+            .toolbar-select {
+                background-color: #0b1220;
+                color: #e5e7eb;
+            }
+            .toolbar-button:hover,
+            .toolbar-button.active {
+                background-color: #22d3ee;
+                color: #082f49;
+            }
+            #button-back-ssh {
+                background-color: #06b6d4;
+                color: #082f49;
+                font-weight: 700;
+            }
+            #button-back-ssh:hover {
+                background-color: #22d3ee;
+            }
+            #select-port {
+                min-width: 160px;
+            }
+
+            /* 主区布局：顶部 xterm，下方收发面板 */
+            #main {
+                display: flex;
+                flex-direction: column;
+                flex-grow: 1;
+                overflow: hidden;
+                margin: 0;
+                position: relative;
+            }
+            #terminal-container {
+                flex: 1 1 auto;
+                min-height: 160px;
+                margin: 8px;
+                overflow: hidden;
+            }
+            #io-panel {
+                flex: 0 0 auto;
+                height: 280px;
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 8px;
+                padding: 8px;
+                border-top: 1px solid #1f2937;
+                background: #0a0f1c;
+                box-sizing: border-box;
+            }
+            #mb-panel {
+                flex: 0 0 auto;
+                height: 220px;
+                display: none;
+                flex-direction: column;
+                padding: 0 8px 8px 8px;
+                background: #0a0f1c;
+                box-sizing: border-box;
+                min-height: 0;
+            }
+            #mb-panel.open { display: flex; }
+            #mb-panel .io-panel-inner {
+                flex: 1;
+                display: flex;
+                flex-direction: column;
+                background: #000;
+                border: 1px solid #1f2937;
+                border-radius: 4px;
+                overflow: hidden;
+                min-height: 0;
+            }
+            #mb-frame-info {
+                font-size: 12px;
+                color: #94a3b8;
+                margin-left: 6px;
+            }
+            #mb-frame-info .ok { color: #86efac; }
+            #mb-frame-info .bad { color: #fca5a5; }
+            #mb-result {
+                flex: 1;
+                overflow: auto;
+                padding: 6px 10px;
+                font-family: 'Ubuntu Mono', Menlo, Consolas, monospace;
+                font-size: 12px;
+                color: #e2e8f0;
+                background: #020617;
+                min-height: 0;
+            }
+            #mb-result table {
+                border-collapse: collapse;
+                width: 100%;
+            }
+            #mb-result th, #mb-result td {
+                border-bottom: 1px dashed #1f2937;
+                padding: 3px 10px 3px 0;
+                text-align: left;
+                vertical-align: top;
+            }
+            #mb-result th {
+                color: #7dd3fc;
+                font-weight: 600;
+                font-size: 11px;
+                padding-bottom: 6px;
+                border-bottom: 1px solid #334155;
+            }
+            #mb-result td.idx { color: #64748b; width: 48px; }
+            #mb-result td.hex { color: #fcd34d; width: 100px; }
+            #mb-result td.val { color: #a7f3d0; }
+            #rx-panel, #tx-panel {
+                display: flex;
+                flex-direction: column;
+                background: #000;
+                border: 1px solid #1f2937;
+                border-radius: 4px;
+                overflow: hidden;
+                min-height: 0;
+            }
+            .io-tool {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                padding: 6px 8px;
+                background: #0b1220;
+                border-bottom: 1px solid #1f2937;
+                color: #cbd5e1;
+                font-size: 12px;
+                flex-wrap: wrap;
+            }
+            .io-tool label {
+                display: inline-flex;
+                align-items: center;
+                gap: 4px;
+                cursor: pointer;
+                user-select: none;
+            }
+            .io-title {
+                font-weight: 700;
+                color: #22d3ee;
+                font-size: 13px;
+                margin-right: 6px;
+            }
+            .io-spacer { flex: 1; }
+            .io-btn {
+                background: #0b1220;
+                color: #e5e7eb;
+                border: 1px solid #334155;
+                padding: 3px 10px;
+                border-radius: 4px;
+                cursor: pointer;
+                font-size: 12px;
+            }
+            .io-btn:hover { background: #1e293b; }
+            .io-btn-primary {
+                background: #06b6d4;
+                color: #082f49;
+                border-color: transparent;
+                font-weight: 700;
+            }
+            .io-btn-primary:hover { background: #22d3ee; }
+            .io-btn-danger { border-color: #b91c1c; color: #fecaca; }
+            .io-btn-danger:hover { background: #7f1d1d; }
+            .io-num {
+                width: 70px;
+                padding: 2px 6px;
+                border-radius: 4px;
+                border: 1px solid #334155;
+                background: #020617;
+                color: #e5e7eb;
+                font-size: 12px;
+            }
+            .io-select {
+                padding: 2px 4px;
+                border-radius: 4px;
+                border: 1px solid #334155;
+                background: #020617;
+                color: #e5e7eb;
+                font-size: 12px;
+            }
+            #rx-view {
+                flex: 1;
+                margin: 0;
+                padding: 8px;
+                background: #020617;
+                color: #a7f3d0;
+                overflow: auto;
+                font-size: 12px;
+                font-family: 'Ubuntu Mono', Menlo, Consolas, monospace;
+                white-space: pre-wrap;
+                word-break: break-all;
+                min-height: 0;
+            }
+            #tx-input {
+                flex: 1;
+                margin: 0;
+                padding: 8px;
+                background: #020617;
+                color: #e5e7eb;
+                border: 0;
+                outline: none;
+                resize: none;
+                font-size: 13px;
+                font-family: 'Ubuntu Mono', Menlo, Consolas, monospace;
+                line-height: 1.5;
+                min-height: 0;
+            }
+            #tx-input:focus { outline: 1px solid rgba(34,211,238,.6); }
+        </style>
+    </head>
+    <body>
+        <div id="app">
+            <div id="top-bar">
+                <button type="button" id="button-back-ssh" class="toolbar-button toolbar-space corner" title="返回 SSH 终端">← 返回 SSH</button>
+                <label for="select-port" class="toolbar-input-label">设备:</label>
+                <select id="select-port" class="toolbar-select toolbar-space on-connected-disabled"></select>
+                <button type="button" id="button-refresh-ports" class="toolbar-button toolbar-space corner" title="刷新串口列表">刷新</button>
+                <button type="button" id="button-scan-ports" class="toolbar-button toolbar-space corner" title="扫描所有串口，识别物理存在、可用、已占用的端口">扫描</button>
+                <button type="button" id="button-connect" class="toolbar-button toolbar-space corner">打开串口</button>
+                <label for="select-baud" class="toolbar-input-label">Baud:</label>
+                <select id="select-baud" class="toolbar-select toolbar-space on-connected-disabled">
+                    <option value="9600">9600</option>
+                    <option value="19200">19200</option>
+                    <option value="38400">38400</option>
+                    <option value="57600">57600</option>
+                    <option value="115200" selected>115200</option>
+                    <option value="230400">230400</option>
+                    <option value="460800">460800</option>
+                    <option value="921600">921600</option>
+                </select>
+                <label for="select-databits" class="toolbar-input-label">Data:</label>
+                <select id="select-databits" class="toolbar-select toolbar-space on-connected-disabled">
+                    <option value="8" selected>8</option>
+                    <option value="7">7</option>
+                </select>
+                <label for="select-parity" class="toolbar-input-label">Parity:</label>
+                <select id="select-parity" class="toolbar-select toolbar-space on-connected-disabled">
+                    <option value="none" selected>N</option>
+                    <option value="even">E</option>
+                    <option value="odd">O</option>
+                </select>
+                <label for="select-stopbits" class="toolbar-input-label">Stop:</label>
+                <select id="select-stopbits" class="toolbar-select toolbar-space on-connected-disabled">
+                    <option value="1" selected>1</option>
+                    <option value="2">2</option>
+                </select>
+                <label for="input-font-size" class="toolbar-input-label">Size:</label>
+                <div id="button-font-size-minus" class="toolbar-button corner">&minus;</div>
+                <input id="input-font-size" class="toolbar-input" type="number" min="10" max="40" />
+                <div id="button-font-size-plus" class="toolbar-button toolbar-space">&plus;</div>
+                <div class="toolbar-spacer"></div>
+                <button id="button-ctrl-c" class="toolbar-button toolbar-space on-connected-show corner">Ctrl+C</button>
+                <button type="button" id="button-ctrl-d" class="toolbar-button toolbar-space on-connected-show corner">Ctrl+D</button>
+                <button type="button" id="button-scroll-to-bottom" class="toolbar-button on-connected-show corner">Scroll to bottom</button>
+            </div>
+            <div id="main">
+                <div id="terminal-container"></div>
+                <div id="io-panel">
+                    <div id="rx-panel">
+                        <div class="io-tool">
+                            <span class="io-title">接收</span>
+                            <label><input type="checkbox" id="rx-mode-hex" /> HEX</label>
+                            <label><input type="checkbox" id="rx-show-ts" /> 时间戳</label>
+                            <label><input type="checkbox" id="rx-auto-scroll" checked /> 自动滚动</label>
+                            <label><input type="checkbox" id="rx-paused" /> 暂停</label>
+                            <label title="连续到达的字节在此时间内合并为一条显示。0 表示不合并。Modbus RTU 建议 30~100ms">合并 <input type="number" id="rx-merge" min="0" max="2000" value="50" class="io-num" /> ms</label>
+                            <div class="io-spacer"></div>
+                            <button type="button" id="rx-clear" class="io-btn">清空</button>
+                            <button type="button" id="rx-save" class="io-btn">导出</button>
+                        </div>
+                        <pre id="rx-view"></pre>
+                    </div>
+                    <div id="tx-panel">
+                        <div class="io-tool">
+                            <span class="io-title">发送</span>
+                            <label><input type="checkbox" id="tx-mode-hex" /> HEX</label>
+                            <label title="勾选后自动在发送字节末尾追加 Modbus RTU CRC-16（低字节在前），并忽略行尾"><input type="checkbox" id="tx-modbus-crc" /> Modbus CRC</label>
+                            <label>行尾
+                                <select id="tx-eol" class="io-select">
+                                    <option value="None">None</option>
+                                    <option value="LF">LF</option>
+                                    <option value="CR">CR</option>
+                                    <option value="CRLF" selected>CRLF</option>
+                                </select>
+                            </label>
+                            <label>间隔 <input type="number" id="tx-interval" min="20" value="1000" class="io-num" /> ms</label>
+                            <button type="button" id="tx-repeat" class="io-btn">定时</button>
+                            <div class="io-spacer"></div>
+                            <button type="button" id="tx-clear" class="io-btn">清空</button>
+                            <button type="button" id="tx-send" class="io-btn io-btn-primary">发送</button>
+                        </div>
+                        <textarea id="tx-input" placeholder="输入要发送的内容，回车不会立即发送&#10;HEX 模式：支持空格、逗号分隔，如 AA BB 01 或 AABB01&#10;Modbus CRC：勾选后自动追加 CRC16 校验（低字节在前），常用 HEX 模式"></textarea>
+                    </div>
+                </div>
+                <div id="mb-panel">
+                    <div class="io-panel-inner">
+                        <div class="io-tool">
+                            <span class="io-title">Modbus 解析</span>
+                            <label>类型
+                                <select id="mb-type" class="io-select">
+                                    <option value="u16" selected>UInt16</option>
+                                    <option value="i16">Int16</option>
+                                    <option value="hex16">Hex16</option>
+                                    <option value="u32">UInt32</option>
+                                    <option value="i32">Int32</option>
+                                    <option value="f32">Float32</option>
+                                </select>
+                            </label>
+                            <label title="针对 32 位类型的字节序：ABCD 原序 / CDAB 字交换 / BADC 字节交换 / DCBA 全反">32 位字节序
+                                <select id="mb-endian32" class="io-select">
+                                    <option value="ABCD" selected>ABCD</option>
+                                    <option value="CDAB">CDAB</option>
+                                    <option value="BADC">BADC</option>
+                                    <option value="DCBA">DCBA</option>
+                                </select>
+                            </label>
+                            <label title="针对 16 位类型的字节序">16 位字节序
+                                <select id="mb-endian16" class="io-select">
+                                    <option value="AB" selected>AB (高前)</option>
+                                    <option value="BA">BA (低前)</option>
+                                </select>
+                            </label>
+                            <label title="起始寄存器地址（仅影响显示的 Addr 列）">起始
+                                <input type="number" id="mb-start" min="0" value="0" class="io-num" />
+                            </label>
+                            <span id="mb-frame-info"></span>
+                            <div class="io-spacer"></div>
+                            <button type="button" id="mb-clear" class="io-btn">清空</button>
+                        </div>
+                        <div id="mb-result"></div>
+                    </div>
+                </div>
+            </div>
+            <div id="bottom-bar">
+                <span id="transfer-stats">未连接</span>
+                <div class="toolbar-spacer"></div>
+                <button type="button" id="button-reset-stats" class="toolbar-button corner toolbar-space">Reset Stats</button>
+            </div>
+        </div>
+        <script src="/node_modules/@xterm/xterm/lib/xterm.js"></script>
+        <script src="/node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+        <script src="./assets/js/remote-serial.js"></script>
+        <script>
+            (function () {
+                var btn = document.getElementById('button-back-ssh');
+                if (!btn) return;
+                btn.addEventListener('click', function () {
+                    try {
+                        if (window.parent && window.parent !== window) {
+                            window.parent.postMessage({ type: 'serial:back-to-ssh' }, '*');
+                            return;
+                        }
+                    } catch (_err) {}
+                    if (history.length > 1) history.back();
+                });
+            })();
+        </script>
+    </body>
+</html>

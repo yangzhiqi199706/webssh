@@ -1,0 +1,2127 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Web SSH</title>
+  <link rel="stylesheet" href="./node_modules/codemirror/lib/codemirror.css" />
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #020617;
+      --panel: #0f172a;
+      --panel-2: #111827;
+      --border: #1f2937;
+      --text: #e5e7eb;
+      --muted: #94a3b8;
+      --cyan: #22d3ee;
+      --cyan-2: rgba(34, 211, 238, .14);
+      --green: #34d399;
+      --amber: #fbbf24;
+      --shadow: 0 24px 80px rgba(2, 6, 23, .6);
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      background: radial-gradient(1200px 600px at 20% 0%, rgba(34, 211, 238, .08), transparent 45%), var(--bg);
+      color: var(--text);
+      font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    button, input, select { font: inherit; }
+    button { cursor: pointer; }
+    .app { height: 100vh; display: flex; flex-direction: column; }
+    .topbar, .footer, .card, .terminal-card { backdrop-filter: blur(10px); }
+    .topbar {
+      height: 64px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 20px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(2, 6, 23, .95);
+    }
+    .brand { display: flex; align-items: center; gap: 12px; }
+    .brand-mark {
+      width: 40px;
+      height: 40px;
+      border-radius: 12px;
+      display: grid;
+      place-items: center;
+      background: var(--cyan-2);
+      color: var(--cyan);
+      border: 1px solid rgba(34, 211, 238, .25);
+      font-weight: 700;
+      letter-spacing: .08em;
+    }
+    .title { font-size: 15px; font-weight: 700; line-height: 1.2; }
+    .subtitle { font-size: 12px; color: var(--muted); margin-top: 2px; }
+    .top-actions { display: flex; align-items: center; gap: 10px; }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 12px;
+      border-radius: 999px;
+      border: 1px solid rgba(52, 211, 153, .18);
+      background: rgba(52, 211, 153, .1);
+      color: #a7f3d0;
+      font-size: 12px;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
+    .btn {
+      border: 1px solid #334155;
+      background: #0b1220;
+      color: var(--text);
+      border-radius: 10px;
+      padding: 10px 14px;
+      transition: .18s ease;
+    }
+    .btn:hover { border-color: #475569; background: #111827; }
+    .btn.primary { background: #06b6d4; color: #082f49; border-color: transparent; font-weight: 700; }
+    .btn.primary:hover { background: #22d3ee; }
+    .layout { flex: 1; min-height: 0; display: flex; overflow: hidden; }
+    .sidebar {
+      width: 320px;
+      min-width: 280px;
+      display: flex;
+      flex-direction: column;
+      border-right: 1px solid var(--border);
+      background: rgba(2, 6, 23, .8);
+    }
+    .sidebar-section { padding: 16px; border-bottom: 1px solid var(--border); }
+    .sidebar-scroll { flex: 1; overflow: auto; padding: 16px; }
+    .section-title { font-size: 14px; font-weight: 700; color: #e2e8f0; }
+    .host-list, .session-list { display: grid; gap: 10px; margin-top: 12px; }
+    .host-item, .session-item {
+      text-align: left;
+      width: 100%;
+      border-radius: 14px;
+      padding: 12px 14px;
+      border: 1px solid var(--border);
+      background: var(--panel-2);
+      color: var(--text);
+      transition: .18s ease;
+    }
+    .host-item:hover, .session-item:hover { border-color: #475569; background: #111827; }
+    .host-item.active { border-color: rgba(34, 211, 238, .28); background: rgba(34, 211, 238, .1); }
+    .host-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .host-name { font-size: 14px; font-weight: 600; }
+    .host-meta, .muted, .footer { color: var(--muted); }
+    .host-meta { font-size: 12px; margin-top: 4px; }
+    .host-status {
+      font-size: 11px;
+      padding: 5px 9px;
+      border-radius: 999px;
+      white-space: nowrap;
+      background: rgba(148, 163, 184, .1);
+      color: #cbd5e1;
+    }
+    .host-status.current { background: rgba(34, 211, 238, .14); color: #67e8f9; }
+    .host-status.offline { background: rgba(251, 191, 36, .14); color: #fcd34d; }
+    .main { flex: 1; min-width: 0; display: flex; flex-direction: column; background: rgba(2, 6, 23, .9); }
+    .tabsbar {
+      height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      border-bottom: 1px solid var(--border);
+      padding: 0 16px;
+    }
+    .tabs { display: flex; gap: 8px; overflow: auto; }
+    .tab { border: 0; border-radius: 10px; padding: 9px 13px; background: transparent; color: var(--muted); }
+    .tab.active { background: #1e293b; color: #e2e8f0; }
+    .meta { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 13px; flex-wrap: wrap; }
+    .content { flex: 1; min-height: 0; padding: 16px; }
+    .grid { display: grid; grid-template-columns: minmax(0, 1fr) 460px; gap: 16px; height: 100%; }
+    .terminal-card, .card {
+      border: 1px solid var(--border);
+      background: rgba(15, 23, 42, .92);
+      border-radius: 20px;
+      box-shadow: var(--shadow);
+      min-height: 0;
+    }
+    .terminal-card { display: flex; flex-direction: column; overflow: hidden; }
+    .terminal-head {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .head-title { font-size: 14px; font-weight: 700; }
+    .head-sub { font-size: 12px; color: var(--muted); margin-top: 3px; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .tiny { padding: 9px 12px; font-size: 12px; }
+    .terminal {
+      flex: 1;
+      min-height: 0;
+      padding: 16px;
+      background: #0b1020;
+      overflow: auto;
+      font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 13px;
+      line-height: 1.7;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .line.system { color: #86efac; }
+    .line.command { color: #94a3b8; margin-top: 10px; }
+    .line.output { color: #cbd5e1; }
+    .prompt-line { display: flex; gap: 8px; align-items: flex-start; margin-top: 14px; color: #cbd5e1; }
+    .prompt { color: #cbd5e1; flex: none; }
+    .cursor {
+      display: inline-block;
+      width: 9px;
+      height: 18px;
+      background: var(--cyan);
+      vertical-align: text-bottom;
+      animation: blink 1s step-end infinite;
+    }
+    @keyframes blink { 50% { opacity: 0; } }
+    .inputbar { border-top: 1px solid var(--border); background: rgba(2, 6, 23, .75); padding: 12px 14px; }
+    .cmd-form { display: flex; gap: 10px; align-items: center; }
+    .cmd-prefix { color: #64748b; font-family: "JetBrains Mono", ui-monospace, monospace; }
+    .cmd-input {
+      flex: 1;
+      min-width: 0;
+      border-radius: 14px;
+      border: 1px solid #334155;
+      background: #020617;
+      color: var(--text);
+      padding: 12px 14px;
+      outline: none;
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+    }
+    .cmd-input:focus { border-color: rgba(34, 211, 238, .6); box-shadow: 0 0 0 3px rgba(34, 211, 238, .12); }
+    .card { padding: 16px; display: flex; flex-direction: column; gap: 16px; overflow: hidden; }
+    .side-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .side-tab {
+      border: 1px solid #334155;
+      background: #0b1220;
+      color: var(--muted);
+      border-radius: 10px;
+      padding: 9px 12px;
+    }
+    .side-tab.active { border-color: rgba(34, 211, 238, .35); background: rgba(34, 211, 238, .12); color: #cffafe; }
+    .side-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 14px; }
+    .shortcut-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .shortcut { text-align: left; }
+    .shortcut.exec { border-color: rgba(34, 211, 238, .45); color: #cffafe; }
+    .shortcut.exec:hover { background: rgba(34, 211, 238, .15); }
+    .shortcut-groups { display: flex; flex-direction: column; gap: 8px; }
+    .shortcut-group { border: 1px solid var(--border); border-radius: 10px; background: rgba(15, 23, 42, .6); overflow: hidden; }
+    .shortcut-group-header {
+      width: 100%; display: flex; align-items: center; gap: 8px;
+      padding: 8px 12px; background: transparent; color: #e2e8f0;
+      border: 0; cursor: pointer; font-size: 13px; text-align: left;
+    }
+    .shortcut-group-header:hover { background: rgba(34, 211, 238, .08); }
+    .shortcut-group-header .chev { color: #64748b; width: 12px; display: inline-block; }
+    .shortcut-group-title { font-weight: 600; flex: 1; }
+    .shortcut-group-count { color: #64748b; font-size: 12px; }
+    .shortcut-group-body { display: none; padding: 8px 10px 10px 10px; border-top: 1px solid var(--border); }
+    .shortcut-group.open .shortcut-group-body { display: grid; }
+    .kv { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; padding: 7px 0; }
+    .file-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .file-toolbar-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .file-status { font-size: 12px; color: var(--muted); }
+    .path-box {
+      border: 1px solid #334155;
+      background: #020617;
+      border-radius: 12px;
+      padding: 10px 12px;
+      font-size: 12px;
+      color: #cbd5e1;
+      word-break: break-all;
+    }
+    .file-list {
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      border: 1px solid #1f2937;
+      border-radius: 14px;
+      background: rgba(2, 6, 23, .6);
+      padding: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .file-row {
+      border: 1px solid transparent;
+      background: #0b1220;
+      border-radius: 12px;
+      padding: 10px 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      width: 100%;
+      color: var(--text);
+      text-align: left;
+    }
+    .file-row:hover { border-color: #334155; background: #111827; }
+    .file-row.selected { border-color: rgba(34, 211, 238, .32); background: rgba(34, 211, 238, .08); }
+    .file-main { min-width: 0; }
+    .file-name { font-size: 13px; font-weight: 600; word-break: break-all; }
+    .file-meta { margin-top: 4px; font-size: 11px; color: var(--muted); }
+    .file-kind {
+      font-size: 11px;
+      padding: 5px 8px;
+      border-radius: 999px;
+      white-space: nowrap;
+      background: rgba(148, 163, 184, .1);
+      color: #cbd5e1;
+    }
+    .file-kind.dir { background: rgba(34, 211, 238, .14); color: #67e8f9; }
+    .file-kind.file { background: rgba(148, 163, 184, .12); color: #cbd5e1; }
+    .file-kind.link { background: rgba(251, 191, 36, .14); color: #fcd34d; }
+    .panel-empty {
+      border: 1px dashed #334155;
+      border-radius: 14px;
+      padding: 18px 14px;
+      color: var(--muted);
+      font-size: 13px;
+      text-align: center;
+      background: rgba(2, 6, 23, .4);
+    }
+    .panel-error {
+      border: 1px solid rgba(248, 113, 113, .18);
+      background: rgba(127, 29, 29, .16);
+      color: #fecaca;
+      border-radius: 14px;
+      padding: 14px;
+      font-size: 13px;
+    }
+    .transfer-status {
+      border: 1px solid rgba(34, 211, 238, .18);
+      background: rgba(8, 47, 73, .28);
+      color: #bae6fd;
+      border-radius: 14px;
+      padding: 12px 14px;
+      font-size: 12px;
+    }
+    .editor-mask {
+      position: fixed;
+      inset: 0;
+      background: rgba(2, 6, 23, .72);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      z-index: 60;
+    }
+    .editor-mask.open { display: flex; }
+    .editor-modal {
+      width: min(900px, 100%);
+      max-height: 90vh;
+      display: flex;
+      flex-direction: column;
+      border: 1px solid #334155;
+      border-radius: 20px;
+      background: #0f172a;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    .editor-body {
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      min-height: 0;
+      flex: 1;
+    }
+    .editor-textarea {
+      flex: 1;
+      min-height: 360px;
+      resize: vertical;
+      border-radius: 14px;
+      border: 1px solid #334155;
+      background: #020617;
+      color: var(--text);
+      padding: 14px;
+      outline: none;
+      font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 13px;
+      line-height: 1.7;
+    }
+    .editor-textarea:focus { border-color: rgba(34, 211, 238, .6); box-shadow: 0 0 0 3px rgba(34, 211, 238, .12); }
+    .CodeMirror {
+      height: 100%;
+      min-height: 360px;
+      border-radius: 14px;
+      border: 1px solid #334155;
+      background: #020617;
+      color: var(--text);
+      font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 13px;
+      line-height: 1.7;
+    }
+    .file-list.drag-active {
+      outline: 2px dashed rgba(34, 211, 238, .7);
+      background: rgba(34, 211, 238, .08);
+    }
+    .drop-hint {
+      border: 1px dashed rgba(34, 211, 238, .45);
+      background: rgba(8, 47, 73, .22);
+      color: #bae6fd;
+      border-radius: 14px;
+      padding: 12px 14px;
+      font-size: 12px;
+      text-align: center;
+    }
+    .footer {
+      height: 38px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 20px;
+      font-size: 12px;
+      background: rgba(2, 6, 23, .95);
+    }
+    .modal-mask {
+      position: fixed;
+      inset: 0;
+      background: rgba(2, 6, 23, .72);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      z-index: 50;
+    }
+    .modal-mask.open { display: flex; }
+    .modal {
+      width: min(640px, 100%);
+      border: 1px solid #334155;
+      border-radius: 20px;
+      background: #0f172a;
+      box-shadow: var(--shadow);
+    }
+    .modal-head {
+      padding: 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .form { padding: 16px; display: grid; gap: 12px; }
+    .field { display: grid; gap: 7px; font-size: 13px; }
+    .field input, .field select {
+      border-radius: 12px;
+      border: 1px solid #334155;
+      background: #020617;
+      color: var(--text);
+      padding: 11px 12px;
+      outline: none;
+    }
+    .field input:focus, .field select:focus { border-color: rgba(34, 211, 238, .6); box-shadow: 0 0 0 3px rgba(34, 211, 238, .12); }
+    .grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .sidebar-scroll::-webkit-scrollbar, .terminal::-webkit-scrollbar, .file-list::-webkit-scrollbar, .tabs::-webkit-scrollbar {
+      width: 10px;
+      height: 10px;
+    }
+    .sidebar-scroll::-webkit-scrollbar-thumb, .terminal::-webkit-scrollbar-thumb, .file-list::-webkit-scrollbar-thumb, .tabs::-webkit-scrollbar-thumb {
+      background: #334155;
+      border-radius: 999px;
+    }
+    .sidebar-scroll::-webkit-scrollbar-track, .terminal::-webkit-scrollbar-track, .file-list::-webkit-scrollbar-track, .tabs::-webkit-scrollbar-track {
+      background: #0f172a;
+    }
+    @media (max-width: 1080px) {
+      .grid { grid-template-columns: 1fr; }
+      .sidebar { width: 280px; }
+    }
+    @media (max-width: 860px) {
+      .layout { flex-direction: column; }
+      .sidebar { width: 100%; min-width: 0; max-height: 38vh; }
+      .content { padding: 12px; }
+      .topbar { padding: 0 12px; }
+      .tabsbar { height: auto; padding: 12px; flex-direction: column; align-items: flex-start; }
+    }
+    .serial-view {
+      flex: 1;
+      min-height: 0;
+      display: none;
+      background: #020617;
+    }
+    .serial-view.active { display: flex; }
+    .serial-view iframe {
+      width: 100%;
+      height: 100%;
+      border: 0;
+      display: block;
+    }
+    .btn.active-tab {
+      background: #06b6d4;
+      color: #082f49;
+      border-color: transparent;
+      font-weight: 700;
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">SSH</div>
+        <div>
+          <div class="title">Web SSH</div>
+          <div class="subtitle">Linux 命令行控制台</div>
+        </div>
+      </div>
+      <div class="top-actions">
+        <div class="badge"><span class="dot"></span><span id="statusText">未连接</span></div>
+        <button class="btn active-tab" id="viewSshBtn" title="SSH 终端">SSH 终端</button>
+        <button class="btn" id="viewSerialBtn" title="通过浏览器 WebSerial 连接本地串口设备">串口调试</button>
+        <button class="btn primary" id="openConnect">新建连接</button>
+        <button class="btn" id="openSettings">设置</button>
+      </div>
+    </header>
+
+    <div class="layout" id="sshView">
+      <aside class="sidebar">
+        <div class="sidebar-section">
+          <div class="section-title">主机列表</div>
+          <div class="host-list" id="hostList"></div>
+        </div>
+        <div class="sidebar-scroll">
+          <div class="section-title">最近会话</div>
+          <div class="session-list" id="sessionList"></div>
+        </div>
+      </aside>
+
+      <main class="main">
+        <div class="tabsbar">
+          <div class="tabs" id="tabs"></div>
+          <div class="meta">
+            <span id="metaUser">用户：root</span>
+            <span>·</span>
+            <span id="metaPath">目录：/var/www</span>
+            <span>·</span>
+            <span>延迟：18ms</span>
+          </div>
+        </div>
+
+        <div class="content">
+          <div class="grid">
+            <section class="terminal-card">
+              <div class="terminal-head">
+                <div>
+                  <div class="head-title">终端</div>
+                  <div class="head-sub" id="terminalSub">prod-01 · 192.168.1.10:22</div>
+                </div>
+                <div class="actions">
+                  <button class="btn tiny" id="clearBtn">清屏</button>
+                  <button class="btn tiny" id="copyBtn">复制</button>
+                  <button class="btn tiny" id="reconnectBtn">重连</button>
+                </div>
+              </div>
+
+              <div class="terminal" id="terminal" tabindex="0" aria-label="终端区域"></div>
+
+              <div class="inputbar">
+                <form class="cmd-form" id="cmdForm">
+                  <span class="cmd-prefix">$</span>
+                  <input id="cmdInput" class="cmd-input" autocomplete="off" placeholder="输入命令并回车，例如 ls -lah" />
+                  <button class="btn primary" type="submit">发送</button>
+                </form>
+              </div>
+            </section>
+
+            <aside class="card">
+              <div class="side-tabs" id="sideTabs"></div>
+              <div class="side-panel" id="sidePanelContent"></div>
+            </aside>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <div class="serial-view" id="serialView">
+      <iframe id="serialFrame" title="串口调试" allow="serial" loading="lazy" src="about:blank"></iframe>
+    </div>
+
+    <footer class="footer">
+      <div id="footerHost">当前会话：prod-01</div>
+      <div>SSH 终端与文件管理共用同一条连接</div>
+    </footer>
+  </div>
+
+  <input id="uploadInput" type="file" multiple style="display:none" />
+
+  <div class="editor-mask" id="editorMask" aria-hidden="true">
+    <div class="editor-modal">
+      <div class="modal-head">
+        <div>
+          <div class="head-title">编辑文本文件</div>
+          <div class="head-sub" id="editorPathText">未选择文件</div>
+        </div>
+        <div style="display:flex;gap:10px">
+          <button class="btn" id="closeEditor">关闭</button>
+          <button class="btn primary" id="saveEditor" type="button">保存</button>
+        </div>
+      </div>
+      <div class="editor-body">
+        <div id="editorStatus" class="file-status">等待加载文件</div>
+        <textarea id="editorTextarea" class="editor-textarea" spellcheck="false"></textarea>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-mask" id="modalMask" aria-hidden="true">
+    <div class="modal">
+      <div class="modal-head">
+        <div>
+          <div class="head-title">新建连接</div>
+          <div class="head-sub">填写主机信息并保存</div>
+        </div>
+        <button class="btn" id="closeModal">关闭</button>
+      </div>
+      <div class="form">
+        <div class="grid2">
+          <label class="field"><span>Host</span><input id="mHost" /></label>
+          <label class="field"><span>Port</span><input id="mPort" /></label>
+        </div>
+        <div class="grid2">
+          <label class="field"><span>User</span><input id="mUser" /></label>
+          <label class="field"><span>Auth</span><select id="mAuth"><option>Key</option><option>Password</option></select></label>
+        </div>
+        <label class="field" id="passwordField"><span>Password</span><input id="mPassword" type="password" placeholder="密码登录时填写" /></label>
+        <label class="field" id="keyField"><span>Private Key Path</span><input id="mKeyPath" placeholder="例如 C:\\keys\\id_rsa" /></label>
+        <div style="display:flex;justify-content:flex-end;gap:10px;padding-top:4px">
+          <button class="btn primary" id="saveModal" type="button">保存连接</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="./node_modules/codemirror/lib/codemirror.js"></script>
+  <script src="./node_modules/codemirror/mode/javascript/javascript.js"></script>
+  <script src="./node_modules/codemirror/mode/css/css.js"></script>
+  <script src="./node_modules/codemirror/mode/xml/xml.js"></script>
+  <script src="./node_modules/codemirror/mode/htmlmixed/htmlmixed.js"></script>
+  <script src="./node_modules/codemirror/mode/markdown/markdown.js"></script>
+  <script src="./node_modules/codemirror/mode/yaml/yaml.js"></script>
+  <script src="./node_modules/codemirror/mode/shell/shell.js"></script>
+  <script src="./node_modules/codemirror/mode/python/python.js"></script>
+  <script>
+    const hosts = [
+      { id: 'prod-01', name: 'prod-01', host: '192.168.1.10', port: '22', user: 'root', auth: 'Key', password: '', keyPath: '', status: '当前', active: true },
+      { id: 'dev-02', name: 'dev-02', host: '192.168.1.21', port: '22', user: 'ubuntu', auth: 'Password', password: '', keyPath: '', status: '空闲', active: false },
+      { id: 'test-03', name: 'test-03', host: '10.0.0.8', port: '22', user: 'admin', auth: 'Key', password: '', keyPath: '', status: '断开', active: false },
+    ];
+
+    const sessions = [
+      { name: 'prod-01 / shell', time: '2m 前', last: 'docker ps' },
+      { name: 'dev-02 / shell', time: '15m 前', last: 'top' },
+    ];
+
+    // 快捷指令分组：查看类一键执行；dcim 操作需二次确认；清理类风险高，需强确认
+    const shortcutGroups = [
+      {
+        id: 'view',
+        title: '查看',
+        items: [
+          { label: 'ls -lah', commands: ['ls -lah'] },
+          { label: 'df -h', commands: ['df -h'] },
+          { label: 'top', commands: ['top'] },
+          { label: 'docker ps', commands: ['docker ps'], exec: true },
+          { label: 'docker ps -a', commands: ['docker ps -a'], exec: true },
+          { label: 'docker stats (快照)', commands: ['docker stats --no-stream'], exec: true },
+          { label: 'docker system df', commands: ['docker system df'], exec: true },
+          { label: 'dcim 最近日志', commands: ['docker logs --tail 200 dcim'], exec: true },
+          { label: 'dcim 进程树', commands: ['docker top dcim'], exec: true },
+          { label: 'dcim 状态/启动时间', commands: [`docker inspect dcim --format '{{.State.Status}} {{.State.StartedAt}}'`], exec: true },
+          { label: 'webssh 服务日志', commands: ['journalctl -u webssh -n 100 --no-pager'], exec: true },
+        ],
+      },
+      {
+        id: 'dcim',
+        title: 'dcim 操作',
+        items: [
+          { label: 'dcim 重启采集', commands: ['docker exec dcim systemctl restart dcim'], exec: true, confirm: '将在 dcim 容器内执行 systemctl restart dcim，是否继续？' },
+          { label: 'dcim 开始采集', commands: ['docker exec dcim systemctl start dcim'], exec: true, confirm: '将在 dcim 容器内执行 systemctl start dcim，是否继续？' },
+          { label: 'dcim 停止采集', commands: ['docker exec dcim systemctl stop dcim'], exec: true, confirm: '将在 dcim 容器内执行 systemctl stop dcim，是否继续？' },
+          { label: 'dcim 采集状态', commands: ['docker exec dcim systemctl status dcim --no-pager'], exec: true },
+          { label: 'dcim 容器重启', commands: ['docker restart dcim'], exec: true, confirm: 'docker restart dcim 会中断容器内所有进程，是否继续？' },
+        ],
+      },
+      {
+        id: 'clean',
+        title: '清理',
+        items: [
+          { label: 'prune 悬挂资源', commands: ['docker system prune -f'], exec: true, confirm: '将清理悬挂镜像、已停止容器、未用网络。操作不可逆，是否继续？' },
+          { label: 'prune 未用镜像', commands: ['docker image prune -a -f'], exec: true, confirm: '⚠ 将删除所有未被容器使用的镜像，可能误删备用镜像。是否继续？' },
+          { label: 'prune 未用数据卷', commands: ['docker volume prune -f'], exec: true, confirm: '⚠ 将删除所有未挂载的数据卷，可能导致数据丢失。是否继续？' },
+        ],
+      },
+    ];
+    // 兼容旧代码：保留扁平数组形式
+    const shortcuts = shortcutGroups.flatMap((g) => g.items);
+
+    const state = {
+      currentHost: hosts[0],
+      status: '未连接',
+      connection: cloneConnection(hosts[0]),
+      lines: [{ kind: 'system', text: '正在等待 SSH 连接...' }],
+      input: '',
+      cursor: 0,
+      history: [],
+      historyIndex: -1,
+      modalOpen: false,
+      ws: null,
+      connected: false,
+      sidePanel: 'shortcuts',
+      shortcutGroupsOpen: { view: true, dcim: true, clean: false },
+      sftpReady: false,
+      fileLoading: false,
+      fileError: '',
+      fileCwd: '/var/www',
+      fileEntries: [],
+      selectedFile: null,
+      fileRequestSeq: 0,
+      latestFileRequestId: '',
+      pendingFilePath: '',
+      transferStatus: '',
+      uploadPending: false,
+      downloadPending: false,
+      deletePending: false,
+      renamePending: false,
+      editorOpen: false,
+      editorLoading: false,
+      editorSaving: false,
+      editorPath: '',
+      editorFileName: '',
+      editorContent: '',
+      editorError: '',
+      latestEditorRequestId: '',
+      createPending: false,
+      mkdirPending: false,
+      dragUploadActive: false,
+      editorMode: 'text/plain',
+    };
+
+    let codeEditor = null;
+
+    const commandMap = {
+      'ls -lah': [
+        'total 56K',
+        'drwxr-xr-x  6 root root 4.0K May 7 10:12 .',
+        'drwxr-xr-x 18 root root 4.0K May 7 09:58 ..',
+        '-rw-r--r--  1 root root  220 May 7 10:10 .bashrc',
+        '-rw-r--r--  1 root root 1.2K May 7 10:11 deploy.log',
+      ],
+      'df -h': [
+        'Filesystem      Size  Used Avail Use% Mounted on',
+        '/dev/sda1       120G   38G   76G  34% /',
+        'tmpfs           3.9G     0  3.9G   0% /dev/shm',
+      ],
+      top: [
+        'top - 10:16:12 up 7 days,  2 users,  load average: 0.08, 0.05, 0.01',
+        'Tasks: 112 total,   1 running, 111 sleeping,   0 stopped,   0 zombie',
+        '%Cpu(s):  3.4 us,  1.0 sy,  0.0 ni, 95.1 id',
+      ],
+      'docker ps': [
+        'CONTAINER ID   IMAGE          STATUS          NAMES',
+        'a1b2c3d4       nginx:latest   Up 2 hours      web',
+        'e5f6g7h8       redis:7        Up 18 minutes   cache',
+      ],
+      'journalctl -xe': [
+        'May 07 10:12:11 systemd[1]: Started Session 24 of user root.',
+        'May 07 10:12:14 nginx[1042]: worker process started',
+      ],
+    };
+
+    const el = {
+      terminal: document.getElementById('terminal'),
+      hostList: document.getElementById('hostList'),
+      sessionList: document.getElementById('sessionList'),
+      tabs: document.getElementById('tabs'),
+      sideTabs: document.getElementById('sideTabs'),
+      sidePanelContent: document.getElementById('sidePanelContent'),
+      cmdInput: document.getElementById('cmdInput'),
+      cmdForm: document.getElementById('cmdForm'),
+      modalMask: document.getElementById('modalMask'),
+      statusText: document.getElementById('statusText'),
+      terminalSub: document.getElementById('terminalSub'),
+      metaUser: document.getElementById('metaUser'),
+      metaPath: document.getElementById('metaPath'),
+      footerHost: document.getElementById('footerHost'),
+      openConnect: document.getElementById('openConnect'),
+      openSettings: document.getElementById('openSettings'),
+      closeModal: document.getElementById('closeModal'),
+      saveModal: document.getElementById('saveModal'),
+      clearBtn: document.getElementById('clearBtn'),
+      copyBtn: document.getElementById('copyBtn'),
+      reconnectBtn: document.getElementById('reconnectBtn'),
+      passwordField: document.getElementById('passwordField'),
+      keyField: document.getElementById('keyField'),
+      mAuth: document.getElementById('mAuth'),
+      mPassword: document.getElementById('mPassword'),
+      mKeyPath: document.getElementById('mKeyPath'),
+      mHost: document.getElementById('mHost'),
+      mPort: document.getElementById('mPort'),
+      mUser: document.getElementById('mUser'),
+      uploadInput: document.getElementById('uploadInput'),
+      editorMask: document.getElementById('editorMask'),
+      closeEditor: document.getElementById('closeEditor'),
+      saveEditor: document.getElementById('saveEditor'),
+      editorTextarea: document.getElementById('editorTextarea'),
+      editorPathText: document.getElementById('editorPathText'),
+      editorStatus: document.getElementById('editorStatus'),
+      viewSshBtn: document.getElementById('viewSshBtn'),
+      viewSerialBtn: document.getElementById('viewSerialBtn'),
+      sshView: document.getElementById('sshView'),
+      serialView: document.getElementById('serialView'),
+      serialFrame: document.getElementById('serialFrame'),
+    };
+
+    function cloneConnection(host) {
+      return {
+        host: host.host,
+        port: host.port || '22',
+        user: host.user,
+        auth: host.auth || 'Key',
+        password: host.password || '',
+        keyPath: host.keyPath || '',
+      };
+    }
+
+    function esc(text) {
+      return String(text)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+    }
+
+    // 剥掉 ANSI 控制序列：OSC 设标题（ESC ] ... BEL / ST）、CSI（ESC [ ... 字母）、
+    // DCS/APC/PM/SOS、单字节控制字符（保留 \t \n \r），避免纯文本渲染时出现 "]0;..." "[?1034h" 之类的乱码。
+    function stripAnsi(s) {
+      if (!s) return '';
+      return String(s)
+        .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+        .replace(/\x1b[PX^_][^\x1b]*(?:\x1b\\)?/g, '')
+        .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+        .replace(/\x1b[=>78NOMDEHc]/g, '')
+        .replace(/\x1b\([AB012]/g, '')
+        .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
+    }
+
+    // 把服务端分片到达的 pty 输出按 \n 拼成行。单独的 \r 视作行首覆盖（readline 刷新），
+    // \r\n 归一为 \n 避免把换行当成覆盖而把整行抹空。
+    // 没换行的尾巴会追加到最后一条 output 行上，下次再续，避免把半行拆成多条。
+    function appendOutputStream(data) {
+      const normalized = data.replace(/\r\n/g, '\n');
+      const chunks = normalized.split('\n');
+      for (let i = 0; i < chunks.length; i++) {
+        let piece = chunks[i];
+        const crIdx = piece.lastIndexOf('\r');
+        const overwrite = crIdx >= 0;
+        if (overwrite) piece = piece.slice(crIdx + 1);
+
+        const last = state.lines[state.lines.length - 1];
+        const canAppend = last && last.kind === 'output';
+        if (overwrite) {
+          if (canAppend) last.text = piece;
+          else if (piece) state.lines.push({ kind: 'output', text: piece });
+        } else if (canAppend) {
+          last.text += piece;
+        } else if (piece) {
+          state.lines.push({ kind: 'output', text: piece });
+        }
+
+        if (i < chunks.length - 1) {
+          state.lines.push({ kind: 'output', text: '' });
+        }
+      }
+      while (state.lines.length >= 2) {
+        const a = state.lines[state.lines.length - 1];
+        const b = state.lines[state.lines.length - 2];
+        if (a.kind === 'output' && b.kind === 'output' && a.text === '' && b.text === '') {
+          state.lines.pop();
+        } else break;
+      }
+    }
+
+    function nextFileRequestId() {
+      state.fileRequestSeq += 1;
+      return `file_${Date.now()}_${state.fileRequestSeq}`;
+    }
+
+    function getParentPath(path) {
+      if (!path || path === '/') return '/';
+      const parts = path.split('/').filter(Boolean);
+      parts.pop();
+      return parts.length ? `/${parts.join('/')}` : '/';
+    }
+
+    function formatFileSize(size) {
+      const value = Number(size || 0);
+      if (value < 1024) return `${value} B`;
+      if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+      if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+      return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+    }
+
+    function formatFileTime(mtime) {
+      if (!mtime) return '--';
+      const date = new Date(Number(mtime) * 1000);
+      if (Number.isNaN(date.getTime())) return '--';
+      return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+    }
+
+    function isEditableTextFile(entry) {
+      if (!entry || entry.type !== 'file') return false;
+      const lower = String(entry.name || '').toLowerCase();
+      return ['.txt', '.log', '.md', '.json', '.js', '.ts', '.html', '.css', '.xml', '.yml', '.yaml', '.sh', '.env', '.ini', '.conf'].some((suffix) => lower.endsWith(suffix));
+    }
+
+    function detectEditorMode(fileName) {
+      const lower = String(fileName || '').toLowerCase();
+      if (lower.endsWith('.json')) return 'application/json';
+      if (lower.endsWith('.js') || lower.endsWith('.ts')) return 'javascript';
+      if (lower.endsWith('.html')) return 'htmlmixed';
+      if (lower.endsWith('.css')) return 'css';
+      if (lower.endsWith('.md')) return 'markdown';
+      if (lower.endsWith('.yml') || lower.endsWith('.yaml')) return 'yaml';
+      if (lower.endsWith('.sh')) return 'shell';
+      if (lower.endsWith('.xml')) return 'xml';
+      if (lower.endsWith('.py')) return 'python';
+      return 'null';
+    }
+
+    function initCodeEditor() {
+      if (!el.editorTextarea || codeEditor || typeof CodeMirror === 'undefined') return;
+      codeEditor = CodeMirror.fromTextArea(el.editorTextarea, {
+        lineNumbers: true,
+        mode: 'null',
+        theme: 'default',
+        indentUnit: 2,
+        tabSize: 2,
+        lineWrapping: false,
+      });
+      codeEditor.on('change', () => {
+        state.editorContent = codeEditor.getValue();
+      });
+    }
+
+    function setEditorContent(value) {
+      if (codeEditor) {
+        if (codeEditor.getValue() !== value) codeEditor.setValue(value);
+        return;
+      }
+      if (el.editorTextarea) el.editorTextarea.value = value;
+    }
+
+    function getEditorContent() {
+      if (codeEditor) return codeEditor.getValue();
+      return el.editorTextarea?.value || '';
+    }
+
+    function resetFileState(preservePath = true) {
+      state.sftpReady = false;
+      state.fileLoading = false;
+      state.fileError = '';
+      state.fileEntries = [];
+      state.selectedFile = null;
+      state.latestFileRequestId = '';
+      state.pendingFilePath = '';
+      state.transferStatus = '';
+      state.deletePending = false;
+      state.renamePending = false;
+      closeEditor();
+      if (!preservePath) state.fileCwd = '/var/www';
+    }
+
+    function renderHosts() {
+      el.hostList.innerHTML = hosts.map((host) => `
+        <button class="host-item ${host.active ? 'active' : ''}" data-host="${host.id}">
+          <div class="host-row">
+            <div>
+              <div class="host-name">${esc(host.name)}</div>
+              <div class="host-meta">${esc(host.host)} · ${esc(host.user)}</div>
+            </div>
+            <span class="host-status ${host.status === '当前' ? 'current' : host.status === '断开' ? 'offline' : ''}">${esc(host.status)}</span>
+          </div>
+        </button>
+      `).join('');
+    }
+
+    function renderSessions() {
+      el.sessionList.innerHTML = sessions.map((session) => `
+        <div class="session-item">
+          <div class="host-row">
+            <div>
+              <div class="host-name">${esc(session.name)}</div>
+              <div class="host-meta">最后命令：${esc(session.last)}</div>
+            </div>
+            <span class="host-meta">${esc(session.time)}</span>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function renderTabs() {
+      el.tabs.innerHTML = hosts.map((host) => `
+        <button class="tab ${host.active ? 'active' : ''}" data-tab="${host.id}">${esc(host.name)}</button>
+      `).join('');
+    }
+
+    function renderSideTabs() {
+      el.sideTabs.innerHTML = `
+        <button class="side-tab ${state.sidePanel === 'shortcuts' ? 'active' : ''}" data-side-panel="shortcuts">快捷命令</button>
+        <button class="side-tab ${state.sidePanel === 'files' ? 'active' : ''}" data-side-panel="files">文件管理</button>
+      `;
+    }
+
+    function renderShortcutsPanel() {
+      const groupsHtml = shortcutGroups.map((g) => {
+        const open = state.shortcutGroupsOpen[g.id] !== false;
+        const btns = g.items.map((sc) => {
+          const idx = shortcuts.indexOf(sc);
+          const title = sc.exec ? `连续执行：${sc.commands.join(' ; ')}` : '点击填充到输入框';
+          const cls = sc.exec ? 'btn shortcut exec' : 'btn shortcut';
+          return `<button class="${cls}" data-shortcut-idx="${idx}" title="${esc(title)}">${esc(sc.label)}</button>`;
+        }).join('');
+        return `
+          <div class="shortcut-group ${open ? 'open' : ''}">
+            <button class="shortcut-group-header" data-shortcut-group="${esc(g.id)}">
+              <span class="chev">${open ? '▾' : '▸'}</span>
+              <span class="shortcut-group-title">${esc(g.title)}</span>
+              <span class="shortcut-group-count">${g.items.length}</span>
+            </button>
+            <div class="shortcut-grid shortcut-group-body">${btns}</div>
+          </div>
+        `;
+      }).join('');
+      return `
+        <div>
+          <div class="section-title">快捷命令</div>
+          <div class="shortcut-groups" style="margin-top:10px">${groupsHtml}</div>
+        </div>
+        <div>
+          <div class="section-title">连接信息</div>
+          <div class="kv"><span class="muted">Host</span><span>${esc(state.connection.host)}</span></div>
+          <div class="kv"><span class="muted">Port</span><span>${esc(state.connection.port)}</span></div>
+          <div class="kv"><span class="muted">Auth</span><span>${esc(state.connection.auth)}</span></div>
+          <div class="kv"><span class="muted">状态</span><span style="color:${state.status === '已连接' ? '#a7f3d0' : '#fcd34d'}">${esc(state.status)}</span></div>
+        </div>
+      `;
+    }
+
+    function renderFileList() {
+      if (!state.connected) {
+        return `<div class="panel-empty">当前未连接 SSH，连接成功后可浏览远端文件。</div>`;
+      }
+      if (state.fileLoading) {
+        return `<div class="panel-empty">正在加载目录内容...</div>`;
+      }
+      if (state.fileError) {
+        return `<div class="panel-error">${esc(state.fileError)}</div>`;
+      }
+      if (!state.fileEntries.length) {
+        return `<div class="panel-empty">当前目录为空。</div>`;
+      }
+      return state.fileEntries.map((entry) => `
+        <button class="file-row ${state.selectedFile?.fullPath === entry.fullPath ? 'selected' : ''}" data-file-path="${esc(entry.fullPath)}" data-file-type="${esc(entry.type)}">
+          <div class="file-main">
+            <div class="file-name">${esc(entry.name)}</div>
+            <div class="file-meta">${esc(formatFileSize(entry.size))} · ${esc(formatFileTime(entry.mtime))}</div>
+          </div>
+          <span class="file-kind ${esc(entry.type)}">${entry.type === 'dir' ? '目录' : entry.type === 'link' ? '链接' : '文件'}</span>
+        </button>
+      `).join('');
+    }
+
+    function renderFilesPanel() {
+      return `
+        <div class="file-toolbar">
+          <div>
+            <div class="section-title">文件管理</div>
+            <div class="file-status">${state.sftpReady ? 'SFTP 已就绪' : state.connected ? '等待初始化 SFTP' : 'SSH 未连接'}</div>
+          </div>
+          <div class="file-toolbar-actions">
+            <button class="btn tiny" data-file-action="upload">上传</button>
+            <button class="btn tiny" data-file-action="create-file">新建文件</button>
+            <button class="btn tiny" data-file-action="create-folder">新建文件夹</button>
+            <button class="btn tiny" data-file-action="download" ${state.selectedFile && state.selectedFile.type === 'file' ? '' : 'disabled'}>下载</button>
+            <button class="btn tiny" data-file-action="rename" ${state.selectedFile ? '' : 'disabled'}>重命名</button>
+            <button class="btn tiny" data-file-action="delete" ${state.selectedFile && state.selectedFile.type === 'file' ? '' : 'disabled'}>删除</button>
+            <button class="btn tiny" data-file-action="edit" ${isEditableTextFile(state.selectedFile) ? '' : 'disabled'}>编辑</button>
+            <button class="btn tiny" data-file-action="up">上一级</button>
+            <button class="btn tiny" data-file-action="refresh">刷新</button>
+          </div>
+        </div>
+        <div>
+          <div class="muted" style="font-size:12px;margin-bottom:6px">当前路径</div>
+          <div class="path-box">${esc(state.fileCwd)}</div>
+        </div>
+        ${state.transferStatus ? `<div class="transfer-status">${esc(state.transferStatus)}</div>` : ''}
+        ${state.dragUploadActive ? `<div class="drop-hint">释放以上传到当前目录：${esc(state.fileCwd)}</div>` : ''}
+        <div class="file-list ${state.dragUploadActive ? 'drag-active' : ''}" id="fileListContainer">
+          ${renderFileList()}
+        </div>
+      `;
+    }
+
+    function renderSidePanel(preserveFileScroll = false) {
+      const fileList = document.getElementById('fileListContainer');
+      const previousScrollTop = preserveFileScroll && fileList ? fileList.scrollTop : 0;
+      renderSideTabs();
+      el.sidePanelContent.innerHTML = state.sidePanel === 'shortcuts' ? renderShortcutsPanel() : renderFilesPanel();
+      if (preserveFileScroll && state.sidePanel === 'files') {
+        const nextFileList = document.getElementById('fileListContainer');
+        if (nextFileList) nextFileList.scrollTop = previousScrollTop;
+      }
+    }
+
+    function renderTerminal() {
+      const prompt = `${state.currentHost.user}@${state.currentHost.name}:~# `;
+      const linesHtml = state.lines.map((line) => `<div class="line ${line.kind}">${esc(line.text)}</div>`).join('');
+      const current = `${esc(state.input.slice(0, state.cursor))}<span class="cursor"></span>${esc(state.input.slice(state.cursor))}`;
+      el.terminal.innerHTML = `${linesHtml}<div class="prompt-line"><span class="prompt">${esc(prompt)}</span><span>${current}</span></div>`;
+      el.terminal.scrollTop = el.terminal.scrollHeight;
+    }
+
+    function renderMeta() {
+      el.statusText.textContent = state.status;
+      el.metaUser.textContent = `用户：${state.currentHost.user}`;
+      el.metaPath.textContent = `目录：${state.fileCwd}`;
+      el.terminalSub.textContent = `${state.currentHost.name} · ${state.connection.host}:${state.connection.port}`;
+      el.footerHost.textContent = `当前会话：${state.currentHost.name}`;
+    }
+
+    function renderAll() {
+      renderHosts();
+      renderSessions();
+      renderTabs();
+      renderSidePanel();
+      renderTerminal();
+      renderMeta();
+      bindDynamicEvents();
+    }
+
+    function bindDynamicEvents() {
+      document.querySelectorAll('[data-host]').forEach((node) => {
+        node.onclick = () => switchHost(node.dataset.host);
+      });
+      document.querySelectorAll('[data-tab]').forEach((node) => {
+        node.onclick = () => switchHost(node.dataset.tab);
+      });
+      document.querySelectorAll('[data-shortcut-group]').forEach((node) => {
+        node.onclick = () => {
+          const id = node.dataset.shortcutGroup;
+          state.shortcutGroupsOpen[id] = !state.shortcutGroupsOpen[id];
+          renderSidePanel();
+          bindDynamicEvents();
+        };
+      });
+      document.querySelectorAll('[data-shortcut-idx]').forEach((node) => {
+        node.onclick = () => {
+          const idx = Number(node.dataset.shortcutIdx);
+          const sc = shortcuts[idx];
+          if (!sc) return;
+          if (sc.exec) {
+            runShortcutSequence(sc);
+          } else {
+            state.input = sc.commands[0] || '';
+            state.cursor = state.input.length;
+            el.cmdInput.value = state.input;
+            renderTerminal();
+            el.cmdInput.focus();
+          }
+        };
+      });
+      document.querySelectorAll('[data-side-panel]').forEach((node) => {
+        node.onclick = () => switchSidePanel(node.dataset.sidePanel);
+      });
+      document.querySelectorAll('[data-file-action]').forEach((node) => {
+        node.onclick = () => {
+          if (node.dataset.fileAction === 'refresh') loadFileList(state.fileCwd);
+          if (node.dataset.fileAction === 'up') goParentDirectory();
+          if (node.dataset.fileAction === 'upload') triggerUpload();
+          if (node.dataset.fileAction === 'create-file') createFileInCurrentDir();
+          if (node.dataset.fileAction === 'create-folder') createFolderInCurrentDir();
+          if (node.dataset.fileAction === 'download') downloadSelectedFile();
+          if (node.dataset.fileAction === 'delete') deleteSelectedFile();
+          if (node.dataset.fileAction === 'rename') renameSelectedFile();
+          if (node.dataset.fileAction === 'edit') openEditorForSelectedFile();
+        };
+      });
+      document.querySelectorAll('[data-file-path]').forEach((node) => {
+        node.onclick = () => {
+          const path = node.dataset.filePath;
+          const type = node.dataset.fileType;
+          const entry = state.fileEntries.find((item) => item.fullPath === path) || null;
+          state.selectedFile = entry;
+          if (type === 'dir') {
+            openDirectory(path);
+            return;
+          }
+          renderSidePanel(true);
+          bindDynamicEvents();
+        };
+      });
+
+      const fileListContainer = document.getElementById('fileListContainer');
+      if (fileListContainer) {
+        fileListContainer.ondragenter = (event) => {
+          event.preventDefault();
+          state.dragUploadActive = true;
+          renderSidePanel(true);
+          bindDynamicEvents();
+        };
+        fileListContainer.ondragover = (event) => {
+          event.preventDefault();
+          if (!state.dragUploadActive) {
+            state.dragUploadActive = true;
+            renderSidePanel(true);
+            bindDynamicEvents();
+          }
+        };
+        fileListContainer.ondragleave = (event) => {
+          if (event.currentTarget.contains(event.relatedTarget)) return;
+          state.dragUploadActive = false;
+          renderSidePanel(true);
+          bindDynamicEvents();
+        };
+        fileListContainer.ondrop = async (event) => {
+          event.preventDefault();
+          state.dragUploadActive = false;
+          renderSidePanel(true);
+          bindDynamicEvents();
+          const files = event.dataTransfer?.files;
+          if (files?.length) {
+            await uploadFiles(files);
+          }
+        };
+      }
+    }
+
+    function setCurrentHostStatus(status) {
+      const activeHost = hosts.find((host) => host.id === state.currentHost.id);
+      if (activeHost) activeHost.status = status;
+      state.currentHost.status = status;
+    }
+
+    function applyConnectionToCurrentHost() {
+      state.currentHost.host = state.connection.host;
+      state.currentHost.port = state.connection.port;
+      state.currentHost.user = state.connection.user;
+      state.currentHost.auth = state.connection.auth;
+      state.currentHost.password = state.connection.password || '';
+      state.currentHost.keyPath = state.connection.keyPath || '';
+      const activeHost = hosts.find((host) => host.id === state.currentHost.id);
+      if (activeHost) {
+        activeHost.host = state.connection.host;
+        activeHost.port = state.connection.port;
+        activeHost.user = state.connection.user;
+        activeHost.auth = state.connection.auth;
+        activeHost.password = state.connection.password || '';
+        activeHost.keyPath = state.connection.keyPath || '';
+      }
+    }
+
+    function addLocalCommandOutput(command) {
+      state.lines.push({ kind: 'command', text: command });
+      const output = commandMap[command] || [`command not found: ${command}`];
+      output.forEach((line) => state.lines.push({ kind: 'output', text: line }));
+    }
+
+    function executeCurrentInput() {
+      const command = state.input.trim();
+      if (!command) return;
+      state.history.push(command);
+      state.historyIndex = state.history.length;
+      state.input = '';
+      state.cursor = 0;
+      el.cmdInput.value = '';
+
+      if (state.connected && state.ws?.readyState === WebSocket.OPEN) {
+        sendWs({ type: 'input', data: `${command}\n` });
+        renderTerminal();
+        return;
+      }
+
+      addLocalCommandOutput(command);
+      renderAll();
+    }
+
+    function runShortcutSequence(sc) {
+      if (!sc || !sc.commands || !sc.commands.length) return;
+      if (!state.connected || state.ws?.readyState !== WebSocket.OPEN) {
+        alert('请先连接 SSH 再执行快捷命令。');
+        return;
+      }
+      if (sc.confirm && !window.confirm(sc.confirm)) return;
+      state.input = '';
+      state.cursor = 0;
+      el.cmdInput.value = '';
+      let i = 0;
+      const stepDelay = 400;
+      const tick = () => {
+        if (i >= sc.commands.length) return;
+        const cmd = sc.commands[i++];
+        sendWs({ type: 'input', data: `${cmd}\n` });
+        if (i < sc.commands.length) setTimeout(tick, stepDelay);
+      };
+      tick();
+      renderTerminal();
+    }
+
+    function insertText(text) {
+      const before = state.input.slice(0, state.cursor);
+      const after = state.input.slice(state.cursor);
+      state.input = before + text + after;
+      state.cursor += text.length;
+      el.cmdInput.value = state.input;
+      renderTerminal();
+    }
+
+    function switchHost(hostId) {
+      const host = hosts.find((item) => item.id === hostId);
+      if (!host) return;
+      hosts.forEach((item) => {
+        item.active = item.id === hostId;
+        item.status = item.id === hostId ? '当前' : (item.status === '断开' ? '断开' : '空闲');
+      });
+      state.currentHost = host;
+      state.connection = cloneConnection(host);
+      state.status = host.status === '断开' ? '未连接' : '已连接';
+      state.lines.push({ kind: 'system', text: `已切换到 ${host.name}` });
+      state.lines.push({ kind: 'output', text: `Connecting to ${host.host} ...` });
+      state.input = '';
+      state.cursor = 0;
+      el.cmdInput.value = '';
+      resetFileState(false);
+      renderAll();
+      connectWs(true);
+    }
+
+    function switchSidePanel(panel) {
+      state.sidePanel = panel;
+      renderAll();
+      if (panel === 'files') {
+        if (!state.connected) return;
+        if (!state.sftpReady) {
+          initSftp(state.fileCwd);
+          return;
+        }
+        if (!state.fileEntries.length && !state.fileLoading) {
+          loadFileList(state.fileCwd);
+        }
+      }
+    }
+
+    function syncAuthFields() {
+      const auth = el.mAuth?.value || 'Key';
+      if (el.passwordField) el.passwordField.style.display = auth === 'Password' ? 'grid' : 'none';
+      if (el.keyField) el.keyField.style.display = auth === 'Key' ? 'grid' : 'none';
+    }
+
+    function setModal(open) {
+      state.modalOpen = open;
+      el.modalMask.classList.toggle('open', open);
+      el.modalMask.setAttribute('aria-hidden', open ? 'false' : 'true');
+      if (open) {
+        el.mHost.value = state.connection.host;
+        el.mPort.value = state.connection.port;
+        el.mUser.value = state.connection.user;
+        el.mAuth.value = state.connection.auth;
+        el.mPassword.value = state.connection.password || '';
+        el.mKeyPath.value = state.connection.keyPath || '';
+        syncAuthFields();
+      }
+    }
+
+    function sendWs(message) {
+      if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+        state.ws.send(JSON.stringify(message));
+      }
+    }
+
+    function initSftp(path = state.fileCwd) {
+      if (!state.connected) return;
+      state.pendingFilePath = path;
+      const requestId = nextFileRequestId();
+      sendWs({ type: 'sftp:init', payload: { requestId } });
+    }
+
+    function loadFileList(path = state.fileCwd) {
+      if (!state.connected) {
+        state.fileError = 'SSH 未连接';
+        renderAll();
+        return;
+      }
+      if (!state.sftpReady) {
+        initSftp(path);
+        return;
+      }
+      state.fileLoading = true;
+      state.fileError = '';
+      state.selectedFile = null;
+      state.pendingFilePath = path;
+      state.latestFileRequestId = nextFileRequestId();
+      renderAll();
+      sendWs({ type: 'sftp:list', payload: { requestId: state.latestFileRequestId, path } });
+    }
+
+    function openDirectory(path) {
+      loadFileList(path);
+    }
+
+    function goParentDirectory() {
+      loadFileList(getParentPath(state.fileCwd));
+    }
+
+    function triggerUpload() {
+      if (!state.connected || !state.sftpReady) {
+        state.transferStatus = '请先连接 SSH 并初始化文件管理';
+        renderAll();
+        return;
+      }
+      el.uploadInput.value = '';
+      el.uploadInput.click();
+    }
+
+    function uploadSelectedFile(file, progressText = '') {
+      if (!file) return Promise.resolve();
+      return new Promise((resolve) => {
+        const reader = new FileReader();
+        state.uploadPending = true;
+        state.transferStatus = progressText || `正在上传 ${file.name} ...`;
+        renderAll();
+        reader.onload = () => {
+          const requestId = nextFileRequestId();
+          const done = (event) => {
+            let msg;
+            try { msg = JSON.parse(event.data); } catch { return; }
+            const resultType = msg.type;
+            const requestIdMatched = msg.payload?.requestId === requestId;
+            if (!requestIdMatched) return;
+            if (resultType === 'sftp:upload:result') {
+              state.uploadPending = false;
+              state.transferStatus = `已上传 ${msg.payload?.fileName || file.name}`;
+              state.ws?.removeEventListener('message', done);
+              loadFileList(state.fileCwd);
+              resolve();
+            }
+            if (resultType === 'sftp:error' && msg.payload?.action === 'upload') {
+              state.uploadPending = false;
+              state.transferStatus = `上传失败：${msg.payload?.message || '未知错误'}`;
+              state.ws?.removeEventListener('message', done);
+              renderAll();
+              resolve();
+            }
+          };
+          state.ws?.addEventListener('message', done);
+          sendWs({
+            type: 'sftp:upload',
+            payload: {
+              requestId,
+              path: remoteJoinClient(state.fileCwd, file.name),
+              fileName: file.name,
+              content: reader.result,
+            },
+          });
+        };
+        reader.onerror = () => {
+          state.uploadPending = false;
+          state.transferStatus = '读取本地文件失败';
+          renderAll();
+          resolve();
+        };
+        reader.readAsDataURL(file);
+      });
+    }
+
+    async function uploadFiles(files) {
+      const list = Array.from(files || []).filter(Boolean);
+      for (let i = 0; i < list.length; i += 1) {
+        await uploadSelectedFile(list[i], `正在上传 ${i + 1}/${list.length}: ${list[i].name} ...`);
+      }
+    }
+
+    function createFileInCurrentDir() {
+      const name = prompt('输入文件名');
+      const trimmed = String(name || '').trim();
+      if (!trimmed || trimmed.includes('/') || trimmed === '.' || trimmed === '..') {
+        state.transferStatus = '文件名无效';
+        renderAll();
+        return;
+      }
+      state.createPending = true;
+      state.transferStatus = `正在创建文件 ${trimmed} ...`;
+      renderAll();
+      sendWs({
+        type: 'sftp:createFile',
+        payload: {
+          requestId: nextFileRequestId(),
+          path: remoteJoinClient(state.fileCwd, trimmed),
+          content: '',
+          encoding: 'utf8',
+        },
+      });
+    }
+
+    function createFolderInCurrentDir() {
+      const name = prompt('输入文件夹名');
+      const trimmed = String(name || '').trim();
+      if (!trimmed || trimmed.includes('/') || trimmed === '.' || trimmed === '..') {
+        state.transferStatus = '文件夹名无效';
+        renderAll();
+        return;
+      }
+      state.mkdirPending = true;
+      state.transferStatus = `正在创建文件夹 ${trimmed} ...`;
+      renderAll();
+      sendWs({
+        type: 'sftp:mkdir',
+        payload: {
+          requestId: nextFileRequestId(),
+          path: remoteJoinClient(state.fileCwd, trimmed),
+        },
+      });
+    }
+
+    function downloadSelectedFile() {
+      if (!state.selectedFile || state.selectedFile.type !== 'file') {
+        state.transferStatus = '请先选择一个文件';
+        renderAll();
+        return;
+      }
+      state.downloadPending = true;
+      state.transferStatus = `正在下载 ${state.selectedFile.name} ...`;
+      renderAll();
+      sendWs({
+        type: 'sftp:download',
+        payload: {
+          requestId: nextFileRequestId(),
+          path: state.selectedFile.fullPath,
+        },
+      });
+    }
+
+    function remoteJoinClient(basePath, name) {
+      if (!basePath || basePath === '/') return `/${name}`;
+      return `${basePath.replace(/\/+$/, '')}/${name}`;
+    }
+
+    function setEditorOpen(open) {
+      state.editorOpen = open;
+      el.editorMask.classList.toggle('open', open);
+      el.editorMask.setAttribute('aria-hidden', open ? 'false' : 'true');
+    }
+
+    function syncEditorView() {
+      if (!el.editorPathText || !el.editorStatus || !el.editorTextarea) return;
+      el.editorPathText.textContent = state.editorPath || '未选择文件';
+      if (state.editorLoading) {
+        el.editorStatus.textContent = '正在读取文件...';
+      } else if (state.editorSaving) {
+        el.editorStatus.textContent = '正在保存文件...';
+      } else if (state.editorError) {
+        el.editorStatus.textContent = state.editorError;
+      } else {
+        const modeText = state.editorMode && state.editorMode !== 'null' ? ` · ${state.editorMode}` : '';
+        el.editorStatus.textContent = state.editorPath ? `可直接编辑并保存${modeText}` : '等待加载文件';
+      }
+      setEditorContent(state.editorContent || '');
+      if (codeEditor) {
+        codeEditor.setOption('readOnly', state.editorLoading || state.editorSaving);
+        codeEditor.setOption('mode', state.editorMode || 'null');
+        setTimeout(() => codeEditor.refresh(), 0);
+      } else {
+        el.editorTextarea.disabled = state.editorLoading || state.editorSaving;
+      }
+      el.saveEditor.disabled = state.editorLoading || state.editorSaving || !state.editorPath;
+    }
+
+    function closeEditor() {
+      state.editorOpen = false;
+      state.editorLoading = false;
+      state.editorSaving = false;
+      state.editorPath = '';
+      state.editorFileName = '';
+      state.editorContent = '';
+      state.editorError = '';
+      state.latestEditorRequestId = '';
+      setEditorOpen(false);
+      syncEditorView();
+    }
+
+    function deleteSelectedFile() {
+      if (!state.selectedFile || state.selectedFile.type !== 'file') {
+        state.transferStatus = '请选择一个普通文件';
+        renderAll();
+        return;
+      }
+      if (!confirm(`确认删除 ${state.selectedFile.name} 吗？`)) return;
+      state.deletePending = true;
+      state.transferStatus = `正在删除 ${state.selectedFile.name} ...`;
+      renderAll();
+      sendWs({
+        type: 'sftp:delete',
+        payload: {
+          requestId: nextFileRequestId(),
+          path: state.selectedFile.fullPath,
+          entryType: state.selectedFile.type,
+        },
+      });
+    }
+
+    function renameSelectedFile() {
+      if (!state.selectedFile) {
+        state.transferStatus = '请先选择文件或目录';
+        renderAll();
+        return;
+      }
+      const newName = prompt('输入新名称', state.selectedFile.name);
+      if (newName == null) return;
+      const trimmed = newName.trim();
+      if (!trimmed || trimmed === state.selectedFile.name || trimmed.includes('/')) {
+        state.transferStatus = '重命名无效，请输入新的名称且不能包含 /';
+        renderAll();
+        return;
+      }
+      state.renamePending = true;
+      state.transferStatus = `正在重命名 ${state.selectedFile.name} ...`;
+      renderAll();
+      sendWs({
+        type: 'sftp:rename',
+        payload: {
+          requestId: nextFileRequestId(),
+          path: state.selectedFile.fullPath,
+          newName: trimmed,
+        },
+      });
+    }
+
+    function openEditorForSelectedFile() {
+      if (!isEditableTextFile(state.selectedFile)) {
+        state.transferStatus = '当前仅支持编辑文本文件';
+        renderAll();
+        return;
+      }
+      state.editorLoading = true;
+      state.editorSaving = false;
+      state.editorError = '';
+      state.editorContent = '';
+      state.editorPath = state.selectedFile.fullPath;
+      state.editorFileName = state.selectedFile.name;
+      state.editorMode = detectEditorMode(state.selectedFile.name);
+      state.latestEditorRequestId = nextFileRequestId();
+      setEditorOpen(true);
+      syncEditorView();
+      sendWs({
+        type: 'sftp:readText',
+        payload: {
+          requestId: state.latestEditorRequestId,
+          path: state.selectedFile.fullPath,
+        },
+      });
+    }
+
+    function saveEditorContent() {
+      if (!state.editorPath) return;
+      state.editorSaving = true;
+      state.editorError = '';
+      state.editorContent = getEditorContent();
+      syncEditorView();
+      sendWs({
+        type: 'sftp:writeText',
+        payload: {
+          requestId: nextFileRequestId(),
+          path: state.editorPath,
+          content: state.editorContent,
+          encoding: 'utf8',
+        },
+      });
+    }
+
+    function saveDownloadedFile(fileName, base64Content) {
+      try {
+        const match = String(base64Content).match(/^data:(.*?);base64,(.*)$/);
+        if (!match) {
+          state.transferStatus = '下载内容格式错误';
+          state.downloadPending = false;
+          renderAll();
+          return;
+        }
+        const mime = match[1] || 'application/octet-stream';
+        const binary = atob(match[2]);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+        const blob = new Blob([bytes], { type: mime });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = fileName;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+        state.downloadPending = false;
+        state.transferStatus = `已下载 ${fileName}`;
+        renderAll();
+      } catch (err) {
+        state.downloadPending = false;
+        state.transferStatus = `下载失败：${err.message}`;
+        renderAll();
+      }
+    }
+
+    function connectWs(resetFiles = false) {
+      if (state.ws) {
+        try { state.ws.close(); } catch {}
+      }
+
+      if (resetFiles) resetFileState(false);
+
+      if (location.protocol === 'file:' || !location.host) {
+        state.ws = null;
+        state.connected = false;
+        state.status = '本地预览';
+        state.lines.push({ kind: 'system', text: '当前为本地预览模式，请通过 npm start 打开页面以连接后端。' });
+        renderMeta();
+        renderTerminal();
+        renderSidePanel();
+        bindDynamicEvents();
+        return;
+      }
+
+      try {
+        state.connected = false;
+        state.sftpReady = false;
+        state.fileLoading = false;
+        state.fileError = '';
+        state.fileEntries = [];
+        state.status = '连接中';
+        renderMeta();
+        renderSidePanel();
+        bindDynamicEvents();
+
+        const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const ws = new WebSocket(`${protocol}//${location.host}/ws`);
+        state.ws = ws;
+
+        ws.addEventListener('open', () => {
+          sendWs({
+            type: 'connect',
+            payload: {
+              host: state.connection.host,
+              port: state.connection.port,
+              user: state.connection.user,
+              auth: state.connection.auth,
+              password: state.connection.password || '',
+              keyPath: state.connection.keyPath || '',
+            },
+          });
+        });
+
+        ws.addEventListener('message', (event) => {
+          let msg;
+          try {
+            msg = JSON.parse(event.data);
+          } catch {
+            return;
+          }
+
+          if (msg.type === 'status') {
+            if (msg.payload?.state === 'connecting') {
+              state.status = '连接中';
+              state.lines.push({ kind: 'system', text: `正在连接 ${state.connection.host}:${state.connection.port} ...` });
+            }
+            if (msg.payload?.state === 'connected') {
+              state.status = '已连接';
+              state.connected = true;
+              setCurrentHostStatus('当前');
+              if (state.sidePanel === 'files' && !state.sftpReady) {
+                initSftp(state.fileCwd);
+              }
+            }
+            if (msg.payload?.state === 'closed') {
+              state.status = '未连接';
+              state.connected = false;
+              state.sftpReady = false;
+            }
+            renderMeta();
+            renderTerminal();
+            renderSidePanel();
+            bindDynamicEvents();
+            return;
+          }
+
+          if (msg.type === 'output') {
+            const data = stripAnsi(String(msg.payload?.data || ''));
+            if (data) appendOutputStream(data);
+            renderTerminal();
+            return;
+          }
+
+          if (msg.type === 'error') {
+            state.status = '未连接';
+            state.connected = false;
+            setCurrentHostStatus('断开');
+            state.lines.push({ kind: 'system', text: `连接错误：${msg.payload?.message || '未知错误'}` });
+            renderMeta();
+            renderTerminal();
+            renderHosts();
+            bindDynamicEvents();
+            return;
+          }
+
+          if (msg.type === 'sftp:ready') {
+            state.sftpReady = true;
+            state.fileError = '';
+            renderSidePanel();
+            bindDynamicEvents();
+            loadFileList(state.pendingFilePath || state.fileCwd || '/');
+            return;
+          }
+
+          if (msg.type === 'sftp:list:result') {
+            if (msg.payload?.requestId && state.latestFileRequestId && msg.payload.requestId !== state.latestFileRequestId) {
+              return;
+            }
+            state.fileLoading = false;
+            state.fileError = '';
+            state.fileCwd = msg.payload?.path || state.fileCwd;
+            state.fileEntries = Array.isArray(msg.payload?.entries) ? msg.payload.entries : [];
+            renderAll();
+            return;
+          }
+
+          if (msg.type === 'sftp:upload:result') {
+            state.uploadPending = false;
+            state.transferStatus = `已上传 ${msg.payload?.fileName || '文件'}`;
+            loadFileList(state.fileCwd);
+            return;
+          }
+
+          if (msg.type === 'sftp:download:result') {
+            saveDownloadedFile(msg.payload?.fileName || 'download.bin', msg.payload?.content || '');
+            return;
+          }
+
+          if (msg.type === 'sftp:createFile:result') {
+            state.createPending = false;
+            state.transferStatus = `已创建文件 ${msg.payload?.fileName || ''}`;
+            loadFileList(state.fileCwd);
+            return;
+          }
+
+          if (msg.type === 'sftp:mkdir:result') {
+            state.mkdirPending = false;
+            state.transferStatus = `已创建文件夹 ${msg.payload?.dirName || ''}`;
+            loadFileList(state.fileCwd);
+            return;
+          }
+
+          if (msg.type === 'sftp:delete:result') {
+            state.deletePending = false;
+            state.selectedFile = null;
+            state.transferStatus = '删除成功';
+            loadFileList(state.fileCwd);
+            return;
+          }
+
+          if (msg.type === 'sftp:rename:result') {
+            state.renamePending = false;
+            state.selectedFile = null;
+            state.transferStatus = `已重命名为 ${msg.payload?.newName || '新名称'}`;
+            loadFileList(state.fileCwd);
+            return;
+          }
+
+          if (msg.type === 'sftp:readText:result') {
+            if (msg.payload?.requestId && state.latestEditorRequestId && msg.payload.requestId !== state.latestEditorRequestId) {
+              return;
+            }
+            state.editorLoading = false;
+            state.editorError = '';
+            state.editorContent = msg.payload?.content || '';
+            syncEditorView();
+            return;
+          }
+
+          if (msg.type === 'sftp:writeText:result') {
+            state.editorSaving = false;
+            state.editorError = '';
+            state.editorContent = el.editorTextarea.value;
+            state.transferStatus = `已保存 ${state.editorFileName || '文件'}`;
+            syncEditorView();
+            loadFileList(state.fileCwd);
+            return;
+          }
+
+          if (msg.type === 'sftp:error') {
+            state.fileLoading = false;
+            state.uploadPending = false;
+            state.downloadPending = false;
+            state.deletePending = false;
+            state.renamePending = false;
+            state.createPending = false;
+            state.mkdirPending = false;
+            if (msg.payload?.action === 'readText') {
+              state.editorLoading = false;
+              state.editorError = msg.payload?.message || '读取文件失败';
+              syncEditorView();
+            }
+            if (msg.payload?.action === 'writeText') {
+              state.editorSaving = false;
+              state.editorError = msg.payload?.message || '保存文件失败';
+              syncEditorView();
+            }
+            state.fileError = msg.payload?.message || '文件操作失败';
+            state.transferStatus = `操作失败：${msg.payload?.message || '未知错误'}`;
+            renderAll();
+          }
+        });
+
+        ws.addEventListener('close', () => {
+          state.connected = false;
+          state.sftpReady = false;
+          if (state.status === '已连接') state.status = '未连接';
+          renderMeta();
+          renderSidePanel();
+          bindDynamicEvents();
+        });
+
+        ws.addEventListener('error', () => {
+          state.status = '未连接';
+          state.connected = false;
+          state.sftpReady = false;
+          setCurrentHostStatus('断开');
+          state.lines.push({ kind: 'system', text: 'WebSocket 连接失败' });
+          renderMeta();
+          renderTerminal();
+          renderHosts();
+          renderSidePanel();
+          bindDynamicEvents();
+        });
+      } catch (err) {
+        state.ws = null;
+        state.status = '本地预览';
+        state.connected = false;
+        state.lines.push({ kind: 'system', text: `连接初始化失败：${err.message}` });
+        renderMeta();
+        renderTerminal();
+      }
+    }
+
+    el.openConnect?.addEventListener('click', () => setModal(true));
+    el.openSettings?.addEventListener('click', () => {
+      state.lines.push({ kind: 'system', text: '设置面板后续可接入' });
+      renderAll();
+    });
+    el.closeModal?.addEventListener('click', () => setModal(false));
+    el.mAuth?.addEventListener('change', syncAuthFields);
+    el.saveModal?.addEventListener('click', () => {
+      state.connection = {
+        host: el.mHost.value.trim() || state.connection.host,
+        port: el.mPort.value.trim() || state.connection.port,
+        user: el.mUser.value.trim() || state.connection.user,
+        auth: el.mAuth.value || state.connection.auth,
+        password: el.mPassword.value || '',
+        keyPath: el.mKeyPath.value || '',
+      };
+      applyConnectionToCurrentHost();
+      setCurrentHostStatus('当前');
+      state.status = '已连接';
+      state.lines.push({ kind: 'system', text: `已保存连接 ${state.connection.host}:${state.connection.port}` });
+      setModal(false);
+      resetFileState(false);
+      renderAll();
+      connectWs(true);
+    });
+    el.modalMask.onclick = (event) => {
+      if (event.target === el.modalMask) setModal(false);
+    };
+
+    el.clearBtn?.addEventListener('click', () => {
+      state.lines = [{ kind: 'system', text: `已清屏 · ${state.currentHost.user}@${state.currentHost.name}` }];
+      renderAll();
+    });
+
+    el.copyBtn?.addEventListener('click', async () => {
+      const text = [...state.lines.map((line) => line.text), `${state.currentHost.user}@${state.currentHost.name}:~# ${state.input}`].join('\n');
+      try {
+        await navigator.clipboard.writeText(text);
+        state.lines.push({ kind: 'system', text: '终端内容已复制到剪贴板' });
+      } catch {
+        state.lines.push({ kind: 'system', text: '复制失败，请手动选择复制' });
+      }
+      renderAll();
+    });
+
+    el.reconnectBtn?.addEventListener('click', () => connectWs(true));
+    el.uploadInput?.addEventListener('change', async (event) => {
+      const files = event.target.files;
+      if (files?.length) {
+        await uploadFiles(files);
+      }
+    });
+    el.closeEditor?.addEventListener('click', () => closeEditor());
+    el.saveEditor?.addEventListener('click', () => saveEditorContent());
+    el.editorTextarea?.addEventListener('input', (event) => {
+      state.editorContent = event.target.value;
+    });
+    el.editorMask?.addEventListener('click', (event) => {
+      if (event.target === el.editorMask) closeEditor();
+    });
+    el.terminal.addEventListener('click', () => el.cmdInput.focus());
+    el.terminal.addEventListener('keydown', (e) => {
+      if (e.ctrlKey && e.key.toLowerCase() === 'l') {
+        e.preventDefault();
+        state.lines = [{ kind: 'system', text: `已清屏 · ${state.currentHost.user}@${state.currentHost.name}` }];
+        renderAll();
+        return;
+      }
+      if (e.key === 'Backspace') {
+        e.preventDefault();
+        if (state.cursor > 0) {
+          state.input = state.input.slice(0, state.cursor - 1) + state.input.slice(state.cursor);
+          state.cursor -= 1;
+          renderTerminal();
+          el.cmdInput.value = state.input;
+        }
+        return;
+      }
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        state.cursor = Math.max(0, state.cursor - 1);
+        renderTerminal();
+        return;
+      }
+      if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        state.cursor = Math.min(state.input.length, state.cursor + 1);
+        renderTerminal();
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (!state.history.length) return;
+        state.historyIndex = Math.max(0, state.historyIndex - 1);
+        state.input = state.history[state.historyIndex] ?? '';
+        state.cursor = state.input.length;
+        el.cmdInput.value = state.input;
+        renderTerminal();
+        return;
+      }
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        if (!state.history.length) return;
+        state.historyIndex = Math.min(state.history.length, state.historyIndex + 1);
+        state.input = state.history[state.historyIndex] ?? '';
+        state.cursor = state.input.length;
+        el.cmdInput.value = state.input;
+        renderTerminal();
+        return;
+      }
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        insertText('  ');
+        return;
+      }
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        executeCurrentInput();
+        return;
+      }
+      if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        insertText(e.key);
+      }
+    });
+
+    el.cmdForm.onsubmit = (e) => {
+      e.preventDefault();
+      executeCurrentInput();
+    };
+
+    el.cmdInput.oninput = (e) => {
+      state.input = e.target.value;
+      state.cursor = state.input.length;
+      renderTerminal();
+    };
+
+    el.cmdInput.onkeydown = (e) => {
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (!state.history.length) return;
+        state.historyIndex = Math.max(0, state.historyIndex - 1);
+        state.input = state.history[state.historyIndex] ?? '';
+        state.cursor = state.input.length;
+        el.cmdInput.value = state.input;
+        renderTerminal();
+      }
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        if (!state.history.length) return;
+        state.historyIndex = Math.min(state.history.length, state.historyIndex + 1);
+        state.input = state.history[state.historyIndex] ?? '';
+        state.cursor = state.input.length;
+        el.cmdInput.value = state.input;
+        renderTerminal();
+      }
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        el.cmdInput.value += '  ';
+        state.input = el.cmdInput.value;
+        state.cursor = state.input.length;
+        renderTerminal();
+      }
+      if (e.ctrlKey && e.key.toLowerCase() === 'l') {
+        e.preventDefault();
+        state.lines = [{ kind: 'system', text: `已清屏 · ${state.currentHost.user}@${state.currentHost.name}` }];
+        renderAll();
+      }
+    };
+
+    window.addEventListener('keydown', (e) => {
+      if (state.modalOpen && e.key === 'Escape') setModal(false);
+    });
+
+    function showView(view) {
+      const serial = view === 'serial';
+      el.sshView.style.display = serial ? 'none' : '';
+      el.serialView.classList.toggle('active', serial);
+      el.viewSshBtn.classList.toggle('active-tab', !serial);
+      el.viewSerialBtn.classList.toggle('active-tab', serial);
+      if (serial) {
+        if (!el.serialFrame.dataset.loaded) {
+          el.serialFrame.src = './serial/index.html';
+          el.serialFrame.dataset.loaded = '1';
+        }
+      } else {
+        setTimeout(() => el.cmdInput?.focus(), 0);
+      }
+    }
+
+    el.viewSshBtn?.addEventListener('click', () => showView('ssh'));
+    el.viewSerialBtn?.addEventListener('click', () => showView('serial'));
+
+    window.addEventListener('message', (event) => {
+      const data = event && event.data;
+      if (data && data.type === 'serial:back-to-ssh') {
+        showView('ssh');
+      }
+    });
+
+    renderAll();
+    initCodeEditor();
+    syncAuthFields();
+    syncEditorView();
+    connectWs(true);
+    el.cmdInput.focus();
+  </script>
+</body>
+</html>
