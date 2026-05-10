@@ -1,0 +1,223 @@
+WebSSH 独立版 部署与卸载步骤
+================================================
+
+当前离线包
+  dist/webssh-offline-linux-x64-v1.0.0-20260510082639.tar.gz
+  dist/webssh-offline-linux-x64-v1.0.0-20260510082639.tar.gz.sha256
+
+默认参数
+  目标机   192.168.0.22
+  账号     root / REDACTED_DEPLOY_PASS
+  端口     SSH 22，应用 HTTP 3010
+  安装目录 /opt/webssh
+  服务名   webssh（systemd，开机自启）
+
+
+================================================
+一、部署
+================================================
+
+场景 A：全新机器首次部署（推荐，一键）
+------------------------------------------------
+在本机执行，会自动上传 tar、校验 sha256、跑 install.sh、开防火墙、探活：
+
+  WEBSSH_HOST=192.168.0.22 \
+  WEBSSH_PORT=22 \
+  WEBSSH_USER=root \
+  WEBSSH_DEPLOY_PASS='REDACTED_DEPLOY_PASS' \
+  node scripts/deploy-fresh.js
+
+脚本自动做的事：
+  1. SSH 连到目标机，检查 systemctl 是否可用
+  2. 若 /opt/webssh 已存在，先停服务并备份为 /opt/webssh.bak-<时间戳>
+  3. 上传 dist/ 下最新 tar 包到 /root/，校验 sha256
+  4. 解压并运行 scripts/install.sh 安装
+  5. firewalld 启用时自动放通 3010/tcp
+  6. 探活 systemctl is-active + /health 必须返回 200
+  7. 清理 /root 下的 tar 和临时解压目录
+
+完成后浏览器访问：http://192.168.0.22:3010
+
+
+场景 B：升级已装机器（代码变更推送）
+------------------------------------------------
+仅同步 server.js/index.html/serial/node_modules，保留 /opt/webssh/config
+和日志，自动备份 app 目录，失败自动回滚：
+
+  WEBSSH_HOST=192.168.0.22 \
+  WEBSSH_DEPLOY_PASS='REDACTED_DEPLOY_PASS' \
+  node scripts/deploy-upgrade.js
+
+脚本自动做的事：
+  1. 本地打 tar（只含 app 层文件）
+  2. 上传 + sha256 校验
+  3. cp -a /opt/webssh/app /opt/webssh/app.bak-<时间戳>
+  4. 解压到 /opt/webssh/app/ 覆盖
+  5. systemctl restart webssh
+  6. is-active + /health 必须 200，否则自动回滚到 app.bak-*
+
+手动回滚（极少需要）：
+  rm -rf /opt/webssh/app
+  mv /opt/webssh/app.bak-<时间戳> /opt/webssh/app
+  systemctl restart webssh
+
+
+场景 C：在目标机上手工离线安装（无 Windows 侧脚本）
+------------------------------------------------
+1. 用任意方式把 tar 和 sha256 传到目标机的 /root/：
+     scp dist/webssh-offline-linux-x64-v1.0.0-20260510082639.tar.gz \
+         dist/webssh-offline-linux-x64-v1.0.0-20260510082639.tar.gz.sha256 \
+         root@192.168.0.22:/root/
+
+2. 登录目标机：
+     ssh root@192.168.0.22
+
+3. 校验 + 解压 + 安装：
+     cd /root
+     sha256sum -c webssh-offline-linux-x64-v1.0.0-20260510082639.tar.gz.sha256
+     tar -xzf webssh-offline-linux-x64-v1.0.0-20260510082639.tar.gz
+     cd webssh-offline-linux-x64-v1.0.0-20260510082639
+     chmod +x scripts/*.sh
+     ./scripts/install.sh --install-dir /opt/webssh \
+                          --service-name webssh \
+                          --port 3010
+
+4. 防火墙（仅 firewalld 启用时需要）：
+     firewall-cmd --permanent --add-port=3010/tcp
+     firewall-cmd --reload
+
+5. 验证：
+     systemctl is-active webssh
+     curl -s http://127.0.0.1:3010/health
+     # 期望输出：{"ok":true}
+
+
+================================================
+二、部署后验证
+================================================
+
+在目标机上：
+  systemctl is-enabled webssh       期望: enabled
+  systemctl is-active webssh        期望: active
+  curl -s http://127.0.0.1:3010/health    期望: {"ok":true}
+  ss -lntp | grep 3010              期望: node 进程监听
+
+浏览器：
+  http://192.168.0.22:3010
+  - 左上"设置"按钮能弹出设置面板
+  - 面板里"开机 docker 自动重启"开关可切换、保存后按钮短暂显示"已保存"
+  - 面板里时间戳是本地时间（2026-05-10 HH:mm:ss，而非 UTC Z 结尾）
+
+
+================================================
+三、常用运维命令
+================================================
+
+服务：
+  systemctl start    webssh
+  systemctl stop     webssh
+  systemctl restart  webssh
+  systemctl status   webssh --no-pager
+
+日志：
+  journalctl -u webssh -n 200 --no-pager
+  tail -f /opt/webssh/logs/webssh.out.log
+  tail -f /opt/webssh/logs/webssh.err.log
+  tail -f /opt/webssh/logs/docker-restart.log
+
+脚本快捷入口：
+  /opt/webssh/scripts/start.sh
+  /opt/webssh/scripts/stop.sh
+  /opt/webssh/scripts/status.sh
+  /opt/webssh/scripts/uninstall.sh
+
+配置文件（可直接改，重启 webssh 生效）：
+  /opt/webssh/config/.env                  端口/SSH 默认连接信息
+  /opt/webssh/config/install.env           安装时写入的元信息
+  /opt/webssh/config/docker-restart.json   docker 自动重启配置
+
+
+================================================
+四、卸载
+================================================
+
+前提：卸载命令需要 root 权限。
+
+方式 1：标准卸载（保留日志和配置，方便复装）
+------------------------------------------------
+  sudo /opt/webssh/scripts/uninstall.sh --keep-config --keep-logs
+
+脚本做的事：
+  1. 停止 webssh 服务
+  2. disable 开机自启，删除 /etc/systemd/system/webssh.service
+  3. systemctl daemon-reload
+  4. 删除 /opt/webssh/{app,runtime,scripts,systemd,run}
+  5. 因为加了两个 --keep-*，config 和 logs 目录保留
+
+之后目标机上：
+  ls /opt/webssh                  只剩 config 和 logs
+  systemctl status webssh         Unit webssh.service could not be found.
+
+
+方式 2：彻底卸载
+------------------------------------------------
+  sudo /opt/webssh/scripts/uninstall.sh
+
+脚本会把 /opt/webssh 里的 app/runtime/scripts/systemd/run/config/logs 全删，
+目录为空时自动 rmdir。
+
+
+方式 3：手工兜底（脚本缺失或残留时）
+------------------------------------------------
+  systemctl stop webssh
+  systemctl disable webssh
+  rm -f /etc/systemd/system/webssh.service
+  systemctl daemon-reload
+  rm -rf /opt/webssh
+  # 清掉历史备份（按需）：
+  rm -rf /opt/webssh.bak-*
+
+
+防火墙清理（可选）
+------------------------------------------------
+如果不再需要 3010 端口对外开放：
+  firewall-cmd --permanent --remove-port=3010/tcp
+  firewall-cmd --reload
+  firewall-cmd --list-ports          确认 3010 已消失
+
+
+卸载后验证
+------------------------------------------------
+  systemctl status webssh            期望: Unit could not be found
+  ss -lntp | grep 3010               期望: 无输出
+  ls /opt/webssh 2>/dev/null         期望: 目录不存在或只剩保留的子目录
+
+
+================================================
+五、常见问题排查
+================================================
+
+1. 部署脚本报 "目标目录缺失 /opt/webssh/app"
+   原因：deploy-upgrade.js 只能升级已装机器，新机要用 deploy-fresh.js。
+
+2. 离线包在服务器上打包时报 "缺 .env.example 模板"
+   原因：install.sh 只留 .env 不留 .env.example。
+   处理：把仓库里的 config/.env.example 上传到 /opt/webssh/config/ 再打包。
+
+3. systemctl is-active 返回 activating 或 failed
+   处理：journalctl -u webssh -n 100 --no-pager 看错误；
+         常见是 /opt/webssh/runtime/node/bin/node 缺少执行权限，
+         或 /opt/webssh/config/.env 被改错。
+
+4. 浏览器打不开 http://host:3010
+   依次排查：
+     systemctl is-active webssh
+     curl -s http://127.0.0.1:3010/health    先本机通
+     ss -lntp | grep 3010                    端口是否被监听
+     firewall-cmd --list-ports               防火墙是否放通
+     若跨网段，检查上游路由/安全组
+
+5. 设置页的"立即执行"弹窗一直提示失败
+   看 stderr 里原文。常见：
+     "Unit docker.service not found"       目标机没装 docker
+     "Failed to restart docker.service"    docker 装了但 service 单元异常

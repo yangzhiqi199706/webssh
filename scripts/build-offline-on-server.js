@@ -96,8 +96,8 @@ async function main() {
   const conn = await connect();
 
   try {
-    // 先做关键前置检查：app/node_modules / runtime / release 目录都存在
-    await exec(conn, `test -d /opt/webssh/app && test -d /opt/webssh/app/node_modules && test -x /opt/webssh/runtime/node/bin/node && test -d /opt/webssh/release/webssh-offline-linux-x64-v1.0.0/scripts && echo 前置检查通过`);
+    // 前置检查：app/node_modules / runtime / /opt/webssh 下的 scripts systemd 都要就位
+    await exec(conn, `test -d /opt/webssh/app && test -d /opt/webssh/app/node_modules && test -x /opt/webssh/runtime/node/bin/node && test -f /opt/webssh/scripts/install.sh && test -f /opt/webssh/systemd/webssh.service.template && echo 前置检查通过`);
 
     // 准备打包目录
     await exec(conn, `mkdir -p ${STAGE_ROOT} ${RELEASE_DIR}`);
@@ -106,15 +106,16 @@ async function main() {
 
     // app 内容（当前正在运行的版本）
     await exec(conn, `cp -a /opt/webssh/app/server.js /opt/webssh/app/index.html /opt/webssh/app/package.json /opt/webssh/app/package-lock.json ${STAGE_DIR}/app/`);
-    await exec(conn, `cp -a /opt/webssh/app/serial ${STAGE_DIR}/app/`);
+    await exec(conn, `cp -a /opt/webssh/app/serial ${STAGE_DIR}/app/ 2>/dev/null || true`);
     await exec(conn, `cp -a /opt/webssh/app/node_modules ${STAGE_DIR}/app/`);
-    // README.txt 可能在 app 里也可能在老 release 里
-    await exec(conn, `cp -a /opt/webssh/app/README.txt ${STAGE_DIR}/app/ 2>/dev/null || cp -a /opt/webssh/release/webssh-offline-linux-x64-v1.0.0/app/README.txt ${STAGE_DIR}/app/ 2>/dev/null || true`);
+    // README.txt 可选
+    await exec(conn, `cp -a /opt/webssh/app/README.txt ${STAGE_DIR}/app/ 2>/dev/null || true`);
 
-    // scripts / systemd / config 从原离线包拷（这些文件本地仓库没有）
-    await exec(conn, `cp -a /opt/webssh/release/webssh-offline-linux-x64-v1.0.0/scripts/. ${STAGE_DIR}/scripts/`);
-    await exec(conn, `cp -a /opt/webssh/release/webssh-offline-linux-x64-v1.0.0/systemd/. ${STAGE_DIR}/systemd/`);
-    await exec(conn, `cp -a /opt/webssh/release/webssh-offline-linux-x64-v1.0.0/config/. ${STAGE_DIR}/config/`);
+    // scripts / systemd 直接从 /opt/webssh 下拷（install.sh 已经把它们铺到这里）
+    await exec(conn, `cp -a /opt/webssh/scripts/. ${STAGE_DIR}/scripts/`);
+    await exec(conn, `cp -a /opt/webssh/systemd/. ${STAGE_DIR}/systemd/`);
+    // config 需要的是 .env.example 模板；如果 /opt/webssh/config 里没有，就从 install.sh 留下的运行态 .env 里不要，而是用仓库里的 .env.example
+    await exec(conn, `if [ -f /opt/webssh/config/.env.example ]; then cp -a /opt/webssh/config/.env.example ${STAGE_DIR}/config/; else echo 缺 .env.example 模板，需先放到 /opt/webssh/config/; exit 1; fi`);
 
     // Node runtime（官方目录整包）
     await exec(conn, `cp -a /opt/webssh/runtime/node ${STAGE_DIR}/runtime/node`);

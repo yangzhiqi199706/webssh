@@ -599,6 +599,49 @@
     </div>
   </div>
 
+  <div class="modal-mask" id="settingsMask" aria-hidden="true">
+    <div class="modal">
+      <div class="modal-head">
+        <div>
+          <div class="head-title">设置</div>
+          <div class="head-sub">本机 docker 自动重启</div>
+        </div>
+        <button class="btn" id="closeSettings">关闭</button>
+      </div>
+      <div class="form">
+        <div class="grid2">
+          <label class="field">
+            <span>开机后自动重启 docker</span>
+            <select id="drEnabled">
+              <option value="0">关闭</option>
+              <option value="1">开启</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>倒计时（秒，10-3600）</span>
+            <input id="drCountdown" type="number" min="10" max="3600" step="1" />
+          </label>
+        </div>
+        <div class="field">
+          <span>当前状态</span>
+          <div id="drStatus" style="font-size:13px;color:#cbd5e1;padding:8px 10px;background:#0b1220;border:1px solid #1f2937;border-radius:10px;min-height:20px">未加载</div>
+        </div>
+        <div class="field">
+          <span>上次执行结果</span>
+          <div id="drLastResult" style="font-size:12px;color:#94a3b8;padding:8px 10px;background:#0b1220;border:1px solid #1f2937;border-radius:10px;min-height:20px;white-space:pre-wrap;word-break:break-all">无</div>
+        </div>
+        <div style="display:flex;justify-content:space-between;gap:10px;padding-top:4px;flex-wrap:wrap">
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn" id="drCancel" type="button">取消倒计时</button>
+            <button class="btn" id="drRestartCountdown" type="button">重新倒计时</button>
+            <button class="btn" id="drTrigger" type="button">立即执行</button>
+          </div>
+          <button class="btn primary" id="drSave" type="button">保存</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script src="./node_modules/codemirror/lib/codemirror.js"></script>
   <script src="./node_modules/codemirror/mode/javascript/javascript.js"></script>
   <script src="./node_modules/codemirror/mode/css/css.js"></script>
@@ -753,6 +796,16 @@
       footerHost: document.getElementById('footerHost'),
       openConnect: document.getElementById('openConnect'),
       openSettings: document.getElementById('openSettings'),
+      closeSettings: document.getElementById('closeSettings'),
+      settingsMask: document.getElementById('settingsMask'),
+      drEnabled: document.getElementById('drEnabled'),
+      drCountdown: document.getElementById('drCountdown'),
+      drStatus: document.getElementById('drStatus'),
+      drLastResult: document.getElementById('drLastResult'),
+      drCancel: document.getElementById('drCancel'),
+      drRestartCountdown: document.getElementById('drRestartCountdown'),
+      drTrigger: document.getElementById('drTrigger'),
+      drSave: document.getElementById('drSave'),
       closeModal: document.getElementById('closeModal'),
       saveModal: document.getElementById('saveModal'),
       clearBtn: document.getElementById('clearBtn'),
@@ -1340,6 +1393,102 @@
       }
     }
 
+    let drRefreshTimer = null;
+    function openSettings() {
+      if (!el.settingsMask) return;
+      el.settingsMask.classList.add('open');
+      el.settingsMask.setAttribute('aria-hidden', 'false');
+      refreshDockerRestart(false);
+      if (drRefreshTimer) clearInterval(drRefreshTimer);
+      // 定时刷新只更新"当前状态/上次结果"，不覆盖正在输入的开关和秒数
+      drRefreshTimer = setInterval(() => refreshDockerRestart(true), 1000);
+    }
+    function closeSettings() {
+      if (!el.settingsMask) return;
+      el.settingsMask.classList.remove('open');
+      el.settingsMask.setAttribute('aria-hidden', 'true');
+      if (drRefreshTimer) { clearInterval(drRefreshTimer); drRefreshTimer = null; }
+    }
+    async function refreshDockerRestart(preserveInputs) {
+      try {
+        const resp = await fetch('/api/docker-restart/config');
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const data = await resp.json();
+        renderDockerRestart(data, preserveInputs);
+      } catch (err) {
+        if (el.drStatus) el.drStatus.textContent = '加载失败：' + err.message;
+      }
+    }
+    function renderDockerRestart(data, preserveInputs) {
+      if (!preserveInputs) {
+        if (el.drEnabled) el.drEnabled.value = data.enabled ? '1' : '0';
+        if (el.drCountdown) el.drCountdown.value = String(data.countdownSec);
+      }
+      if (el.drStatus) {
+        const parts = [];
+        parts.push(data.enabled ? '开启' : '关闭');
+        if (data.counting) parts.push(`倒计时中，剩余 ${data.remainingSec}s`);
+        else if (data.running) parts.push('正在执行 systemctl restart docker');
+        else if (data.enabled) parts.push('待下一次服务启动触发');
+        el.drStatus.textContent = parts.join(' · ');
+      }
+      if (el.drLastResult) {
+        const r = data.lastResult;
+        if (!r) {
+          el.drLastResult.textContent = '无';
+        } else {
+          el.drLastResult.textContent = [
+            `${r.ok ? '成功' : '失败'}  exit=${r.exitCode}  trigger=${r.trigger}`,
+            `开始：${r.startedAt}`,
+            `结束：${r.finishedAt}`,
+            r.stderr ? 'stderr: ' + r.stderr.trim() : '',
+          ].filter(Boolean).join('\n');
+        }
+      }
+    }
+    async function saveDockerRestart() {
+      const enabled = el.drEnabled?.value === '1';
+      const countdownSec = Number(el.drCountdown?.value || 60);
+      if (!Number.isFinite(countdownSec) || countdownSec < 10 || countdownSec > 3600) {
+        alert('倒计时必须是 10-3600 秒之间的整数');
+        return;
+      }
+      const btn = el.drSave;
+      const oldText = btn ? btn.textContent : '';
+      if (btn) { btn.disabled = true; btn.textContent = '保存中...'; }
+      try {
+        const resp = await fetch('/api/docker-restart/config', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled, countdownSec }),
+        });
+        if (!resp.ok) {
+          let detail = 'HTTP ' + resp.status;
+          try { detail += ' ' + (await resp.text()); } catch (_e) {}
+          throw new Error(detail);
+        }
+        const data = await resp.json();
+        renderDockerRestart(data, true);
+        if (btn) {
+          btn.textContent = '已保存';
+          setTimeout(() => { btn.textContent = oldText; btn.disabled = false; }, 1200);
+        }
+      } catch (err) {
+        if (btn) { btn.textContent = oldText; btn.disabled = false; }
+        alert('保存失败：' + err.message);
+      }
+    }
+    async function postDockerRestart(url) {
+      try {
+        const resp = await fetch(url, { method: 'POST' });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const data = await resp.json();
+        renderDockerRestart(data, true);
+      } catch (err) {
+        alert('操作失败：' + err.message);
+      }
+    }
+
     function sendWs(message) {
       if (state.ws && state.ws.readyState === WebSocket.OPEN) {
         state.ws.send(JSON.stringify(message));
@@ -1917,9 +2066,40 @@
     }
 
     el.openConnect?.addEventListener('click', () => setModal(true));
-    el.openSettings?.addEventListener('click', () => {
-      state.lines.push({ kind: 'system', text: '设置面板后续可接入' });
-      renderAll();
+    el.openSettings?.addEventListener('click', () => openSettings());
+    el.closeSettings?.addEventListener('click', () => closeSettings());
+    el.settingsMask?.addEventListener('click', (event) => {
+      if (event.target === el.settingsMask) closeSettings();
+    });
+    el.drSave?.addEventListener('click', () => saveDockerRestart());
+    el.drCancel?.addEventListener('click', () => postDockerRestart('/api/docker-restart/cancel'));
+    el.drRestartCountdown?.addEventListener('click', () => postDockerRestart('/api/docker-restart/restart-countdown'));
+    el.drTrigger?.addEventListener('click', async () => {
+      if (!confirm('将立即执行 systemctl restart docker，docker 会短暂重启，确认继续？')) return;
+      const btn = el.drTrigger;
+      const oldText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = '执行中...';
+      try {
+        const resp = await fetch('/api/docker-restart/trigger', { method: 'POST' });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const data = await resp.json();
+        renderDockerRestart(data, true);
+        const r = data.lastResult;
+        if (r && r.ok) {
+          alert('重启成功\nexit=' + r.exitCode + '\n结束：' + r.finishedAt);
+        } else if (r) {
+          const detail = (r.stderr || r.stdout || '').trim() || '（命令无输出）';
+          alert('重启失败\nexit=' + r.exitCode + '\n' + detail);
+        } else {
+          alert('重启失败：未返回执行结果');
+        }
+      } catch (err) {
+        alert('请求失败：' + err.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = oldText;
+      }
     });
     el.closeModal?.addEventListener('click', () => setModal(false));
     el.mAuth?.addEventListener('change', syncAuthFields);
