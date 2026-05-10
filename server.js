@@ -945,6 +945,200 @@ wssSerial.on('connection', function (ws) {
   });
 });
 
+// ===== docker 自动重启模块 =====
+// 目的：解决系统开机后 docker 偶发启动异常——服务起来时若启用，倒计时后本机执行 systemctl restart docker。
+(function setupDockerRestart() {
+  const path = require('path');
+
+  const DEFAULT_CONFIG_PATH = path.join(__dirname, '..', 'config', 'docker-restart.json');
+  const CONFIG_PATH = process.env.DOCKER_RESTART_CONFIG || DEFAULT_CONFIG_PATH;
+  const LOG_PATH = process.env.DOCKER_RESTART_LOG
+    || path.join(__dirname, '..', 'logs', 'docker-restart.log');
+  const MIN_SEC = 10;
+  const MAX_SEC = 3600;
+
+  const defaults = { enabled: false, countdownSec: 60, lastResult: null };
+  let config = Object.assign({}, defaults);
+  let timer = null;
+  let deadlineMs = 0;
+  let running = false;
+
+  // 服务器本地时间字符串 "YYYY-MM-DD HH:mm:ss"，避免落盘/推给前端的是 UTC（Z 结尾）跟实际差 8 小时
+  function localStamp(d) {
+    d = d || new Date();
+    const pad = function (n) { return String(n).padStart(2, '0'); };
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
+      + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+  }
+
+  function readConfig() {
+    try {
+      const raw = fs.readFileSync(CONFIG_PATH, 'utf8');
+      const parsed = JSON.parse(raw);
+      config = {
+        enabled: Boolean(parsed.enabled),
+        countdownSec: clampSec(Number(parsed.countdownSec) || defaults.countdownSec),
+        lastResult: parsed.lastResult || null,
+      };
+    } catch (_err) {
+      config = Object.assign({}, defaults);
+    }
+  }
+
+  function writeConfig() {
+    try {
+      fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
+      fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2) + '\n', 'utf8');
+    } catch (err) {
+      console.error('[docker-restart] 写配置失败:', err.message);
+    }
+  }
+
+  function clampSec(v) {
+    if (!Number.isFinite(v)) return defaults.countdownSec;
+    return Math.max(MIN_SEC, Math.min(MAX_SEC, Math.floor(v)));
+  }
+
+  function appendLog(line) {
+    const stamp = localStamp();
+    try {
+      fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true });
+      fs.appendFileSync(LOG_PATH, `[${stamp}] ${line}\n`, 'utf8');
+    } catch (_err) {}
+  }
+
+  function cancelTimer(reason) {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+      deadlineMs = 0;
+      appendLog(`倒计时取消：${reason || ''}`.trim());
+    }
+  }
+
+  function scheduleCountdown(reason) {
+    cancelTimer('replaced');
+    if (!config.enabled) return;
+    const sec = config.countdownSec;
+    deadlineMs = Date.now() + sec * 1000;
+    appendLog(`倒计时开始：${sec}s，触发来源=${reason || 'unknown'}`);
+    timer = setTimeout(function () {
+      timer = null;
+      deadlineMs = 0;
+      runRestart('countdown');
+    }, sec * 1000);
+  }
+
+  function runRestart(trigger) {
+    if (running) return Promise.resolve({ ok: false, message: 'already-running' });
+    running = true;
+    const startedAt = localStamp();
+    appendLog(`执行 systemctl restart docker（触发=${trigger}）`);
+    return new Promise(function (resolve) {
+      const child = spawn('systemctl', ['restart', 'docker']);
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', function (b) { stdout += b.toString('utf8'); });
+      child.stderr.on('data', function (b) { stderr += b.toString('utf8'); });
+      child.on('close', function (code) {
+        running = false;
+        const ok = code === 0;
+        const finishedAt = localStamp();
+        const result = {
+          ok: ok,
+          exitCode: code,
+          trigger: trigger,
+          startedAt: startedAt,
+          finishedAt: finishedAt,
+          stdout: stdout.slice(-2000),
+          stderr: stderr.slice(-2000),
+        };
+        config.lastResult = result;
+        writeConfig();
+        appendLog(`执行完成 exit=${code} ok=${ok}`);
+        resolve(result);
+      });
+      child.on('error', function (err) {
+        running = false;
+        const result = {
+          ok: false,
+          exitCode: null,
+          trigger: trigger,
+          startedAt: startedAt,
+          finishedAt: localStamp(),
+          stdout: '',
+          stderr: 'spawn error: ' + err.message,
+        };
+        config.lastResult = result;
+        writeConfig();
+        appendLog(`执行错误：${err.message}`);
+        resolve(result);
+      });
+    });
+  }
+
+  function publicState() {
+    const remainingMs = deadlineMs ? Math.max(0, deadlineMs - Date.now()) : 0;
+    return {
+      enabled: config.enabled,
+      countdownSec: config.countdownSec,
+      counting: Boolean(timer),
+      remainingSec: Math.ceil(remainingMs / 1000),
+      running: running,
+      lastResult: config.lastResult,
+    };
+  }
+
+  app.use(express.json({ limit: '32kb' }));
+
+  app.get('/api/docker-restart/config', function (_req, res) {
+    res.json(publicState());
+  });
+
+  app.put('/api/docker-restart/config', function (req, res) {
+    const body = req.body || {};
+    const prevEnabled = config.enabled;
+    if (typeof body.enabled === 'boolean') config.enabled = body.enabled;
+    if (body.countdownSec !== undefined) config.countdownSec = clampSec(Number(body.countdownSec));
+    writeConfig();
+    if (!config.enabled) {
+      cancelTimer('config-disabled');
+    } else if (!prevEnabled && config.enabled) {
+      scheduleCountdown('config-enabled');
+    }
+    res.json(publicState());
+  });
+
+  app.post('/api/docker-restart/cancel', function (_req, res) {
+    cancelTimer('user-cancel');
+    res.json(publicState());
+  });
+
+  app.post('/api/docker-restart/trigger', function (_req, res) {
+    cancelTimer('manual-trigger');
+    runRestart('manual').then(function () { res.json(publicState()); });
+  });
+
+  app.post('/api/docker-restart/restart-countdown', function (_req, res) {
+    scheduleCountdown('manual-restart');
+    res.json(publicState());
+  });
+
+  app.get('/api/docker-restart/log', function (_req, res) {
+    try {
+      const raw = fs.readFileSync(LOG_PATH, 'utf8');
+      const tail = raw.split('\n').slice(-200).join('\n');
+      res.type('text/plain').send(tail);
+    } catch (_err) {
+      res.type('text/plain').send('');
+    }
+  });
+
+  readConfig();
+  if (config.enabled) scheduleCountdown('service-start');
+  appendLog(`服务启动，enabled=${config.enabled} countdown=${config.countdownSec}s`);
+})();
+
 const port = Number(process.env.PORT || 3000);
 server.listen(port, function () {
   console.log('Web SSH running at http://0.0.0.0:' + port);
