@@ -19,6 +19,9 @@
       --green: #34d399;
       --amber: #fbbf24;
       --shadow: 0 24px 80px rgba(2, 6, 23, .6);
+      --term-font-size: 13px;
+      --term-line-height: 1.7;
+      --content-pad: 16px;
     }
     * { box-sizing: border-box; }
     html, body { height: 100%; }
@@ -31,6 +34,65 @@
     button, input, select { font: inherit; }
     button { cursor: pointer; }
     .app { height: 100vh; display: flex; flex-direction: column; }
+    .body-row { flex: 1; min-height: 0; display: flex; overflow: hidden; }
+    .view-container { flex: 1; min-width: 0; min-height: 0; display: flex; }
+    .menu-bar {
+      width: 88px;
+      flex-shrink: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 14px 10px;
+      background: rgba(2, 6, 23, .95);
+      border-right: 1px solid var(--border);
+      overflow: auto;
+    }
+    .menu-item {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 10px 6px;
+      border-radius: 12px;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.2;
+      text-align: center;
+      cursor: pointer;
+      transition: .18s ease;
+    }
+    .menu-item:hover { background: #111827; color: var(--text); border-color: #334155; }
+    .menu-item.active {
+      background: rgba(34, 211, 238, .12);
+      border-color: rgba(34, 211, 238, .28);
+      color: #cffafe;
+    }
+    .menu-icon {
+      width: 40px; height: 40px; border-radius: 12px;
+      display: grid; place-items: center;
+      background: rgba(148, 163, 184, .12);
+      color: #cbd5e1;
+      font-weight: 700;
+      font-size: 12px;
+      letter-spacing: .04em;
+    }
+    .menu-item.active .menu-icon { background: rgba(34, 211, 238, .2); color: #67e8f9; }
+    .menu-label { font-size: 11px; }
+    body.menu-icon-only .menu-bar { width: 64px; }
+    body.menu-icon-only .menu-label { display: none; }
+    body.menu-icon-only .menu-item { padding: 8px 4px; }
+    body.sidebar-collapsed .sidebar { width: 0; min-width: 0; border-right: 0; overflow: hidden; }
+    /* ANSI 颜色（只有在启用"保留 ANSI 颜色"时才生效：通过 HTML span class） */
+    .ansi-30 { color: #475569; } .ansi-31 { color: #f87171; } .ansi-32 { color: #34d399; }
+    .ansi-33 { color: #fbbf24; } .ansi-34 { color: #60a5fa; } .ansi-35 { color: #c084fc; }
+    .ansi-36 { color: #22d3ee; } .ansi-37 { color: #e5e7eb; }
+    .ansi-90 { color: #64748b; } .ansi-91 { color: #fca5a5; } .ansi-92 { color: #6ee7b7; }
+    .ansi-93 { color: #fcd34d; } .ansi-94 { color: #93c5fd; } .ansi-95 { color: #d8b4fe; }
+    .ansi-96 { color: #67e8f9; } .ansi-97 { color: #f1f5f9; }
+    .ansi-bold { font-weight: 700; }
     .topbar, .footer, .card, .terminal-card { backdrop-filter: blur(10px); }
     .topbar {
       height: 64px;
@@ -80,6 +142,12 @@
     .btn:hover { border-color: #475569; background: #111827; }
     .btn.primary { background: #06b6d4; color: #082f49; border-color: transparent; font-weight: 700; }
     .btn.primary:hover { background: #22d3ee; }
+    #openSettings { display: inline-flex; align-items: center; gap: 8px; }
+    .top-dot { width: 8px; height: 8px; border-radius: 50%; background: #64748b; flex-shrink: 0; }
+    .top-dot.on { background: var(--green); box-shadow: 0 0 0 3px rgba(52, 211, 153, .18); }
+    .top-dot.counting { background: var(--amber); animation: blink 1.2s step-end infinite; }
+    .top-dot.running { background: var(--cyan); }
+    .top-sub { color: var(--muted); font-size: 12px; }
     .layout { flex: 1; min-height: 0; display: flex; overflow: hidden; }
     .sidebar {
       width: 320px;
@@ -133,7 +201,7 @@
     .tab { border: 0; border-radius: 10px; padding: 9px 13px; background: transparent; color: var(--muted); }
     .tab.active { background: #1e293b; color: #e2e8f0; }
     .meta { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 13px; flex-wrap: wrap; }
-    .content { flex: 1; min-height: 0; padding: 16px; }
+    .content { flex: 1; min-height: 0; padding: var(--content-pad); }
     .grid { display: grid; grid-template-columns: minmax(0, 1fr) 460px; gap: 16px; height: 100%; }
     .terminal-card, .card {
       border: 1px solid var(--border);
@@ -162,8 +230,8 @@
       background: #0b1020;
       overflow: auto;
       font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-      font-size: 13px;
-      line-height: 1.7;
+      font-size: var(--term-font-size);
+      line-height: var(--term-line-height);
       white-space: pre-wrap;
       word-break: break-word;
     }
@@ -420,6 +488,50 @@
     }
     .field input:focus, .field select:focus { border-color: rgba(34, 211, 238, .6); box-shadow: 0 0 0 3px rgba(34, 211, 238, .12); }
     .grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .settings-modal { width: min(880px, 100%); max-height: min(82vh, 760px); display: flex; flex-direction: column; overflow: hidden; }
+    .settings-body { display: flex; min-height: 0; flex: 1; }
+    .settings-tabs {
+      width: 168px; flex-shrink: 0;
+      border-right: 1px solid var(--border);
+      padding: 14px 10px;
+      display: flex; flex-direction: column; gap: 4px;
+      overflow: auto;
+      background: rgba(2, 6, 23, .5);
+    }
+    .settings-tab {
+      border: 1px solid transparent; background: transparent;
+      color: var(--muted); text-align: left;
+      padding: 10px 12px; border-radius: 10px;
+      font-size: 13px; cursor: pointer; transition: .15s ease;
+    }
+    .settings-tab:hover { background: #111827; color: var(--text); }
+    .settings-tab.active {
+      background: rgba(34, 211, 238, .12);
+      border-color: rgba(34, 211, 238, .28);
+      color: #cffafe;
+    }
+    .settings-pane { flex: 1; overflow: auto; padding: 18px 20px; min-width: 0; }
+    .settings-section { display: none; }
+    .settings-section.active { display: block; }
+    .settings-section-title { font-size: 15px; font-weight: 700; color: #e2e8f0; margin: 0 0 14px; }
+    .settings-section-desc { color: var(--muted); font-size: 12px; margin: -8px 0 16px; }
+    .settings-card {
+      border: 1px solid var(--border); border-radius: 14px;
+      background: rgba(2, 6, 23, .4); padding: 16px;
+    }
+    .settings-card + .settings-card { margin-top: 12px; }
+    .settings-placeholder { border: 1px dashed #334155; border-radius: 14px; padding: 20px; color: var(--muted); font-size: 13px; background: rgba(2, 6, 23, .4); }
+    .settings-placeholder h4 { margin: 0 0 10px; color: #e2e8f0; font-size: 14px; }
+    .settings-placeholder ul { margin: 8px 0 0; padding-left: 18px; line-height: 1.9; }
+    .settings-placeholder .soon { display: inline-block; margin-left: 8px; padding: 1px 7px; border-radius: 999px; font-size: 11px; color: #fcd34d; background: rgba(251, 191, 36, .14); }
+    .about-grid { display: grid; grid-template-columns: minmax(120px, max-content) 1fr; gap: 8px 16px; font-size: 13px; }
+    .about-grid .k { color: var(--muted); }
+    .about-grid .v { color: #e2e8f0; word-break: break-all; }
+    @media (max-width: 640px) {
+      .settings-body { flex-direction: column; }
+      .settings-tabs { width: 100%; flex-direction: row; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--border); }
+      .settings-tab { flex-shrink: 0; }
+    }
     .sidebar-scroll::-webkit-scrollbar, .terminal::-webkit-scrollbar, .file-list::-webkit-scrollbar, .tabs::-webkit-scrollbar {
       width: 10px;
       height: 10px;
@@ -441,6 +553,9 @@
       .content { padding: 12px; }
       .topbar { padding: 0 12px; }
       .tabsbar { height: auto; padding: 12px; flex-direction: column; align-items: flex-start; }
+      .menu-bar { width: 72px; padding: 10px 6px; }
+      .menu-item { padding: 8px 4px; }
+      .menu-icon { width: 34px; height: 34px; }
     }
     .serial-view {
       flex: 1;
@@ -454,12 +569,6 @@
       height: 100%;
       border: 0;
       display: block;
-    }
-    .btn.active-tab {
-      background: #06b6d4;
-      color: #082f49;
-      border-color: transparent;
-      font-weight: 700;
     }
   </style>
 </head>
@@ -475,14 +584,21 @@
       </div>
       <div class="top-actions">
         <div class="badge"><span class="dot"></span><span id="statusText">未连接</span></div>
-        <button class="btn active-tab" id="viewSshBtn" title="SSH 终端">SSH 终端</button>
-        <button class="btn" id="viewSerialBtn" title="通过浏览器 WebSerial 连接本地串口设备">串口调试</button>
         <button class="btn primary" id="openConnect">新建连接</button>
-        <button class="btn" id="openSettings">设置</button>
+        <button class="btn" id="openDocker" title="本机 docker 自动重启">
+          <span id="drTopDot" class="top-dot" aria-hidden="true"></span>
+          <span>Docker 重启</span>
+          <span id="drTopState" class="top-sub"></span>
+        </button>
+        <button class="btn" id="openSettings" title="设置">设置</button>
       </div>
     </header>
 
-    <div class="layout" id="sshView">
+    <div class="body-row">
+      <nav class="menu-bar" id="menuBar" aria-label="功能菜单"></nav>
+
+      <div class="view-container">
+        <div class="layout" id="sshView">
       <aside class="sidebar">
         <div class="sidebar-section">
           <div class="section-title">主机列表</div>
@@ -544,6 +660,11 @@
     <div class="serial-view" id="serialView">
       <iframe id="serialFrame" title="串口调试" allow="serial" loading="lazy" src="about:blank"></iframe>
     </div>
+    <div class="serial-view" id="smsView">
+      <iframe id="smsFrame" title="信创短信猫" loading="lazy" src="about:blank"></iframe>
+    </div>
+      </div>
+    </div>
 
     <footer class="footer">
       <div id="footerHost">当前会话：prod-01</div>
@@ -600,43 +721,299 @@
   </div>
 
   <div class="modal-mask" id="settingsMask" aria-hidden="true">
-    <div class="modal">
+    <div class="modal settings-modal">
       <div class="modal-head">
         <div>
           <div class="head-title">设置</div>
-          <div class="head-sub">本机 docker 自动重启</div>
+          <div class="head-sub">项目偏好与运维开关</div>
         </div>
         <button class="btn" id="closeSettings">关闭</button>
       </div>
-      <div class="form">
-        <div class="grid2">
-          <label class="field">
-            <span>开机后自动重启 docker</span>
-            <select id="drEnabled">
-              <option value="0">关闭</option>
-              <option value="1">开启</option>
-            </select>
-          </label>
-          <label class="field">
-            <span>倒计时（秒，10-3600）</span>
-            <input id="drCountdown" type="number" min="10" max="3600" step="1" />
-          </label>
-        </div>
-        <div class="field">
-          <span>当前状态</span>
-          <div id="drStatus" style="font-size:13px;color:#cbd5e1;padding:8px 10px;background:#0b1220;border:1px solid #1f2937;border-radius:10px;min-height:20px">未加载</div>
-        </div>
-        <div class="field">
-          <span>上次执行结果</span>
-          <div id="drLastResult" style="font-size:12px;color:#94a3b8;padding:8px 10px;background:#0b1220;border:1px solid #1f2937;border-radius:10px;min-height:20px;white-space:pre-wrap;word-break:break-all">无</div>
-        </div>
-        <div style="display:flex;justify-content:space-between;gap:10px;padding-top:4px;flex-wrap:wrap">
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <button class="btn" id="drCancel" type="button">取消倒计时</button>
-            <button class="btn" id="drRestartCountdown" type="button">重新倒计时</button>
-            <button class="btn" id="drTrigger" type="button">立即执行</button>
-          </div>
-          <button class="btn primary" id="drSave" type="button">保存</button>
+      <div class="settings-body">
+        <nav class="settings-tabs" id="settingsTabs" aria-label="设置分类"></nav>
+        <div class="settings-pane" id="settingsPane">
+
+          <section class="settings-section" data-pane="appearance">
+            <h3 class="settings-section-title">外观</h3>
+            <div class="settings-section-desc">界面主题、字号、布局偏好</div>
+            <div class="settings-card">
+              <div class="grid2">
+                <label class="field">
+                  <span>左侧菜单栏显示</span>
+                  <select id="optMenuMode">
+                    <option value="full">图标 + 文字</option>
+                    <option value="icon">仅图标</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>侧边栏（主机列表）</span>
+                  <select id="optSidebarCollapsed">
+                    <option value="0">展开</option>
+                    <option value="1">收起</option>
+                  </select>
+                </label>
+              </div>
+              <div class="grid2" style="margin-top:10px">
+                <label class="field">
+                  <span>界面密度</span>
+                  <select id="optDensity">
+                    <option value="compact">紧凑</option>
+                    <option value="normal">默认</option>
+                    <option value="loose">宽松</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+            <div class="settings-placeholder" style="margin-top:14px">
+              <h4>规划中 <span class="soon">Soon</span></h4>
+              <ul><li>深色 / 浅色主题切换</li></ul>
+            </div>
+          </section>
+
+          <section class="settings-section" data-pane="terminal">
+            <h3 class="settings-section-title">终端</h3>
+            <div class="settings-section-desc">字号、颜色、滚动、历史缓冲</div>
+            <div class="settings-card">
+              <div class="grid2">
+                <label class="field">
+                  <span>字号（12-18）</span>
+                  <input id="optTermFontSize" type="number" min="12" max="18" step="1" />
+                </label>
+                <label class="field">
+                  <span>行高（1.2-2.0）</span>
+                  <input id="optTermLineHeight" type="number" min="1.2" max="2.0" step="0.1" />
+                </label>
+              </div>
+              <div class="grid2" style="margin-top:10px">
+                <label class="field">
+                  <span>自动滚到底</span>
+                  <select id="optTermAutoScroll">
+                    <option value="1">开启</option>
+                    <option value="0">关闭</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>历史最大行数</span>
+                  <input id="optTermMaxLines" type="number" min="500" max="20000" step="100" />
+                </label>
+              </div>
+              <div class="grid2" style="margin-top:10px">
+                <label class="field">
+                  <span>保留 ANSI 颜色</span>
+                  <select id="optTermKeepAnsi">
+                    <option value="0">关闭（纯文本）</option>
+                    <option value="1">开启（彩色渲染）</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+          </section>
+
+          <section class="settings-section" data-pane="files">
+            <h3 class="settings-section-title">文件</h3>
+            <div class="settings-section-desc">SFTP 默认路径、编辑器行为</div>
+            <div class="settings-card">
+              <div class="field">
+                <span>SFTP 默认路径</span>
+                <input id="optSftpPath" type="text" placeholder="/var/www" />
+              </div>
+              <div class="field" style="margin-top:10px">
+                <span>可编辑文本扩展名白名单（逗号分隔，需带点）</span>
+                <input id="optEditableExts" type="text" placeholder=".txt,.log,.md,.json" />
+              </div>
+              <div class="grid2" style="margin-top:10px">
+                <label class="field">
+                  <span>单文件上传上限（MB，1-2048）</span>
+                  <input id="optUploadMaxMB" type="number" min="1" max="2048" step="1" />
+                </label>
+              </div>
+            </div>
+          </section>
+
+          <section class="settings-section" data-pane="serial">
+            <h3 class="settings-section-title">串口</h3>
+            <div class="settings-section-desc">串口 / 网络调试页的默认参数，修改后下次打开串口调试页生效（与子页共享 localStorage）</div>
+            <div class="settings-card">
+              <div style="font-size:13px;font-weight:600;color:#e2e8f0;margin-bottom:10px">串口默认参数</div>
+              <div class="grid2">
+                <label class="field">
+                  <span>波特率</span>
+                  <select id="optSerBaud">
+                    <option value="9600">9600</option>
+                    <option value="19200">19200</option>
+                    <option value="38400">38400</option>
+                    <option value="57600">57600</option>
+                    <option value="115200">115200</option>
+                    <option value="230400">230400</option>
+                    <option value="460800">460800</option>
+                    <option value="921600">921600</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>数据位</span>
+                  <select id="optSerDataBits">
+                    <option value="8">8</option>
+                    <option value="7">7</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>校验位</span>
+                  <select id="optSerParity">
+                    <option value="none">None</option>
+                    <option value="even">Even</option>
+                    <option value="odd">Odd</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>停止位</span>
+                  <select id="optSerStopBits">
+                    <option value="1">1</option>
+                    <option value="2">2</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>终端字号（10-40）</span>
+                  <input id="optSerFontSize" type="number" min="10" max="40" step="1" />
+                </label>
+              </div>
+            </div>
+
+            <div class="settings-card">
+              <div style="font-size:13px;font-weight:600;color:#e2e8f0;margin-bottom:10px">接收面板</div>
+              <div class="grid2">
+                <label class="field">
+                  <span>默认显示模式</span>
+                  <select id="optSerRxHex">
+                    <option value="0">文本</option>
+                    <option value="1">HEX</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>显示时间戳</span>
+                  <select id="optSerRxTs">
+                    <option value="0">关闭</option>
+                    <option value="1">开启</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>合并到达间隔（ms，0-2000）</span>
+                  <input id="optSerRxMerge" type="number" min="0" max="2000" step="10" />
+                </label>
+              </div>
+            </div>
+
+            <div class="settings-card">
+              <div style="font-size:13px;font-weight:600;color:#e2e8f0;margin-bottom:10px">发送面板</div>
+              <div class="grid2">
+                <label class="field">
+                  <span>默认发送模式</span>
+                  <select id="optSerTxHex">
+                    <option value="0">文本</option>
+                    <option value="1">HEX</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>行尾符</span>
+                  <select id="optSerTxEol">
+                    <option value="None">None</option>
+                    <option value="LF">LF (\n)</option>
+                    <option value="CR">CR (\r)</option>
+                    <option value="CRLF">CRLF (\r\n)</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>定时发送间隔（ms）</span>
+                  <input id="optSerTxInterval" type="number" min="20" max="60000" step="10" />
+                </label>
+                <label class="field">
+                  <span>Modbus CRC 默认</span>
+                  <select id="optSerTxModbus">
+                    <option value="0">关闭</option>
+                    <option value="1">开启</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+
+            <div class="settings-card">
+              <div style="font-size:13px;font-weight:600;color:#e2e8f0;margin-bottom:10px">网络（TCP）调试</div>
+              <div class="grid2">
+                <label class="field">
+                  <span>默认主机</span>
+                  <input id="optSerTcpHost" type="text" placeholder="192.168.0.22" />
+                </label>
+                <label class="field">
+                  <span>默认端口</span>
+                  <input id="optSerTcpPort" type="number" min="1" max="65535" step="1" placeholder="502" />
+                </label>
+              </div>
+            </div>
+
+            <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px">
+              <button type="button" class="btn" id="optSerReset">恢复默认</button>
+              <button type="button" class="btn" id="optSerReload" title="重新加载串口调试子页，让上面的默认参数立即生效">立即应用（刷新子页）</button>
+            </div>
+          </section>
+
+          <section class="settings-section active" data-pane="ops">
+            <h3 class="settings-section-title">运维</h3>
+            <div class="settings-section-desc">本机 docker 自动重启</div>
+            <div class="settings-card">
+              <div class="grid2">
+                <label class="field">
+                  <span>开机后自动重启 docker</span>
+                  <select id="drEnabled">
+                    <option value="0">关闭</option>
+                    <option value="1">开启</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>倒计时（秒，10-3600）</span>
+                  <input id="drCountdown" type="number" min="10" max="3600" step="1" />
+                </label>
+              </div>
+              <div class="field" style="margin-top:12px">
+                <span>当前状态</span>
+                <div id="drStatus" style="font-size:13px;color:#cbd5e1;padding:8px 10px;background:#0b1220;border:1px solid #1f2937;border-radius:10px;min-height:20px">未加载</div>
+              </div>
+              <div class="field">
+                <span>上次执行结果</span>
+                <div id="drLastResult" style="font-size:12px;color:#94a3b8;padding:8px 10px;background:#0b1220;border:1px solid #1f2937;border-radius:10px;min-height:20px;white-space:pre-wrap;word-break:break-all">无</div>
+              </div>
+              <div style="display:flex;justify-content:space-between;gap:10px;padding-top:10px;flex-wrap:wrap">
+                <div style="display:flex;gap:8px;flex-wrap:wrap">
+                  <button class="btn" id="drCancel" type="button">取消倒计时</button>
+                  <button class="btn" id="drRestartCountdown" type="button">重新倒计时</button>
+                  <button class="btn" id="drTrigger" type="button">立即执行</button>
+                </div>
+                <button class="btn primary" id="drSave" type="button">保存</button>
+              </div>
+            </div>
+            <div class="settings-placeholder" style="margin-top:14px">
+              <h4>规划中 <span class="soon">Soon</span></h4>
+              <ul>
+                <li>webssh 服务日志保留天数 / 自动轮转</li>
+                <li>页面访问密码</li>
+                <li>闲置自动断开</li>
+              </ul>
+            </div>
+          </section>
+
+          <section class="settings-section" data-pane="about">
+            <h3 class="settings-section-title">关于</h3>
+            <div class="settings-card">
+              <div class="about-grid">
+                <div class="k">项目</div><div class="v">Web SSH · Linux 命令行控制台</div>
+                <div class="k">版本</div><div class="v" id="aboutVersion">1.0.0</div>
+                <div class="k">服务端口</div><div class="v">3010 (默认)</div>
+                <div class="k">健康检查</div><div class="v"><code>GET /health</code></div>
+                <div class="k">WebSocket</div><div class="v"><code>/ws</code> · <code>/ws/serial</code> · <code>/ws/tcp</code></div>
+                <div class="k">安装目录</div><div class="v"><code>/opt/webssh</code></div>
+                <div class="k">配置文件</div><div class="v"><code>/opt/webssh/config/docker-restart.json</code></div>
+              </div>
+            </div>
+          </section>
+
         </div>
       </div>
     </div>
@@ -652,6 +1029,78 @@
   <script src="./node_modules/codemirror/mode/shell/shell.js"></script>
   <script src="./node_modules/codemirror/mode/python/python.js"></script>
   <script>
+    // ===== 用户偏好设置（localStorage 持久化） =====
+    const SETTINGS_KEY = 'webssh.settings.v1';
+    const settingsDefaults = {
+      // 外观
+      menuMode: 'full',          // full=图标+文字, icon=仅图标
+      sidebarCollapsed: false,
+      density: 'normal',         // compact / normal / loose
+      // 终端
+      terminalFontSize: 13,      // 12-18
+      terminalLineHeight: 1.7,   // 1.4-2.0
+      terminalAutoScroll: true,
+      terminalMaxLines: 2000,    // 500-20000
+      terminalKeepAnsi: false,   // 预留开关，当前仍走 stripAnsi
+      // 文件
+      sftpDefaultPath: '/var/www',
+      editableExts: ['.txt', '.log', '.md', '.json', '.js', '.ts', '.html', '.css', '.xml', '.yml', '.yaml', '.sh', '.env', '.ini', '.conf'],
+      uploadMaxMB: 100,
+    };
+    function loadSettings() {
+      try {
+        const raw = localStorage.getItem(SETTINGS_KEY);
+        if (!raw) return Object.assign({}, settingsDefaults);
+        const obj = JSON.parse(raw);
+        return Object.assign({}, settingsDefaults, obj);
+      } catch { return Object.assign({}, settingsDefaults); }
+    }
+    function saveSettings(patch) {
+      Object.assign(userSettings, patch);
+      try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(userSettings)); } catch {}
+      applySettings();
+    }
+    const userSettings = loadSettings();
+
+    // 串口 / 网络调试子页的 localStorage 默认值。子页自己读写 'serial.*' 这组 key，
+    // 主页只是提供一个统一入口去预置它们，修改后"下次打开串口调试页"生效。
+    const serialKeys = [
+      { key: 'serial.baudRate', id: 'optSerBaud', def: '115200' },
+      { key: 'serial.dataBits', id: 'optSerDataBits', def: '8' },
+      { key: 'serial.parity', id: 'optSerParity', def: 'none' },
+      { key: 'serial.stopBits', id: 'optSerStopBits', def: '1' },
+      { key: 'serial.fontSize', id: 'optSerFontSize', def: '15' },
+      { key: 'serial.rxHex', id: 'optSerRxHex', def: '0' },
+      { key: 'serial.rxTs', id: 'optSerRxTs', def: '0' },
+      { key: 'serial.rxMerge', id: 'optSerRxMerge', def: '50' },
+      { key: 'serial.txHex', id: 'optSerTxHex', def: '0' },
+      { key: 'serial.txEol', id: 'optSerTxEol', def: 'CRLF' },
+      { key: 'serial.txInterval', id: 'optSerTxInterval', def: '1000' },
+      { key: 'serial.txModbusCrc', id: 'optSerTxModbus', def: '0' },
+      { key: 'serial.tcpHost', id: 'optSerTcpHost', def: '' },
+      { key: 'serial.tcpPort', id: 'optSerTcpPort', def: '' },
+    ];
+    function getSerialPref(key, def) {
+      try { const v = localStorage.getItem(key); return v == null ? def : v; } catch { return def; }
+    }
+    function setSerialPref(key, value) {
+      try { localStorage.setItem(key, value == null ? '' : String(value)); } catch {}
+    }
+
+    function applySettings() {
+      const root = document.documentElement;
+      // 终端字号、行高
+      root.style.setProperty('--term-font-size', userSettings.terminalFontSize + 'px');
+      root.style.setProperty('--term-line-height', String(userSettings.terminalLineHeight));
+      // 界面密度
+      const padMap = { compact: '10px', normal: '16px', loose: '22px' };
+      root.style.setProperty('--content-pad', padMap[userSettings.density] || padMap.normal);
+      // 菜单栏模式
+      document.body.classList.toggle('menu-icon-only', userSettings.menuMode === 'icon');
+      // 侧边栏折叠
+      document.body.classList.toggle('sidebar-collapsed', !!userSettings.sidebarCollapsed);
+    }
+
     const hosts = [
       { id: 'prod-01', name: 'prod-01', host: '192.168.1.10', port: '22', user: 'root', auth: 'Key', password: '', keyPath: '', status: '当前', active: true },
       { id: 'dev-02', name: 'dev-02', host: '192.168.1.21', port: '22', user: 'ubuntu', auth: 'Password', password: '', keyPath: '', status: '空闲', active: false },
@@ -723,7 +1172,7 @@
       sftpReady: false,
       fileLoading: false,
       fileError: '',
-      fileCwd: '/var/www',
+      fileCwd: userSettings.sftpDefaultPath || '/var/www',
       fileEntries: [],
       selectedFile: null,
       fileRequestSeq: 0,
@@ -796,8 +1245,11 @@
       footerHost: document.getElementById('footerHost'),
       openConnect: document.getElementById('openConnect'),
       openSettings: document.getElementById('openSettings'),
+      openDocker: document.getElementById('openDocker'),
       closeSettings: document.getElementById('closeSettings'),
       settingsMask: document.getElementById('settingsMask'),
+      settingsTabs: document.getElementById('settingsTabs'),
+      settingsPane: document.getElementById('settingsPane'),
       drEnabled: document.getElementById('drEnabled'),
       drCountdown: document.getElementById('drCountdown'),
       drStatus: document.getElementById('drStatus'),
@@ -806,6 +1258,8 @@
       drRestartCountdown: document.getElementById('drRestartCountdown'),
       drTrigger: document.getElementById('drTrigger'),
       drSave: document.getElementById('drSave'),
+      drTopDot: document.getElementById('drTopDot'),
+      drTopState: document.getElementById('drTopState'),
       closeModal: document.getElementById('closeModal'),
       saveModal: document.getElementById('saveModal'),
       clearBtn: document.getElementById('clearBtn'),
@@ -826,12 +1280,21 @@
       editorTextarea: document.getElementById('editorTextarea'),
       editorPathText: document.getElementById('editorPathText'),
       editorStatus: document.getElementById('editorStatus'),
-      viewSshBtn: document.getElementById('viewSshBtn'),
-      viewSerialBtn: document.getElementById('viewSerialBtn'),
+      menuBar: document.getElementById('menuBar'),
       sshView: document.getElementById('sshView'),
       serialView: document.getElementById('serialView'),
       serialFrame: document.getElementById('serialFrame'),
+      smsView: document.getElementById('smsView'),
+      smsFrame: document.getElementById('smsFrame'),
     };
+
+    // 左侧功能菜单：后续新增功能直接在此数组追加一项即可
+    const menuItems = [
+      { id: 'ssh', label: 'SSH 终端', icon: 'SSH', title: 'SSH 终端与文件管理' },
+      { id: 'serial', label: '串口调试', icon: 'COM', title: '通过浏览器 WebSerial 连接本地串口设备' },
+      { id: 'sms', label: '信创短信猫', icon: 'SMS', title: '数据库监测 + 短信猫推送' },
+    ];
+    state.activeMenu = 'ssh';
 
     function cloneConnection(host) {
       return {
@@ -864,6 +1327,47 @@
         .replace(/\x1b[=>78NOMDEHc]/g, '')
         .replace(/\x1b\([AB012]/g, '')
         .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
+    }
+
+    // 只剥控制序列、保留 SGR 颜色序列，再转成带 class 的 span。
+    // 简化实现：支持 30-37/40-47/90-97/1 bold/0 reset，不支持 24 位真彩。
+    function stripAnsiKeepColor(s) {
+      if (!s) return '';
+      return String(s)
+        .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+        .replace(/\x1b[PX^_][^\x1b]*(?:\x1b\\)?/g, '')
+        // 保留 CSI m（SGR），其他 CSI 去掉
+        .replace(/\x1b\[([0-?]*)([ -/]*)([@-~])/g, (m, p, _inter, final) => (final === 'm' ? m : ''))
+        .replace(/\x1b[=>78NOMDEHc]/g, '')
+        .replace(/\x1b\([AB012]/g, '')
+        .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
+    }
+
+    function ansiToHtml(s) {
+      if (!s) return '';
+      let html = '';
+      let openSpans = 0;
+      let idx = 0;
+      const str = String(s);
+      const flushText = (text) => { html += esc(text); };
+      while (idx < str.length) {
+        const m = /\x1b\[([\d;]*)m/.exec(str.slice(idx));
+        if (!m) { flushText(str.slice(idx)); break; }
+        if (m.index > 0) flushText(str.slice(idx, idx + m.index));
+        const codes = m[1] === '' ? [0] : m[1].split(';').map((n) => Number(n) || 0);
+        for (const c of codes) {
+          if (c === 0) {
+            while (openSpans > 0) { html += '</span>'; openSpans -= 1; }
+          } else if (c === 1) {
+            html += '<span class="ansi-bold">'; openSpans += 1;
+          } else if ((c >= 30 && c <= 37) || (c >= 90 && c <= 97)) {
+            html += `<span class="ansi-${c}">`; openSpans += 1;
+          }
+        }
+        idx += m.index + m[0].length;
+      }
+      while (openSpans > 0) { html += '</span>'; openSpans -= 1; }
+      return html;
     }
 
     // 把服务端分片到达的 pty 输出按 \n 拼成行。单独的 \r 视作行首覆盖（readline 刷新），
@@ -900,6 +1404,10 @@
           state.lines.pop();
         } else break;
       }
+      const maxLines = Number(userSettings.terminalMaxLines) || settingsDefaults.terminalMaxLines;
+      if (state.lines.length > maxLines) {
+        state.lines.splice(0, state.lines.length - maxLines);
+      }
     }
 
     function nextFileRequestId() {
@@ -932,7 +1440,10 @@
     function isEditableTextFile(entry) {
       if (!entry || entry.type !== 'file') return false;
       const lower = String(entry.name || '').toLowerCase();
-      return ['.txt', '.log', '.md', '.json', '.js', '.ts', '.html', '.css', '.xml', '.yml', '.yaml', '.sh', '.env', '.ini', '.conf'].some((suffix) => lower.endsWith(suffix));
+      const exts = Array.isArray(userSettings.editableExts) && userSettings.editableExts.length
+        ? userSettings.editableExts
+        : settingsDefaults.editableExts;
+      return exts.some((suffix) => lower.endsWith(String(suffix).toLowerCase()));
     }
 
     function detectEditorMode(fileName) {
@@ -989,7 +1500,7 @@
       state.deletePending = false;
       state.renamePending = false;
       closeEditor();
-      if (!preservePath) state.fileCwd = '/var/www';
+      if (!preservePath) state.fileCwd = userSettings.sftpDefaultPath || '/var/www';
     }
 
     function renderHosts() {
@@ -1136,10 +1647,13 @@
 
     function renderTerminal() {
       const prompt = `${state.currentHost.user}@${state.currentHost.name}:~# `;
-      const linesHtml = state.lines.map((line) => `<div class="line ${line.kind}">${esc(line.text)}</div>`).join('');
+      const renderText = userSettings.terminalKeepAnsi ? ansiToHtml : esc;
+      const linesHtml = state.lines.map((line) => `<div class="line ${line.kind}">${renderText(line.text)}</div>`).join('');
       const current = `${esc(state.input.slice(0, state.cursor))}<span class="cursor"></span>${esc(state.input.slice(state.cursor))}`;
       el.terminal.innerHTML = `${linesHtml}<div class="prompt-line"><span class="prompt">${esc(prompt)}</span><span>${current}</span></div>`;
-      el.terminal.scrollTop = el.terminal.scrollHeight;
+      if (userSettings.terminalAutoScroll !== false) {
+        el.terminal.scrollTop = el.terminal.scrollHeight;
+      }
     }
 
     function renderMeta() {
@@ -1394,14 +1908,122 @@
     }
 
     let drRefreshTimer = null;
-    function openSettings() {
+    const settingsTabs = [
+      { id: 'appearance', label: '外观' },
+      { id: 'terminal', label: '终端' },
+      { id: 'files', label: '文件' },
+      { id: 'serial', label: '串口' },
+      { id: 'ops', label: '运维' },
+      { id: 'about', label: '关于' },
+    ];
+    state.settingsTab = 'ops';
+
+    function renderSettingsTabs() {
+      if (!el.settingsTabs) return;
+      el.settingsTabs.innerHTML = settingsTabs.map((t) => `
+        <button class="settings-tab ${state.settingsTab === t.id ? 'active' : ''}" data-settings-tab="${esc(t.id)}">${esc(t.label)}</button>
+      `).join('');
+      el.settingsTabs.querySelectorAll('[data-settings-tab]').forEach((node) => {
+        node.onclick = () => switchSettingsTab(node.dataset.settingsTab);
+      });
+    }
+
+    function switchSettingsTab(id) {
+      state.settingsTab = id;
+      renderSettingsTabs();
+      document.querySelectorAll('.settings-section').forEach((node) => {
+        node.classList.toggle('active', node.dataset.pane === id);
+      });
+    }
+
+    function openSettings(tab) {
       if (!el.settingsMask) return;
+      switchSettingsTab(tab || state.settingsTab || 'ops');
+      syncSettingsForm();
       el.settingsMask.classList.add('open');
       el.settingsMask.setAttribute('aria-hidden', 'false');
       refreshDockerRestart(false);
       if (drRefreshTimer) clearInterval(drRefreshTimer);
-      // 定时刷新只更新"当前状态/上次结果"，不覆盖正在输入的开关和秒数
       drRefreshTimer = setInterval(() => refreshDockerRestart(true), 1000);
+    }
+
+    function syncSettingsForm() {
+      const set = (id, val) => { const n = document.getElementById(id); if (n) n.value = String(val); };
+      set('optMenuMode', userSettings.menuMode);
+      set('optSidebarCollapsed', userSettings.sidebarCollapsed ? '1' : '0');
+      set('optDensity', userSettings.density);
+      set('optTermFontSize', userSettings.terminalFontSize);
+      set('optTermLineHeight', userSettings.terminalLineHeight);
+      set('optTermAutoScroll', userSettings.terminalAutoScroll ? '1' : '0');
+      set('optTermMaxLines', userSettings.terminalMaxLines);
+      set('optTermKeepAnsi', userSettings.terminalKeepAnsi ? '1' : '0');
+      set('optSftpPath', userSettings.sftpDefaultPath);
+      set('optEditableExts', (userSettings.editableExts || []).join(','));
+      set('optUploadMaxMB', userSettings.uploadMaxMB);
+      // 串口（直接映射到 localStorage 的 serial.* key）
+      serialKeys.forEach((s) => set(s.id, getSerialPref(s.key, s.def)));
+    }
+
+    function bindSettingsForm() {
+      const on = (id, type, handler) => {
+        const n = document.getElementById(id);
+        if (n) n.addEventListener(type, () => handler(n.value));
+      };
+      on('optMenuMode', 'change', (v) => saveSettings({ menuMode: v }));
+      on('optSidebarCollapsed', 'change', (v) => saveSettings({ sidebarCollapsed: v === '1' }));
+      on('optDensity', 'change', (v) => saveSettings({ density: v }));
+      on('optTermFontSize', 'change', (v) => {
+        const n = Math.max(12, Math.min(18, Number(v) || 13));
+        saveSettings({ terminalFontSize: n });
+        syncSettingsForm();
+      });
+      on('optTermLineHeight', 'change', (v) => {
+        const n = Math.max(1.2, Math.min(2, Number(v) || 1.7));
+        saveSettings({ terminalLineHeight: Number(n.toFixed(1)) });
+        syncSettingsForm();
+      });
+      on('optTermAutoScroll', 'change', (v) => {
+        saveSettings({ terminalAutoScroll: v === '1' });
+        renderTerminal();
+      });
+      on('optTermMaxLines', 'change', (v) => {
+        const n = Math.max(500, Math.min(20000, Number(v) || 2000));
+        saveSettings({ terminalMaxLines: n });
+        syncSettingsForm();
+      });
+      on('optTermKeepAnsi', 'change', (v) => {
+        saveSettings({ terminalKeepAnsi: v === '1' });
+        renderTerminal();
+      });
+      on('optSftpPath', 'change', (v) => saveSettings({ sftpDefaultPath: (v || '').trim() || '/' }));
+      on('optEditableExts', 'change', (v) => {
+        const list = String(v || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean).map((s) => s.startsWith('.') ? s : '.' + s);
+        saveSettings({ editableExts: list.length ? list : settingsDefaults.editableExts });
+        renderSidePanel(true);
+        bindDynamicEvents();
+      });
+      on('optUploadMaxMB', 'change', (v) => {
+        const n = Math.max(1, Math.min(2048, Number(v) || 100));
+        saveSettings({ uploadMaxMB: n });
+        syncSettingsForm();
+      });
+
+      // 串口：每项 change 直接写 localStorage
+      serialKeys.forEach((s) => on(s.id, 'change', (v) => setSerialPref(s.key, v)));
+      const resetBtn = document.getElementById('optSerReset');
+      if (resetBtn) resetBtn.onclick = () => {
+        if (!confirm('将串口 / 网络调试的默认参数恢复为出厂值？不会影响当前已打开的子页。')) return;
+        serialKeys.forEach((s) => setSerialPref(s.key, s.def));
+        syncSettingsForm();
+      };
+      const reloadBtn = document.getElementById('optSerReload');
+      if (reloadBtn) reloadBtn.onclick = () => {
+        if (!el.serialFrame) return;
+        if (el.serialFrame.dataset.loaded) {
+          el.serialFrame.src = './serial/index.html?t=' + Date.now();
+        }
+        state.transferStatus = '已刷新串口调试子页，切换到"串口调试"查看';
+      };
     }
     function closeSettings() {
       if (!el.settingsMask) return;
@@ -1431,6 +2053,14 @@
         else if (data.running) parts.push('正在执行 systemctl restart docker');
         else if (data.enabled) parts.push('待下一次服务启动触发');
         el.drStatus.textContent = parts.join(' · ');
+      }
+      if (el.drTopDot && el.drTopState) {
+        el.drTopDot.classList.remove('on', 'counting', 'running');
+        let sub = '关闭';
+        if (data.running) { el.drTopDot.classList.add('running'); sub = '执行中'; }
+        else if (data.counting) { el.drTopDot.classList.add('counting'); sub = `${data.remainingSec}s`; }
+        else if (data.enabled) { el.drTopDot.classList.add('on'); sub = '开启'; }
+        el.drTopState.textContent = sub;
       }
       if (el.drLastResult) {
         const r = data.lastResult;
@@ -1541,6 +2171,12 @@
 
     function uploadSelectedFile(file, progressText = '') {
       if (!file) return Promise.resolve();
+      const limitMB = Number(userSettings.uploadMaxMB) || settingsDefaults.uploadMaxMB;
+      if (file.size > limitMB * 1024 * 1024) {
+        state.transferStatus = `文件 ${file.name} 超过 ${limitMB}MB 上限，已跳过`;
+        renderAll();
+        return Promise.resolve();
+      }
       return new Promise((resolve) => {
         const reader = new FileReader();
         state.uploadPending = true;
@@ -1908,7 +2544,8 @@
           }
 
           if (msg.type === 'output') {
-            const data = stripAnsi(String(msg.payload?.data || ''));
+            const raw = String(msg.payload?.data || '');
+            const data = userSettings.terminalKeepAnsi ? stripAnsiKeepColor(raw) : stripAnsi(raw);
             if (data) appendOutputStream(data);
             renderTerminal();
             return;
@@ -2066,7 +2703,8 @@
     }
 
     el.openConnect?.addEventListener('click', () => setModal(true));
-    el.openSettings?.addEventListener('click', () => openSettings());
+    el.openSettings?.addEventListener('click', () => openSettings('appearance'));
+    el.openDocker?.addEventListener('click', () => openSettings('ops'));
     el.closeSettings?.addEventListener('click', () => closeSettings());
     el.settingsMask?.addEventListener('click', (event) => {
       if (event.target === el.settingsMask) closeSettings();
@@ -2270,24 +2908,42 @@
       if (state.modalOpen && e.key === 'Escape') setModal(false);
     });
 
+    function renderMenu() {
+      if (!el.menuBar) return;
+      el.menuBar.innerHTML = menuItems.map((item) => `
+        <button class="menu-item ${state.activeMenu === item.id ? 'active' : ''}" data-menu="${esc(item.id)}" title="${esc(item.title || item.label)}">
+          <span class="menu-icon">${esc(item.icon)}</span>
+          <span class="menu-label">${esc(item.label)}</span>
+        </button>
+      `).join('');
+      el.menuBar.querySelectorAll('[data-menu]').forEach((node) => {
+        node.onclick = () => showView(node.dataset.menu);
+      });
+    }
+
     function showView(view) {
-      const serial = view === 'serial';
-      el.sshView.style.display = serial ? 'none' : '';
-      el.serialView.classList.toggle('active', serial);
-      el.viewSshBtn.classList.toggle('active-tab', !serial);
-      el.viewSerialBtn.classList.toggle('active-tab', serial);
-      if (serial) {
+      state.activeMenu = view;
+      const isSsh = view === 'ssh';
+      const isSerial = view === 'serial';
+      const isSms = view === 'sms';
+      el.sshView.style.display = isSsh ? '' : 'none';
+      el.serialView.classList.toggle('active', isSerial);
+      el.smsView.classList.toggle('active', isSms);
+      renderMenu();
+      if (isSerial) {
         if (!el.serialFrame.dataset.loaded) {
           el.serialFrame.src = './serial/index.html';
           el.serialFrame.dataset.loaded = '1';
+        }
+      } else if (isSms) {
+        if (!el.smsFrame.dataset.loaded) {
+          el.smsFrame.src = './sms/index.html';
+          el.smsFrame.dataset.loaded = '1';
         }
       } else {
         setTimeout(() => el.cmdInput?.focus(), 0);
       }
     }
-
-    el.viewSshBtn?.addEventListener('click', () => showView('ssh'));
-    el.viewSerialBtn?.addEventListener('click', () => showView('serial'));
 
     window.addEventListener('message', (event) => {
       const data = event && event.data;
@@ -2296,11 +2952,44 @@
       }
     });
 
+    let drTopTimer = null;
+    let drTopInterval = 0;
+    async function pollDockerRestartTop() {
+      try {
+        const resp = await fetch('/api/docker-restart/config');
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const data = await resp.json();
+        // 设置弹窗打开时，里面的定时器会自己刷新，这里只更新顶栏状态点
+        if (el.drTopDot && el.drTopState) {
+          el.drTopDot.classList.remove('on', 'counting', 'running');
+          let sub = '关闭';
+          if (data.running) { el.drTopDot.classList.add('running'); sub = '执行中'; }
+          else if (data.counting) { el.drTopDot.classList.add('counting'); sub = `${data.remainingSec}s`; }
+          else if (data.enabled) { el.drTopDot.classList.add('on'); sub = '开启'; }
+          el.drTopState.textContent = sub;
+        }
+        // 倒计时或执行中 1s 一次，其余 15s 一次
+        const want = (data.counting || data.running) ? 1000 : 15000;
+        if (want !== drTopInterval) {
+          drTopInterval = want;
+          if (drTopTimer) clearInterval(drTopTimer);
+          drTopTimer = setInterval(pollDockerRestartTop, want);
+        }
+      } catch (err) {
+        if (el.drTopState) el.drTopState.textContent = '离线';
+      }
+    }
+
     renderAll();
+    renderMenu();
+    renderSettingsTabs();
+    applySettings();
+    bindSettingsForm();
     initCodeEditor();
     syncAuthFields();
     syncEditorView();
     connectWs(true);
+    pollDockerRestartTop();
     el.cmdInput.focus();
   </script>
 </body>

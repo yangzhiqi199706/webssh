@@ -5,7 +5,7 @@
         <link rel="stylesheet" href="./assets/css/styles.css" />
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>远程串口调试 · Web SSH</title>
+        <title>远程串口 / 网络调试 · Web SSH</title>
         <style>
             #top-bar,
             #bottom-bar {
@@ -38,6 +38,29 @@
             #select-port {
                 min-width: 160px;
             }
+            #input-tcp-host {
+                width: 150px !important;
+                padding: 2px 6px;
+                box-sizing: border-box;
+            }
+            #input-tcp-port {
+                width: 80px !important;
+                padding: 2px 6px;
+                box-sizing: border-box;
+            }
+            /* 模式切换：按当前模式隐藏对方专属控件 */
+            body[data-mode="serial"] .mode-tcp-only { display: none !important; }
+            body[data-mode="tcp"] .mode-serial-only { display: none !important; }
+            .mode-tab {
+                background-color: #0b1220;
+                color: #e5e7eb;
+                border: 1px solid #1f2937;
+            }
+            .mode-tab.active {
+                background-color: #22d3ee;
+                color: #082f49;
+                font-weight: 700;
+            }
 
             /* 主区布局：顶部 xterm，下方收发面板 */
             #main {
@@ -56,7 +79,7 @@
             }
             #io-panel {
                 flex: 0 0 auto;
-                height: 280px;
+                height: 440px;
                 display: grid;
                 grid-template-columns: 1fr 1fr;
                 gap: 8px;
@@ -65,15 +88,25 @@
                 background: #0a0f1c;
                 box-sizing: border-box;
             }
+            /* 左列：rx 在上、tx 在下，两者等分 */
+            .io-left {
+                display: flex;
+                flex-direction: column;
+                gap: 8px;
+                min-height: 0;
+                min-width: 0;
+            }
+            .io-left > #rx-panel,
+            .io-left > #tx-panel { flex: 1 1 0; min-height: 0; }
             #mb-panel {
                 flex: 0 0 auto;
-                height: 220px;
-                display: none;
+                display: flex;
                 flex-direction: column;
-                padding: 0 8px 8px 8px;
+                padding: 0;
                 background: #0a0f1c;
                 box-sizing: border-box;
                 min-height: 0;
+                min-width: 0;
             }
             #mb-panel.open { display: flex; }
             #mb-panel .io-panel-inner {
@@ -223,17 +256,23 @@
             #tx-input:focus { outline: 1px solid rgba(34,211,238,.6); }
         </style>
     </head>
-    <body>
+    <body data-mode="serial">
         <div id="app">
             <div id="top-bar">
                 <button type="button" id="button-back-ssh" class="toolbar-button toolbar-space corner" title="返回 SSH 终端">← 返回 SSH</button>
-                <label for="select-port" class="toolbar-input-label">设备:</label>
-                <select id="select-port" class="toolbar-select toolbar-space on-connected-disabled"></select>
-                <button type="button" id="button-refresh-ports" class="toolbar-button toolbar-space corner" title="刷新串口列表">刷新</button>
-                <button type="button" id="button-scan-ports" class="toolbar-button toolbar-space corner" title="扫描所有串口，识别物理存在、可用、已占用的端口">扫描</button>
+                <button type="button" id="button-mode-serial" class="toolbar-button toolbar-space corner mode-tab active" title="串口调试模式（/dev/ttyS*）">串口</button>
+                <button type="button" id="button-mode-tcp" class="toolbar-button toolbar-space corner mode-tab" title="TCP 客户端调试（IP+端口）">网络</button>
+                <label for="select-port" class="toolbar-input-label mode-serial-only">设备:</label>
+                <select id="select-port" class="toolbar-select toolbar-space on-connected-disabled mode-serial-only"></select>
+                <button type="button" id="button-refresh-ports" class="toolbar-button toolbar-space corner mode-serial-only" title="刷新串口列表">刷新</button>
+                <button type="button" id="button-scan-ports" class="toolbar-button toolbar-space corner mode-serial-only" title="扫描所有串口，识别物理存在、可用、已占用的端口">扫描</button>
+                <label for="input-tcp-host" class="toolbar-input-label mode-tcp-only">主机:</label>
+                <input id="input-tcp-host" class="toolbar-input mode-tcp-only" type="text" placeholder="192.168.0.22" autocomplete="off" />
+                <label for="input-tcp-port" class="toolbar-input-label mode-tcp-only">端口:</label>
+                <input id="input-tcp-port" class="toolbar-input mode-tcp-only" type="number" min="1" max="65535" placeholder="502" />
                 <button type="button" id="button-connect" class="toolbar-button toolbar-space corner">打开串口</button>
-                <label for="select-baud" class="toolbar-input-label">Baud:</label>
-                <select id="select-baud" class="toolbar-select toolbar-space on-connected-disabled">
+                <label for="select-baud" class="toolbar-input-label mode-serial-only">Baud:</label>
+                <select id="select-baud" class="toolbar-select toolbar-space on-connected-disabled mode-serial-only">
                     <option value="9600">9600</option>
                     <option value="19200">19200</option>
                     <option value="38400">38400</option>
@@ -243,19 +282,19 @@
                     <option value="460800">460800</option>
                     <option value="921600">921600</option>
                 </select>
-                <label for="select-databits" class="toolbar-input-label">Data:</label>
-                <select id="select-databits" class="toolbar-select toolbar-space on-connected-disabled">
+                <label for="select-databits" class="toolbar-input-label mode-serial-only">Data:</label>
+                <select id="select-databits" class="toolbar-select toolbar-space on-connected-disabled mode-serial-only">
                     <option value="8" selected>8</option>
                     <option value="7">7</option>
                 </select>
-                <label for="select-parity" class="toolbar-input-label">Parity:</label>
-                <select id="select-parity" class="toolbar-select toolbar-space on-connected-disabled">
+                <label for="select-parity" class="toolbar-input-label mode-serial-only">Parity:</label>
+                <select id="select-parity" class="toolbar-select toolbar-space on-connected-disabled mode-serial-only">
                     <option value="none" selected>N</option>
                     <option value="even">E</option>
                     <option value="odd">O</option>
                 </select>
-                <label for="select-stopbits" class="toolbar-input-label">Stop:</label>
-                <select id="select-stopbits" class="toolbar-select toolbar-space on-connected-disabled">
+                <label for="select-stopbits" class="toolbar-input-label mode-serial-only">Stop:</label>
+                <select id="select-stopbits" class="toolbar-select toolbar-space on-connected-disabled mode-serial-only">
                     <option value="1" selected>1</option>
                     <option value="2">2</option>
                 </select>
@@ -271,78 +310,80 @@
             <div id="main">
                 <div id="terminal-container"></div>
                 <div id="io-panel">
-                    <div id="rx-panel">
-                        <div class="io-tool">
-                            <span class="io-title">接收</span>
-                            <label><input type="checkbox" id="rx-mode-hex" /> HEX</label>
-                            <label><input type="checkbox" id="rx-show-ts" /> 时间戳</label>
-                            <label><input type="checkbox" id="rx-auto-scroll" checked /> 自动滚动</label>
-                            <label><input type="checkbox" id="rx-paused" /> 暂停</label>
-                            <label title="连续到达的字节在此时间内合并为一条显示。0 表示不合并。Modbus RTU 建议 30~100ms">合并 <input type="number" id="rx-merge" min="0" max="2000" value="50" class="io-num" /> ms</label>
-                            <div class="io-spacer"></div>
-                            <button type="button" id="rx-clear" class="io-btn">清空</button>
-                            <button type="button" id="rx-save" class="io-btn">导出</button>
+                    <div class="io-left">
+                        <div id="rx-panel">
+                            <div class="io-tool">
+                                <span class="io-title">接收</span>
+                                <label><input type="checkbox" id="rx-mode-hex" /> HEX</label>
+                                <label><input type="checkbox" id="rx-show-ts" /> 时间戳</label>
+                                <label><input type="checkbox" id="rx-auto-scroll" checked /> 自动滚动</label>
+                                <label><input type="checkbox" id="rx-paused" /> 暂停</label>
+                                <label title="连续到达的字节在此时间内合并为一条显示。0 表示不合并。Modbus RTU 建议 30~100ms">合并 <input type="number" id="rx-merge" min="0" max="2000" value="50" class="io-num" /> ms</label>
+                                <div class="io-spacer"></div>
+                                <button type="button" id="rx-clear" class="io-btn">清空</button>
+                                <button type="button" id="rx-save" class="io-btn">导出</button>
+                            </div>
+                            <pre id="rx-view"></pre>
                         </div>
-                        <pre id="rx-view"></pre>
+                        <div id="tx-panel">
+                            <div class="io-tool">
+                                <span class="io-title">发送</span>
+                                <label><input type="checkbox" id="tx-mode-hex" /> HEX</label>
+                                <label title="勾选后自动在发送字节末尾追加 Modbus RTU CRC-16（低字节在前），并忽略行尾"><input type="checkbox" id="tx-modbus-crc" /> Modbus CRC</label>
+                                <label>行尾
+                                    <select id="tx-eol" class="io-select">
+                                        <option value="None">None</option>
+                                        <option value="LF">LF</option>
+                                        <option value="CR">CR</option>
+                                        <option value="CRLF" selected>CRLF</option>
+                                    </select>
+                                </label>
+                                <label>间隔 <input type="number" id="tx-interval" min="20" value="1000" class="io-num" /> ms</label>
+                                <button type="button" id="tx-repeat" class="io-btn">定时</button>
+                                <div class="io-spacer"></div>
+                                <button type="button" id="tx-clear" class="io-btn">清空</button>
+                                <button type="button" id="tx-send" class="io-btn io-btn-primary">发送</button>
+                            </div>
+                            <textarea id="tx-input" placeholder="输入要发送的内容，回车不会立即发送&#10;HEX 模式：支持空格、逗号分隔，如 AA BB 01 或 AABB01&#10;Modbus CRC：勾选后自动追加 CRC16 校验（低字节在前），常用 HEX 模式"></textarea>
+                        </div>
                     </div>
-                    <div id="tx-panel">
-                        <div class="io-tool">
-                            <span class="io-title">发送</span>
-                            <label><input type="checkbox" id="tx-mode-hex" /> HEX</label>
-                            <label title="勾选后自动在发送字节末尾追加 Modbus RTU CRC-16（低字节在前），并忽略行尾"><input type="checkbox" id="tx-modbus-crc" /> Modbus CRC</label>
-                            <label>行尾
-                                <select id="tx-eol" class="io-select">
-                                    <option value="None">None</option>
-                                    <option value="LF">LF</option>
-                                    <option value="CR">CR</option>
-                                    <option value="CRLF" selected>CRLF</option>
-                                </select>
-                            </label>
-                            <label>间隔 <input type="number" id="tx-interval" min="20" value="1000" class="io-num" /> ms</label>
-                            <button type="button" id="tx-repeat" class="io-btn">定时</button>
-                            <div class="io-spacer"></div>
-                            <button type="button" id="tx-clear" class="io-btn">清空</button>
-                            <button type="button" id="tx-send" class="io-btn io-btn-primary">发送</button>
+                    <div id="mb-panel" class="open">
+                        <div class="io-panel-inner">
+                            <div class="io-tool">
+                                <span class="io-title">Modbus 解析</span>
+                                <label>类型
+                                    <select id="mb-type" class="io-select">
+                                        <option value="u16" selected>UInt16</option>
+                                        <option value="i16">Int16</option>
+                                        <option value="hex16">Hex16</option>
+                                        <option value="u32">UInt32</option>
+                                        <option value="i32">Int32</option>
+                                        <option value="f32">Float32</option>
+                                    </select>
+                                </label>
+                                <label title="针对 32 位类型的字节序：ABCD 原序 / CDAB 字交换 / BADC 字节交换 / DCBA 全反">32 位字节序
+                                    <select id="mb-endian32" class="io-select">
+                                        <option value="ABCD" selected>ABCD</option>
+                                        <option value="CDAB">CDAB</option>
+                                        <option value="BADC">BADC</option>
+                                        <option value="DCBA">DCBA</option>
+                                    </select>
+                                </label>
+                                <label title="针对 16 位类型的字节序">16 位字节序
+                                    <select id="mb-endian16" class="io-select">
+                                        <option value="AB" selected>AB (高前)</option>
+                                        <option value="BA">BA (低前)</option>
+                                    </select>
+                                </label>
+                                <label title="起始寄存器地址（仅影响显示的 Addr 列）">起始
+                                    <input type="number" id="mb-start" min="0" value="0" class="io-num" />
+                                </label>
+                                <span id="mb-frame-info"></span>
+                                <div class="io-spacer"></div>
+                                <button type="button" id="mb-clear" class="io-btn">清空</button>
+                            </div>
+                            <div id="mb-result"></div>
                         </div>
-                        <textarea id="tx-input" placeholder="输入要发送的内容，回车不会立即发送&#10;HEX 模式：支持空格、逗号分隔，如 AA BB 01 或 AABB01&#10;Modbus CRC：勾选后自动追加 CRC16 校验（低字节在前），常用 HEX 模式"></textarea>
-                    </div>
-                </div>
-                <div id="mb-panel">
-                    <div class="io-panel-inner">
-                        <div class="io-tool">
-                            <span class="io-title">Modbus 解析</span>
-                            <label>类型
-                                <select id="mb-type" class="io-select">
-                                    <option value="u16" selected>UInt16</option>
-                                    <option value="i16">Int16</option>
-                                    <option value="hex16">Hex16</option>
-                                    <option value="u32">UInt32</option>
-                                    <option value="i32">Int32</option>
-                                    <option value="f32">Float32</option>
-                                </select>
-                            </label>
-                            <label title="针对 32 位类型的字节序：ABCD 原序 / CDAB 字交换 / BADC 字节交换 / DCBA 全反">32 位字节序
-                                <select id="mb-endian32" class="io-select">
-                                    <option value="ABCD" selected>ABCD</option>
-                                    <option value="CDAB">CDAB</option>
-                                    <option value="BADC">BADC</option>
-                                    <option value="DCBA">DCBA</option>
-                                </select>
-                            </label>
-                            <label title="针对 16 位类型的字节序">16 位字节序
-                                <select id="mb-endian16" class="io-select">
-                                    <option value="AB" selected>AB (高前)</option>
-                                    <option value="BA">BA (低前)</option>
-                                </select>
-                            </label>
-                            <label title="起始寄存器地址（仅影响显示的 Addr 列）">起始
-                                <input type="number" id="mb-start" min="0" value="0" class="io-num" />
-                            </label>
-                            <span id="mb-frame-info"></span>
-                            <div class="io-spacer"></div>
-                            <button type="button" id="mb-clear" class="io-btn">清空</button>
-                        </div>
-                        <div id="mb-result"></div>
                     </div>
                 </div>
             </div>
