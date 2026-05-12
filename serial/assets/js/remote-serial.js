@@ -6,7 +6,9 @@
     const state = {
         ws: null,
         connected: false,
-        currentPort: '',
+        mode: 'serial',          // 'serial' | 'tcp'
+        currentPort: '',         // serial: /dev/ttyXXX；tcp: host:port
+        currentBaud: '',         // 仅 serial 用于底部状态栏显示
         portsLoaded: false,
         readBytes: 0,
         writeBytes: 0,
@@ -40,17 +42,24 @@
     const LS_MB_E32 = 'serial.mbEndian32';
     const LS_MB_E16 = 'serial.mbEndian16';
     const LS_MB_START = 'serial.mbStart';
+    const LS_MODE = 'serial.mode';
+    const LS_TCP_HOST = 'serial.tcpHost';
+    const LS_TCP_PORT = 'serial.tcpPort';
 
     // ======== DOM ========
     const $ = function (id) { return document.getElementById(id); };
     const el = {
         app: $('app'),
         terminalContainer: $('terminal-container'),
+        buttonModeSerial: $('button-mode-serial'),
+        buttonModeTcp: $('button-mode-tcp'),
         selectPort: $('select-port'),
         selectBaud: $('select-baud'),
         selectDataBits: $('select-databits'),
         selectParity: $('select-parity'),
         selectStopBits: $('select-stopbits'),
+        inputTcpHost: $('input-tcp-host'),
+        inputTcpPort: $('input-tcp-port'),
         buttonRefreshPorts: $('button-refresh-ports'),
         buttonScanPorts: $('button-scan-ports'),
         buttonConnect: $('button-connect'),
@@ -105,11 +114,13 @@
     terminal.open(el.terminalContainer);
     fitAddon.fit();
 
-    terminal.writeln('\x1b[36m[Remote Serial]\x1b[0m 通过 WebSocket 桥接服务器串口 /dev/ttyS*');
-    terminal.writeln('选择设备和波特率，点击「打开串口」即可开始交互');
+    terminal.writeln('\x1b[36m[Remote Serial]\x1b[0m 通过 WebSocket 桥接服务器串口 /dev/ttyS* 或 TCP 目标');
+    terminal.writeln('串口：选择设备/波特率后「打开串口」；网络：切到「网络」模式，填写主机和端口后「连接」');
 
     terminal.onData(function (data) {
         if (!state.connected || !state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+        // TCP 模式下禁用 xterm 键盘直通，避免不小心把控制字符发给对端
+        if (state.mode === 'tcp') return;
         const chars = new TextEncoder().encode(data);
         state.writeBytes += chars.length;
         sendBytes(chars);
@@ -158,6 +169,14 @@
         if (savedE16) el.mbEndian16.value = savedE16;
         const savedStart = parseInt(localStorage.getItem(LS_MB_START) || '0', 10);
         if (!isNaN(savedStart)) el.mbStart.value = savedStart;
+
+        const savedTcpHost = localStorage.getItem(LS_TCP_HOST);
+        if (savedTcpHost) el.inputTcpHost.value = savedTcpHost;
+        const savedTcpPort = localStorage.getItem(LS_TCP_PORT);
+        if (savedTcpPort) el.inputTcpPort.value = savedTcpPort;
+
+        const savedMode = localStorage.getItem(LS_MODE);
+        state.mode = (savedMode === 'tcp') ? 'tcp' : 'serial';
     }
 
     function saveConfig() {
@@ -177,7 +196,10 @@
         localStorage.setItem(LS_MB_E32, el.mbEndian32.value);
         localStorage.setItem(LS_MB_E16, el.mbEndian16.value);
         localStorage.setItem(LS_MB_START, el.mbStart.value);
-        if (state.currentPort) localStorage.setItem(LS_PORT, state.currentPort);
+        localStorage.setItem(LS_MODE, state.mode);
+        localStorage.setItem(LS_TCP_HOST, el.inputTcpHost.value || '');
+        localStorage.setItem(LS_TCP_PORT, el.inputTcpPort.value || '');
+        if (state.mode === 'serial' && state.currentPort) localStorage.setItem(LS_PORT, state.currentPort);
     }
 
     function saveTxLast() {
@@ -684,12 +706,11 @@
         // 勾选 Modbus CRC 时：
         //   - 行尾下拉置灰（RTU 帧不带 LF/CR）
         //   - 联动把接收面板切到 HEX（二进制帧文本解码会乱码）
-        //   - 打开 Modbus 解析面板
-        //   - 取消时恢复用户之前的接收显示模式，并收起解析面板
+        //   - 取消时恢复用户之前的接收显示模式
+        // 解析面板始终显示，不再随勾选切换显隐
         const on = el.txModbusCrc.checked;
         el.txEol.disabled = on;
         el.txEol.title = on ? 'Modbus CRC 模式下忽略行尾' : '';
-        el.mbPanel.classList.toggle('open', on);
         if (on) {
             if (state.rxHexBeforeModbus == null) {
                 state.rxHexBeforeModbus = el.rxModeHex.checked;
@@ -792,28 +813,46 @@
     // ======== WebSocket ========
     function wsUrl() {
         const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        return proto + '//' + location.host + '/ws/serial';
+        const path = state.mode === 'tcp' ? '/ws/tcp' : '/ws/serial';
+        return proto + '//' + location.host + path;
     }
 
     function updateStats() {
-        const tag = state.connected
-            ? ('已连接 ' + state.currentPort + ' @ ' + el.selectBaud.value + ' ' + el.selectDataBits.value + el.selectParity.value.charAt(0).toUpperCase() + el.selectStopBits.value)
-            : '未连接';
+        let tag = '未连接';
+        if (state.connected) {
+            if (state.mode === 'tcp') {
+                tag = '已连接 TCP ' + state.currentPort;
+            } else {
+                tag = '已连接 ' + state.currentPort + ' @ ' + el.selectBaud.value + ' '
+                    + el.selectDataBits.value + el.selectParity.value.charAt(0).toUpperCase() + el.selectStopBits.value;
+            }
+        }
         el.transferStats.textContent = tag + '  |  RX ' + state.readBytes + ' B  TX ' + state.writeBytes + ' B';
     }
 
     function setConnectedUI(opened) {
         state.connected = opened;
-        el.buttonConnect.textContent = opened ? '关闭串口' : '打开串口';
+        const isTcp = state.mode === 'tcp';
+        if (isTcp) {
+            el.buttonConnect.textContent = opened ? '断开连接' : '连接';
+        } else {
+            el.buttonConnect.textContent = opened ? '关闭串口' : '打开串口';
+        }
         el.selectPort.disabled = opened;
         el.selectBaud.disabled = opened;
         el.selectDataBits.disabled = opened;
         el.selectParity.disabled = opened;
         el.selectStopBits.disabled = opened;
         el.buttonRefreshPorts.disabled = opened;
-        el.buttonCtrlC.style.display = opened ? 'flex' : 'none';
-        el.buttonCtrlD.style.display = opened ? 'flex' : 'none';
-        el.buttonScrollToBottom.style.display = opened ? 'flex' : 'none';
+        el.inputTcpHost.disabled = opened;
+        el.inputTcpPort.disabled = opened;
+        el.buttonModeSerial.disabled = opened;
+        el.buttonModeTcp.disabled = opened;
+        // Ctrl+C / Ctrl+D 只在串口模式有意义（TCP 不写终端交互区）
+        const showCtrls = opened && !isTcp;
+        el.buttonCtrlC.style.display = showCtrls ? 'flex' : 'none';
+        el.buttonCtrlD.style.display = showCtrls ? 'flex' : 'none';
+        el.buttonScrollToBottom.style.display = opened && !isTcp ? 'flex' : 'none';
         if (!opened && state.txRepeatTimer) {
             clearInterval(state.txRepeatTimer);
             state.txRepeatTimer = null;
@@ -823,29 +862,27 @@
         updateStats();
     }
 
-    function openSerial() {
-        const devPath = el.selectPort.value;
-        if (!devPath) {
-            terminal.writeln('\x1b[33m请先选择一个串口设备\x1b[0m');
+    function applyMode(nextMode) {
+        if (state.connected) {
+            terminal.writeln('\x1b[33m请先断开当前连接再切换模式\x1b[0m');
             return;
         }
-        const ws = new WebSocket(wsUrl());
-        state.ws = ws;
-        state.currentPort = devPath;
+        const mode = nextMode === 'tcp' ? 'tcp' : 'serial';
+        state.mode = mode;
+        document.body.setAttribute('data-mode', mode);
+        el.buttonModeSerial.classList.toggle('active', mode === 'serial');
+        el.buttonModeTcp.classList.toggle('active', mode === 'tcp');
+        el.buttonConnect.textContent = mode === 'tcp' ? '连接' : '打开串口';
+        saveConfig();
+        updateStats();
+    }
 
-        ws.addEventListener('open', function () {
-            ws.send(JSON.stringify({
-                type: 'open',
-                payload: {
-                    path: devPath,
-                    baudRate: Number(el.selectBaud.value),
-                    dataBits: Number(el.selectDataBits.value),
-                    parity: el.selectParity.value,
-                    stopBits: Number(el.selectStopBits.value),
-                },
-            }));
-        });
+    function openConnection() {
+        if (state.mode === 'tcp') return openTcp();
+        return openSerial();
+    }
 
+    function attachWsHandlers(ws, describeTarget) {
         ws.addEventListener('message', function (event) {
             let msg;
             try { msg = JSON.parse(event.data); } catch (_err) { return; }
@@ -853,10 +890,13 @@
             if (msg.type === 'status') {
                 if (payload.state === 'opened') {
                     setConnectedUI(true);
-                    terminal.writeln('\x1b[32m[已打开] ' + payload.port + ' @ ' + payload.baudRate + '\x1b[0m');
-                    pushRxLine('** ', '已打开 ' + payload.port + ' @ ' + payload.baudRate);
+                    const banner = describeTarget(payload);
+                    terminal.writeln('\x1b[32m[已打开] ' + banner + '\x1b[0m');
+                    pushRxLine('** ', '已打开 ' + banner);
                     terminal.focus();
                     saveConfig();
+                } else if (payload.state === 'connecting') {
+                    terminal.writeln('\x1b[36m[连接中] ' + (payload.host || '') + ':' + (payload.port || '') + '\x1b[0m');
                 } else if (payload.state === 'closed') {
                     setConnectedUI(false);
                     terminal.writeln('\x1b[33m[已关闭]' + (payload.reason ? ' (' + payload.reason + ')' : '') + '\x1b[0m');
@@ -873,9 +913,9 @@
                     bytes = new TextEncoder().encode(payload.data || '');
                 }
                 state.readBytes += bytes.length;
-                // Modbus/HEX 这类二进制协议场景，字节含控制字符，写进 xterm 会变乱码
-                // 只在"非 Modbus 且接收面板非 HEX"时才写终端交互区
-                const suppressXterm = el.txModbusCrc.checked || el.rxModeHex.checked;
+                // TCP/Modbus/HEX 这类场景，字节含控制字符，写进 xterm 会变乱码
+                // 只在"串口模式 且 非 Modbus 且 接收面板非 HEX"时才写终端交互区
+                const suppressXterm = state.mode === 'tcp' || el.txModbusCrc.checked || el.rxModeHex.checked;
                 if (!suppressXterm) {
                     terminal.write(bytes);
                 }
@@ -901,15 +941,72 @@
         });
     }
 
-    function closeSerial() {
+    function openSerial() {
+        const devPath = el.selectPort.value;
+        if (!devPath) {
+            terminal.writeln('\x1b[33m请先选择一个串口设备\x1b[0m');
+            return;
+        }
+        const ws = new WebSocket(wsUrl());
+        state.ws = ws;
+        state.currentPort = devPath;
+
+        ws.addEventListener('open', function () {
+            ws.send(JSON.stringify({
+                type: 'open',
+                payload: {
+                    path: devPath,
+                    baudRate: Number(el.selectBaud.value),
+                    dataBits: Number(el.selectDataBits.value),
+                    parity: el.selectParity.value,
+                    stopBits: Number(el.selectStopBits.value),
+                },
+            }));
+        });
+
+        attachWsHandlers(ws, function (p) {
+            return (p.port || devPath) + ' @ ' + (p.baudRate || el.selectBaud.value);
+        });
+    }
+
+    function openTcp() {
+        const host = String(el.inputTcpHost.value || '').trim();
+        const port = parseInt(el.inputTcpPort.value, 10);
+        if (!host) {
+            terminal.writeln('\x1b[33m请输入目标主机\x1b[0m');
+            return;
+        }
+        if (!Number.isFinite(port) || port < 1 || port > 65535) {
+            terminal.writeln('\x1b[33m请输入合法端口号 (1-65535)\x1b[0m');
+            return;
+        }
+        const target = host + ':' + port;
+        const ws = new WebSocket(wsUrl());
+        state.ws = ws;
+        state.currentPort = target;
+
+        ws.addEventListener('open', function () {
+            ws.send(JSON.stringify({
+                type: 'open',
+                payload: { host: host, port: port },
+            }));
+        });
+
+        attachWsHandlers(ws, function (p) {
+            const t = (p.host || host) + ':' + (p.port || port);
+            return p.remoteAddress ? (t + ' (' + p.remoteAddress + ':' + (p.remotePort || port) + ')') : t;
+        });
+    }
+
+    function closeConnection() {
         if (!state.ws) { setConnectedUI(false); return; }
         try { state.ws.send(JSON.stringify({ type: 'close' })); } catch (_err) {}
         try { state.ws.close(); } catch (_err) {}
     }
 
     function toggleConnect() {
-        if (state.connected) closeSerial();
-        else openSerial();
+        if (state.connected) closeConnection();
+        else openConnection();
     }
 
     // ======== 事件绑定 ========
@@ -953,6 +1050,21 @@
     el.selectDataBits.addEventListener('change', saveConfig);
     el.selectParity.addEventListener('change', saveConfig);
     el.selectStopBits.addEventListener('change', saveConfig);
+
+    // 模式切换
+    el.buttonModeSerial.addEventListener('click', function () { applyMode('serial'); });
+    el.buttonModeTcp.addEventListener('click', function () { applyMode('tcp'); });
+    el.inputTcpHost.addEventListener('change', saveConfig);
+    el.inputTcpPort.addEventListener('change', saveConfig);
+    // TCP 模式下在主机/端口输入框按回车等价于点击「连接」
+    function tcpEnterToConnect(e) {
+        if (e.key === 'Enter' && state.mode === 'tcp' && !state.connected) {
+            e.preventDefault();
+            toggleConnect();
+        }
+    }
+    el.inputTcpHost.addEventListener('keydown', tcpEnterToConnect);
+    el.inputTcpPort.addEventListener('keydown', tcpEnterToConnect);
 
     // RX 控件
     el.rxClear.addEventListener('click', clearRx);
@@ -1003,6 +1115,7 @@
 
     // ======== 初始化 ========
     loadConfig();
+    applyMode(state.mode);
     syncModbusUI();
     setConnectedUI(false);
     fetchPorts(false);

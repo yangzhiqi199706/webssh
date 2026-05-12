@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>信创短信猫 · Web SSH</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #020617;
+      --panel: #0f172a;
+      --panel-2: #111827;
+      --border: #1f2937;
+      --text: #e5e7eb;
+      --muted: #94a3b8;
+      --cyan: #22d3ee;
+      --green: #34d399;
+      --amber: #fbbf24;
+      --red: #f87171;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 13px;
+    }
+    #app { display: flex; flex-direction: column; height: 100vh; }
+    .top-bar {
+      height: 44px; flex-shrink: 0;
+      display: flex; align-items: center; gap: 10px;
+      padding: 0 14px;
+      background: #0f172a;
+      border-bottom: 1px solid var(--border);
+    }
+    .top-bar .title { font-weight: 700; color: var(--cyan); letter-spacing: .06em; }
+    .top-bar .subtitle { color: var(--muted); font-size: 12px; }
+    .btn {
+      border: 1px solid #334155;
+      background: #0b1220;
+      color: var(--text);
+      border-radius: 8px;
+      padding: 7px 12px;
+      font-size: 12px;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .btn:hover { border-color: #475569; background: #111827; }
+    .btn.primary { background: #06b6d4; color: #082f49; border-color: transparent; font-weight: 700; }
+    .btn.primary:hover { background: #22d3ee; }
+    .btn.danger { background: #7f1d1d; color: #fecaca; border-color: transparent; }
+    .btn.danger:hover { background: #991b1b; }
+    .btn:disabled { opacity: .5; cursor: not-allowed; }
+
+    .main { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 10px; }
+    .column {
+      display: flex; flex-direction: column; min-height: 0; min-width: 0;
+      background: rgba(15, 23, 42, .92);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      overflow: hidden;
+    }
+    .column-head {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(2, 6, 23, .4);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .column-head h2 { margin: 0; font-size: 14px; font-weight: 700; color: #e2e8f0; }
+    .column-head .muted { color: var(--muted); font-size: 12px; }
+    .column-body { flex: 1; min-height: 0; overflow: auto; padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+    .column-body > .card { display: flex; flex-direction: column; min-height: 0; }
+    #monitorCard { flex: 1; min-height: 0; }
+    #monList { flex: 1; min-height: 0; }
+
+    .card {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: rgba(2, 6, 23, .5);
+      padding: 14px;
+    }
+    .card-title {
+      font-size: 13px; font-weight: 700; color: #e2e8f0;
+      margin: 0 0 10px; display: flex; align-items: center; gap: 8px;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #64748b; }
+    .dot.on { background: var(--green); box-shadow: 0 0 0 3px rgba(52, 211, 153, .18); }
+    .dot.off { background: #64748b; }
+    .dot.err { background: var(--red); }
+
+    .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; }
+    .field { display: flex; flex-direction: column; gap: 5px; font-size: 12px; }
+    .field.span-2 { grid-column: span 2; }
+    .field span { color: var(--muted); }
+    .field input {
+      font: inherit; font-size: 13px;
+      border-radius: 8px;
+      border: 1px solid #334155;
+      background: #020617;
+      color: var(--text);
+      padding: 8px 10px;
+      outline: none;
+    }
+    .field input:focus { border-color: rgba(34, 211, 238, .6); box-shadow: 0 0 0 3px rgba(34, 211, 238, .12); }
+    .field input:disabled { opacity: .6; background: #0b1220; }
+
+    .actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+    .status-box {
+      margin-top: 10px;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: #0b1220;
+      font-size: 12px;
+      line-height: 1.7;
+      color: #cbd5e1;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .status-box .err { color: #fecaca; }
+
+    .placeholder {
+      border: 1px dashed #334155; border-radius: 12px;
+      padding: 20px; color: var(--muted); text-align: center; font-size: 13px;
+      background: rgba(2, 6, 23, .4);
+    }
+    .alarm-row {
+      padding: 8px 12px;
+      border-bottom: 1px solid #1f2937;
+      display: grid;
+      grid-template-columns: 64px 56px minmax(0, 1fr) 150px;
+      gap: 4px 10px;
+      font-size: 12px;
+      align-items: baseline;
+      cursor: pointer;
+      user-select: none;
+    }
+    .alarm-row:hover { background: rgba(34, 211, 238, .04); }
+    .alarm-row:last-child { border-bottom: 0; }
+    .alarm-row.new { animation: flashNew 2.5s ease-out; }
+    @keyframes flashNew {
+      0% { background: rgba(251, 191, 36, .25); }
+      100% { background: transparent; }
+    }
+    .alarm-id { color: #67e8f9; font-weight: 700; font-family: ui-monospace, monospace; }
+    .alarm-level {
+      font-family: inherit; font-weight: 700; font-size: 11px;
+      padding: 2px 4px; border-radius: 4px; text-align: center;
+      background: rgba(148, 163, 184, .12); color: #cbd5e1;
+      white-space: nowrap;
+    }
+    /* 颜色：越严重越红 */
+    .alarm-level.lv-1 { background: rgba(148, 163, 184, .14); color: #cbd5e1; }
+    .alarm-level.lv-2 { background: rgba(34, 211, 238, .16); color: #67e8f9; }
+    .alarm-level.lv-3 { background: rgba(251, 191, 36, .16); color: #fcd34d; }
+    .alarm-level.lv-4 { background: rgba(248, 113, 113, .18); color: #fca5a5; }
+    .alarm-level.lv-5 { background: rgba(220, 38, 38, .28); color: #fecaca; box-shadow: 0 0 0 1px rgba(220,38,38,.4); }
+    .alarm-text { color: #e2e8f0; word-break: break-all; line-height: 1.5; }
+    .alarm-time { color: #94a3b8; font-family: ui-monospace, monospace; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .detail-list { display: flex; flex-direction: column; gap: 0; }
+    .detail-item {
+      display: flex; gap: 10px;
+      padding: 8px 0;
+      border-bottom: 1px dashed #1e293b;
+      font-size: 12px;
+    }
+    .detail-item:last-child { border-bottom: 0; }
+    .detail-item .k {
+      color: #64748b;
+      font-family: ui-monospace, monospace;
+      flex-shrink: 0;
+      width: 140px;
+    }
+    .detail-item .v {
+      color: #e2e8f0;
+      word-break: break-all;
+      flex: 1; min-width: 0;
+    }
+    .detail-item .v.null { color: #475569; font-style: italic; }
+    .alarm-row.cancelled .alarm-id { color: #a7f3d0; }
+    .alarm-row.cancelled .alarm-text { color: #cbd5e1; text-decoration: line-through; text-decoration-color: #475569; }
+    .alarm-row.cancelled.new { animation: flashCancel 2.5s ease-out; }
+    @keyframes flashCancel {
+      0% { background: rgba(52, 211, 153, .25); }
+      100% { background: transparent; }
+    }
+    /* 列表头 */
+    .alarm-head {
+      display: grid;
+      grid-template-columns: 64px 56px minmax(0, 1fr) 150px;
+      gap: 4px 10px;
+      padding: 8px 12px;
+      background: #0f172a;
+      border-bottom: 1px solid #1f2937;
+      font-size: 11px;
+      color: #64748b;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+    }
+    /* 数据连接弹窗 */
+    .modal-mask {
+      position: fixed; inset: 0;
+      background: rgba(2, 6, 23, .72);
+      display: none; align-items: center; justify-content: center;
+      padding: 20px; z-index: 80;
+    }
+    .modal-mask.open { display: flex; }
+    .modal {
+      width: min(560px, 100%);
+      border: 1px solid #334155;
+      border-radius: 16px;
+      background: #0f172a;
+      box-shadow: 0 24px 80px rgba(2,6,23,.6);
+      overflow: hidden;
+      display: flex; flex-direction: column;
+    }
+    .modal-head {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .modal-head h3 { margin: 0; font-size: 14px; font-weight: 700; color: #e2e8f0; }
+    .modal-body { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <header class="top-bar">
+      <div class="title">信创短信猫</div>
+      <div class="subtitle">数据库监测 + 短信推送</div>
+    </header>
+
+    <section class="main">
+      <div class="column" id="colDb">
+        <div class="column-head">
+          <h2>数据库监测区</h2>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <span class="dot" id="dbDot"></span>
+            <span class="muted" id="dbState" style="font-size:12px">加载中…</span>
+            <button class="btn" id="btnOpenDbModal" type="button" style="padding:6px 10px;font-size:12px">数据连接</button>
+            <button class="btn" id="btnOpenMonModal" type="button" style="padding:6px 10px;font-size:12px">监测设置</button>
+          </div>
+        </div>
+        <div class="column-body">
+          <div class="card" id="monitorCard">
+            <div class="card-title">
+              <span class="dot" id="monDot"></span>
+              <span>新告警提示</span>
+              <span class="muted" id="monState" style="margin-left:auto;font-weight:normal">加载中…</span>
+            </div>
+            <div style="font-size:12px;color:#94a3b8;margin-bottom:6px">最近告警（按 id 增序；点击行打开完整字段弹窗）</div>
+            <div id="monList" style="flex:1;min-height:160px;max-height:40vh;overflow:auto;border:1px solid var(--border);border-radius:10px;background:#0b1020">
+              <div class="alarm-head">
+                <span>ID</span><span>等级</span><span>告警内容</span><span style="text-align:right">创建时间</span>
+              </div>
+              <div style="padding:14px;color:#64748b;font-size:12px;text-align:center" id="monListEmpty">暂无新告警</div>
+            </div>
+          </div>
+
+          <div class="card" id="cancelCard">
+            <div class="card-title">
+              <span class="dot" id="cancelDot"></span>
+              <span>告警解除</span>
+              <span class="muted" id="cancelState" style="margin-left:auto;font-weight:normal">按 CancelTime 增量</span>
+            </div>
+            <div style="font-size:12px;color:#94a3b8;margin-bottom:6px">点击行打开完整字段弹窗</div>
+            <div id="cancelList" style="flex:1;min-height:120px;max-height:30vh;overflow:auto;border:1px solid var(--border);border-radius:10px;background:#0b1020">
+              <div class="alarm-head cancel-head">
+                <span>ID</span><span>等级</span><span>告警内容</span><span style="text-align:right">解除时间</span>
+              </div>
+              <div style="padding:14px;color:#64748b;font-size:12px;text-align:center" id="cancelListEmpty">暂无告警解除</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="column" id="colSms">
+        <div class="column-head">
+          <h2>短信猫推送区</h2>
+          <span class="muted">规划中</span>
+        </div>
+        <div class="column-body">
+          <div class="placeholder">短信猫推送子模块（下一步）</div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- 数据连接弹窗 -->
+  <div class="modal-mask" id="dbModal" aria-hidden="true">
+    <div class="modal">
+      <div class="modal-head">
+        <h3>数据连接</h3>
+        <button class="btn" id="btnCloseDbModal" type="button">关闭</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-grid">
+          <label class="field">
+            <span>主机</span>
+            <input id="dbHost" type="text" placeholder="127.0.0.1" />
+          </label>
+          <label class="field">
+            <span>端口</span>
+            <input id="dbPort" type="number" min="1" max="65535" placeholder="3306" />
+          </label>
+          <label class="field">
+            <span>数据库名</span>
+            <input id="dbDatabase" type="text" placeholder="例如 sms" />
+          </label>
+          <label class="field">
+            <span>用户名</span>
+            <input id="dbUser" type="text" placeholder="root" />
+          </label>
+          <label class="field span-2">
+            <span>密码</span>
+            <input id="dbPassword" type="password" placeholder="连接成功后会落盘，用于开机自启" autocomplete="new-password" />
+          </label>
+        </div>
+        <div class="actions">
+          <button class="btn primary" id="btnConnect" type="button">连接</button>
+          <button class="btn danger" id="btnDisconnect" type="button">断开</button>
+          <button class="btn" id="btnRefresh" type="button">刷新状态</button>
+          <span class="muted" id="saveHint" style="margin-left:auto;align-self:center"></span>
+        </div>
+        <div class="status-box" id="statusBox">等待状态…</div>
+        <div class="muted" id="driverHint" style="font-size:12px"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 监测设置弹窗 -->
+  <div class="modal-mask" id="monModal" aria-hidden="true">
+    <div class="modal">
+      <div class="modal-head">
+        <h3>监测设置</h3>
+        <button class="btn" id="btnCloseMonModal" type="button">关闭</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-grid">
+          <label class="field">
+            <span>监测开关</span>
+            <select id="monEnabled">
+              <option value="1">开启</option>
+              <option value="0">关闭</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>轮询间隔（秒，1-3600）</span>
+            <input id="monInterval" type="number" min="1" max="3600" step="1" />
+          </label>
+          <label class="field span-2">
+            <span>前端缓冲条数（10-500）</span>
+            <input id="monBuffer" type="number" min="10" max="500" step="10" />
+          </label>
+        </div>
+        <div class="actions">
+          <button class="btn primary" id="btnMonSave" type="button">保存</button>
+          <button class="btn" id="btnMonClear" type="button">清空列表</button>
+          <span class="muted" id="monSaveHint" style="margin-left:auto;align-self:center"></span>
+        </div>
+        <div class="status-box" id="monMetaBox">等待…</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 告警详情弹窗：展示某一行完整字段，每行一项 -->
+  <div class="modal-mask" id="detailModal" aria-hidden="true">
+    <div class="modal">
+      <div class="modal-head">
+        <h3 id="detailModalTitle">告警详情</h3>
+        <button class="btn" id="btnCloseDetailModal" type="button">关闭</button>
+      </div>
+      <div class="modal-body" style="max-height:70vh;overflow:auto">
+        <div id="detailModalBody"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="./assets/js/sms-db.js"></script>
+  <script src="./assets/js/sms-monitor.js"></script>
+</body>
+</html>

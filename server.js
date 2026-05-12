@@ -1,6 +1,7 @@
 const express = require('express');
 const fs = require('fs');
 const http = require('http');
+const net = require('net');
 const WebSocket = require('ws');
 const { Client } = require('ssh2');
 const { spawn } = require('child_process');
@@ -9,6 +10,7 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ noServer: true });
 const wssSerial = new WebSocket.Server({ noServer: true });
+const wssTcp = new WebSocket.Server({ noServer: true });
 
 // 统一的 upgrade 分发：按路径把连接交给对应的 WebSocket.Server
 server.on('upgrade', function (request, socket, head) {
@@ -20,6 +22,10 @@ server.on('upgrade', function (request, socket, head) {
   } else if (pathname === '/ws/serial') {
     wssSerial.handleUpgrade(request, socket, head, function (ws) {
       wssSerial.emit('connection', ws, request);
+    });
+  } else if (pathname === '/ws/tcp') {
+    wssTcp.handleUpgrade(request, socket, head, function (ws) {
+      wssTcp.emit('connection', ws, request);
     });
   } else {
     socket.destroy();
@@ -945,6 +951,154 @@ wssSerial.on('connection', function (ws) {
   });
 });
 
+// ===================== TCP 客户端桥接（浏览器 ↔ /ws/tcp ↔ 远端 TCP 服务）=====================
+//
+// 协议：浏览器 ↔ /ws/tcp
+//   上行：{ type: 'open',  payload: { host, port, connectTimeoutMs? } }
+//         { type: 'input', payload: { encoding: 'base64'|'utf8', data } }
+//         { type: 'close' }
+//   下行：{ type: 'status', payload: { state, host, port, remoteAddress?, reason? } }
+//         { type: 'output', payload: { encoding: 'base64', data } }
+//         { type: 'error',  payload: { message } }
+
+function isValidTcpHost(h) {
+  if (typeof h !== 'string') return false;
+  const s = h.trim();
+  if (!s || s.length > 253) return false;
+  // 允许 IPv4 / IPv6 / 合法主机名；阻止明显异常字符
+  return /^[A-Za-z0-9._:\-\[\]]+$/.test(s);
+}
+
+function normalizeTcpPort(p) {
+  const n = Number(p);
+  if (!Number.isFinite(n)) return null;
+  if (n < 1 || n > 65535 || Math.floor(n) !== n) return null;
+  return n;
+}
+
+wssTcp.on('connection', function (ws) {
+  let socket = null;
+  let connectedTarget = null;
+
+  function send(type, payload) {
+    if (ws.readyState !== WebSocket.OPEN) return;
+    try {
+      ws.send(JSON.stringify({ type: type, payload: payload }));
+    } catch (_err) {}
+  }
+
+  function teardown(reason) {
+    const prev = connectedTarget;
+    connectedTarget = null;
+    if (socket) {
+      try { socket.destroy(); } catch (_err) {}
+      socket = null;
+    }
+    if (prev) {
+      send('status', { state: 'closed', host: prev.host, port: prev.port, reason: reason || '' });
+    } else {
+      send('status', { state: 'closed', reason: reason || '' });
+    }
+  }
+
+  ws.on('message', function (raw) {
+    let msg;
+    try { msg = JSON.parse(raw.toString('utf8')); } catch (_err) { return; }
+    const payload = msg && msg.payload ? msg.payload : {};
+
+    if (msg.type === 'open') {
+      if (socket) {
+        send('error', { message: '连接已存在，请先关闭' });
+        return;
+      }
+      const host = String(payload.host || '').trim();
+      const port = normalizeTcpPort(payload.port);
+      if (!isValidTcpHost(host)) {
+        send('error', { message: '无效的主机地址：' + host });
+        return;
+      }
+      if (port == null) {
+        send('error', { message: '无效的端口号：' + payload.port });
+        return;
+      }
+      const connectTimeoutMs = Math.max(500, Math.min(60000, Number(payload.connectTimeoutMs) || 5000));
+
+      send('status', { state: 'connecting', host: host, port: port });
+
+      socket = new net.Socket();
+      socket.setNoDelay(true);
+      let connectTimer = setTimeout(function () {
+        if (socket && !connectedTarget) {
+          send('error', { message: '连接超时' });
+          teardown('timeout');
+        }
+      }, connectTimeoutMs);
+
+      socket.on('connect', function () {
+        clearTimeout(connectTimer);
+        connectedTarget = { host: host, port: port };
+        send('status', {
+          state: 'opened',
+          host: host,
+          port: port,
+          remoteAddress: socket.remoteAddress || '',
+          remotePort: socket.remotePort || 0,
+        });
+      });
+
+      socket.on('data', function (chunk) {
+        send('output', { encoding: 'base64', data: chunk.toString('base64') });
+      });
+
+      socket.on('error', function (err) {
+        clearTimeout(connectTimer);
+        send('error', { message: 'TCP 错误：' + err.message });
+      });
+
+      socket.on('close', function (hadError) {
+        clearTimeout(connectTimer);
+        teardown(hadError ? 'transport-error' : 'remote-close');
+      });
+
+      try {
+        socket.connect(port, host);
+      } catch (err) {
+        clearTimeout(connectTimer);
+        send('error', { message: '发起连接失败：' + err.message });
+        teardown('connect-failed');
+      }
+      return;
+    }
+
+    if (msg.type === 'input') {
+      if (!socket || !connectedTarget) {
+        send('error', { message: 'TCP 未连接' });
+        return;
+      }
+      let buf;
+      if (payload.encoding === 'base64') {
+        buf = Buffer.from(String(payload.data || ''), 'base64');
+      } else {
+        buf = Buffer.from(String(payload.data || msg.data || ''), 'utf8');
+      }
+      if (!buf.length) return;
+      try { socket.write(buf); } catch (err) {
+        send('error', { message: '发送失败：' + err.message });
+      }
+      return;
+    }
+
+    if (msg.type === 'close') {
+      teardown('client-close');
+      return;
+    }
+  });
+
+  ws.on('close', function () {
+    teardown('ws-close');
+  });
+});
+
 // ===== docker 自动重启模块 =====
 // 目的：解决系统开机后 docker 偶发启动异常——服务起来时若启用，倒计时后本机执行 systemctl restart docker。
 (function setupDockerRestart() {
@@ -1137,6 +1291,429 @@ wssSerial.on('connection', function (ws) {
   readConfig();
   if (config.enabled) scheduleCountdown('service-start');
   appendLog(`服务启动，enabled=${config.enabled} countdown=${config.countdownSec}s`);
+})();
+
+// ===== 信创短信猫 - 数据库连接模块 =====
+// 目的：给"短信猫"功能提供一条可配置、可持久化、可开机自启的 MySQL 连接
+(function setupSmsDb() {
+  const path = require('path');
+  let mysql;
+  try { mysql = require('mysql2/promise'); } catch (_e) { mysql = null; }
+
+  const CONFIG_DIR = path.join(__dirname, 'config');
+  const CONFIG_PATH = process.env.SMS_DB_CONFIG || path.join(CONFIG_DIR, 'sms-db.json');
+  const LOG_PATH = process.env.SMS_DB_LOG || path.join(__dirname, 'logs', 'sms-db.log');
+
+  const defaults = {
+    host: '127.0.0.1',
+    port: 3306,
+    database: '',
+    user: '',
+    password: '',
+    autoStart: false, // 上次手动"连接成功"后置 true；手动"断开"后置 false
+  };
+  let cfg = Object.assign({}, defaults);
+  let pool = null;
+  let connected = false;
+  let lastError = '';
+  let lastConnectedAt = '';
+  let lastAttempt = null; // 最近一次"连接"请求的参数（不含密码），不落盘
+
+  function localStamp(d) {
+    d = d || new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
+      + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+  }
+
+  function appendLog(line) {
+    try {
+      fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true });
+      fs.appendFileSync(LOG_PATH, `[${localStamp()}] ${line}\n`, 'utf8');
+    } catch (_e) {}
+  }
+
+  function readCfg() {
+    try {
+      const raw = fs.readFileSync(CONFIG_PATH, 'utf8');
+      const parsed = JSON.parse(raw);
+      cfg = Object.assign({}, defaults, parsed);
+    } catch (_e) { cfg = Object.assign({}, defaults); }
+  }
+
+  function writeCfg() {
+    try {
+      fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
+      fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+      // 密码在里面，尽量收紧权限；非 root 或 Windows 会忽略错误
+      try { fs.chmodSync(CONFIG_PATH, 0o600); } catch (_e) {}
+    } catch (err) {
+      console.error('[sms-db] 写配置失败:', err.message);
+    }
+  }
+
+  function publicStatus() {
+    const display = lastAttempt || cfg;
+    return {
+      connected,
+      autoStart: !!cfg.autoStart,
+      host: display.host,
+      port: display.port,
+      user: display.user,
+      database: display.database,
+      lastError,
+      lastConnectedAt,
+      driverReady: !!mysql,
+    };
+  }
+
+  async function closePool(reason) {
+    if (pool) {
+      const old = pool;
+      pool = null;
+      connected = false;
+      try { await old.end(); } catch (_e) {}
+      appendLog(`已断开：${reason || ''}`.trim());
+    } else {
+      connected = false;
+    }
+  }
+
+  async function openPool(options) {
+    if (!mysql) throw new Error('mysql2 驱动未安装');
+    await closePool('reconnect');
+    const p = mysql.createPool({
+      host: options.host,
+      port: Number(options.port) || 3306,
+      user: options.user,
+      password: options.password,
+      database: options.database || undefined,
+      waitForConnections: true,
+      connectionLimit: 5,
+      queueLimit: 0,
+      connectTimeout: 8000,
+    });
+    // 立即拿一条连接做探活，失败就扔异常
+    const conn = await p.getConnection();
+    try { await conn.ping(); } finally { conn.release(); }
+    pool = p;
+    connected = true;
+    lastError = '';
+    lastConnectedAt = localStamp();
+    return p;
+  }
+
+  async function tryAutoStart() {
+    if (!cfg.autoStart) { appendLog('未开启 autoStart，跳过自启'); return; }
+    if (!cfg.host || !cfg.user) { appendLog('配置不完整，跳过自启'); return; }
+    try {
+      await openPool(cfg);
+      appendLog(`自启成功：${cfg.user}@${cfg.host}:${cfg.port}/${cfg.database || '-'}`);
+    } catch (err) {
+      lastError = err.message;
+      appendLog(`自启失败：${err.message}`);
+    }
+  }
+
+  app.get('/api/sms/db/status', function (_req, res) {
+    res.json(publicStatus());
+  });
+
+  app.post('/api/sms/db/connect', async function (req, res) {
+    const body = req.body || {};
+    const host = String(body.host || '').trim() || defaults.host;
+    const port = Number(body.port) || defaults.port;
+    const user = String(body.user || '').trim();
+    const password = String(body.password || '');
+    const database = String(body.database || '').trim();
+    if (!user) return res.status(400).json({ ok: false, message: '用户名不能为空' });
+    if (!mysql) return res.status(500).json({ ok: false, message: 'mysql2 驱动未安装' });
+    lastAttempt = { host, port, user, database };
+    try {
+      await openPool({ host, port, user, password, database });
+      cfg = Object.assign({}, cfg, { host, port, user, password, database, autoStart: true });
+      writeCfg();
+      appendLog(`手动连接成功：${user}@${host}:${port}/${database || '-'}`);
+      res.json({ ok: true, status: publicStatus() });
+    } catch (err) {
+      lastError = err.message;
+      appendLog(`手动连接失败：${err.message}（尝试 ${user}@${host}:${port}/${database || '-'}）`);
+      res.status(500).json({ ok: false, message: err.message, status: publicStatus() });
+    }
+  });
+
+  app.post('/api/sms/db/disconnect', async function (_req, res) {
+    await closePool('manual-disconnect');
+    cfg.autoStart = false;
+    writeCfg();
+    appendLog('手动断开，已关闭 autoStart');
+    res.json({ ok: true, status: publicStatus() });
+  });
+
+  readCfg();
+  tryAutoStart().catch(() => {});
+
+  // 对外暴露一个只读入口，方便后续短信猫推送模块复用同一连接池
+  global.__smsDbGetPool = function () { return pool; };
+})();
+
+// ===== 信创短信猫 - 数据库监测「新告警提示」 =====
+(function setupSmsMonitor() {
+  const path = require('path');
+
+  const CONFIG_PATH = process.env.SMS_MONITOR_CONFIG
+    || path.join(__dirname, 'config', 'sms-monitor.json');
+  const LOG_PATH = process.env.SMS_MONITOR_LOG
+    || path.join(__dirname, 'logs', 'sms-monitor.log');
+
+  const TABLE = 'dcim-alarmlist';
+  const MIN_INTERVAL = 1;
+  const MAX_INTERVAL = 3600;
+  const MAX_BUFFER = 500;
+  // 新告警插入后 TextMessage 会由另一个进程异步填充，约 2-3 秒。
+  // 在此之前先不往前端推，挂在 pending 里每轮轮询复查；超过这个时长兜底推出。
+  const MAX_PENDING_SEC = 30;
+
+  const defaults = { enabled: true, intervalSec: 3, bufferSize: 200 };
+  let cfg = Object.assign({}, defaults);
+  let timer = null;
+  let polling = false;
+  let lastSeenId = 0;
+  let alarmBuffer = [];        // [{ clientId, row }]
+  let nextClientId = 1;
+  // 等待 TextMessage 填充的新告警：Map<id, { firstSeenMs, row }>
+  let pendingAlarms = new Map();
+  // 告警解除：按 CancelTime 增量，不看 id（同一条 id 被 UPDATE）
+  let lastCancelMs = 0;        // 时间戳毫秒，作为游标
+  let cancelBuffer = [];       // [{ clientId, row }]
+  let nextCancelClientId = 1;
+  let totalCancelled = 0;
+  let lastError = '';
+  let lastPollAt = '';
+  let totalFetched = 0;
+
+  function localStamp(d) {
+    d = d || new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
+      + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+  }
+  function appendLog(line) {
+    try {
+      fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true });
+      fs.appendFileSync(LOG_PATH, `[${localStamp()}] ${line}\n`, 'utf8');
+    } catch (_e) {}
+  }
+  function clamp(v, min, max, dft) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return dft;
+    return Math.max(min, Math.min(max, Math.floor(n)));
+  }
+  function readCfg() {
+    try {
+      const raw = fs.readFileSync(CONFIG_PATH, 'utf8');
+      const parsed = JSON.parse(raw);
+      cfg = {
+        enabled: Boolean(parsed.enabled),
+        intervalSec: clamp(parsed.intervalSec, MIN_INTERVAL, MAX_INTERVAL, defaults.intervalSec),
+        bufferSize: clamp(parsed.bufferSize, 10, MAX_BUFFER, defaults.bufferSize),
+      };
+    } catch (_e) {
+      cfg = Object.assign({}, defaults);
+    }
+  }
+  function writeCfg() {
+    try {
+      fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
+      fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+    } catch (err) {
+      console.error('[sms-monitor] 写配置失败:', err.message);
+    }
+  }
+  function getPool() {
+    return typeof global.__smsDbGetPool === 'function' ? global.__smsDbGetPool() : null;
+  }
+
+  async function initLastSeenId() {
+    const pool = getPool();
+    if (!pool) return;
+    try {
+      const [rows] = await pool.query('SELECT COALESCE(MAX(id),0) AS maxId FROM `' + TABLE + '`');
+      lastSeenId = Number(rows[0] && rows[0].maxId) || 0;
+      // 同时把 CancelTime 游标对齐到当前最大值，避免首次把历史解除全部当成新事件
+      const [c] = await pool.query('SELECT MAX(CancelTime) AS maxT FROM `' + TABLE + '` WHERE CancelTime IS NOT NULL');
+      const maxT = c[0] && c[0].maxT;
+      lastCancelMs = maxT ? new Date(maxT).getTime() : 0;
+      appendLog(`初始化 lastSeenId=${lastSeenId} lastCancelMs=${lastCancelMs}`);
+    } catch (err) {
+      lastError = err.message;
+      appendLog(`初始化失败：${err.message}`);
+    }
+  }
+
+  async function pollOnce() {
+    if (polling) return;
+    const pool = getPool();
+    if (!pool) { lastError = '数据库未连接'; return; }
+    polling = true;
+    try {
+      if (lastSeenId === 0 && lastCancelMs === 0) await initLastSeenId();
+
+      // 1) 新告警：id > lastSeenId，但 TextMessage 可能稍后由其它进程填充，
+      //    所以 TextMessage 为空时先入 pending，等下次轮询再查。
+      const [rows] = await pool.query(
+        'SELECT * FROM `' + TABLE + '` WHERE id > ? ORDER BY id ASC LIMIT 200',
+        [lastSeenId]
+      );
+      lastPollAt = localStamp();
+      if (rows && rows.length) {
+        const nowMs = Date.now();
+        for (const row of rows) {
+          const text = row.TextMessage;
+          if (text != null && String(text).trim() !== '') {
+            alarmBuffer.push({ clientId: nextClientId++, row });
+          } else {
+            pendingAlarms.set(Number(row.id), { firstSeenMs: nowMs, row });
+          }
+          if (Number(row.id) > lastSeenId) lastSeenId = Number(row.id);
+        }
+        totalFetched += rows.length;
+        appendLog(`新增 ${rows.length} 条，lastSeenId=${lastSeenId}，其中 pending=${pendingAlarms.size}`);
+      }
+
+      // 1.5) 复查 pending：TextMessage 已填或超时则 flush 进 alarmBuffer
+      if (pendingAlarms.size) {
+        const ids = Array.from(pendingAlarms.keys());
+        const placeholders = ids.map(function () { return '?'; }).join(',');
+        const [fresh] = await pool.query(
+          'SELECT * FROM `' + TABLE + '` WHERE id IN (' + placeholders + ')',
+          ids
+        );
+        const byId = new Map();
+        (fresh || []).forEach(function (r) { byId.set(Number(r.id), r); });
+        const nowMs = Date.now();
+        for (const id of ids) {
+          const p = pendingAlarms.get(id);
+          const latest = byId.get(id) || p.row;
+          const text = latest.TextMessage;
+          const filled = text != null && String(text).trim() !== '';
+          const timeout = (nowMs - p.firstSeenMs) / 1000 >= MAX_PENDING_SEC;
+          if (filled || timeout) {
+            alarmBuffer.push({ clientId: nextClientId++, row: latest });
+            pendingAlarms.delete(id);
+            if (timeout && !filled) {
+              appendLog(`id=${id} 等待 TextMessage 超时 ${MAX_PENDING_SEC}s，兜底放行`);
+            }
+          }
+        }
+      }
+      if (alarmBuffer.length > cfg.bufferSize) {
+        alarmBuffer = alarmBuffer.slice(-cfg.bufferSize);
+      }
+
+      // 2) 告警解除：CancelTime > lastCancelMs
+      const cursorDate = lastCancelMs > 0 ? new Date(lastCancelMs) : new Date(0);
+      const [cancels] = await pool.query(
+        'SELECT * FROM `' + TABLE + '` WHERE CancelTime IS NOT NULL AND CancelTime > ? ORDER BY CancelTime ASC LIMIT 200',
+        [cursorDate]
+      );
+      if (cancels && cancels.length) {
+        for (const row of cancels) {
+          const t = row.CancelTime ? new Date(row.CancelTime).getTime() : 0;
+          // 防御：游标相等时跳过（mysql2 的 > 已能排除相等，这里多一层保险）
+          if (t && t <= lastCancelMs) continue;
+          cancelBuffer.push({ clientId: nextCancelClientId++, row });
+          if (t > lastCancelMs) lastCancelMs = t;
+        }
+        if (cancelBuffer.length > cfg.bufferSize) {
+          cancelBuffer = cancelBuffer.slice(-cfg.bufferSize);
+        }
+        totalCancelled += cancels.length;
+        appendLog(`解除 ${cancels.length} 条，lastCancelMs=${lastCancelMs}`);
+      }
+
+      lastError = '';
+    } catch (err) {
+      lastError = err.message;
+      appendLog(`轮询失败：${err.message}`);
+    } finally {
+      polling = false;
+    }
+  }
+
+  function scheduleTimer() {
+    if (timer) { clearInterval(timer); timer = null; }
+    if (!cfg.enabled) return;
+    const ms = Math.max(MIN_INTERVAL * 1000, cfg.intervalSec * 1000);
+    timer = setInterval(() => { pollOnce().catch(() => {}); }, ms);
+  }
+
+  function publicState() {
+    return {
+      enabled: cfg.enabled,
+      intervalSec: cfg.intervalSec,
+      bufferSize: cfg.bufferSize,
+      lastSeenId: lastSeenId,
+      bufferCount: alarmBuffer.length,
+      pendingCount: pendingAlarms.size,
+      totalFetched: totalFetched,
+      lastCancelMs: lastCancelMs,
+      cancelBufferCount: cancelBuffer.length,
+      totalCancelled: totalCancelled,
+      lastPollAt: lastPollAt,
+      lastError: lastError,
+      dbConnected: !!getPool(),
+      table: TABLE,
+    };
+  }
+
+  app.get('/api/sms/monitor/config', function (_req, res) {
+    res.json(publicState());
+  });
+
+  app.put('/api/sms/monitor/config', function (req, res) {
+    const body = req.body || {};
+    if ('enabled' in body) cfg.enabled = Boolean(body.enabled);
+    if ('intervalSec' in body) cfg.intervalSec = clamp(body.intervalSec, MIN_INTERVAL, MAX_INTERVAL, cfg.intervalSec);
+    if ('bufferSize' in body) cfg.bufferSize = clamp(body.bufferSize, 10, MAX_BUFFER, cfg.bufferSize);
+    writeCfg();
+    scheduleTimer();
+    appendLog(`配置更新 enabled=${cfg.enabled} interval=${cfg.intervalSec}s buffer=${cfg.bufferSize}`);
+    res.json(publicState());
+  });
+
+  app.get('/api/sms/monitor/recent', function (req, res) {
+    const sinceClientId = Number(req.query.sinceClientId) || 0;
+    const items = alarmBuffer.filter(function (e) { return e.clientId > sinceClientId; });
+    const lastClientId = alarmBuffer.length
+      ? alarmBuffer[alarmBuffer.length - 1].clientId
+      : sinceClientId;
+    res.json({ state: publicState(), items: items, lastClientId: lastClientId });
+  });
+
+  app.get('/api/sms/monitor/cancels', function (req, res) {
+    const sinceClientId = Number(req.query.sinceClientId) || 0;
+    const items = cancelBuffer.filter(function (e) { return e.clientId > sinceClientId; });
+    const lastClientId = cancelBuffer.length
+      ? cancelBuffer[cancelBuffer.length - 1].clientId
+      : sinceClientId;
+    res.json({ state: publicState(), items: items, lastClientId: lastClientId });
+  });
+
+  app.post('/api/sms/monitor/clear', function (req, res) {
+    const scope = String((req.query && req.query.scope) || 'all');
+    if (scope === 'all' || scope === 'alarms') alarmBuffer = [];
+    if (scope === 'all' || scope === 'cancels') cancelBuffer = [];
+    res.json(publicState());
+  });
+
+  readCfg();
+  setTimeout(function () {
+    initLastSeenId().catch(() => {});
+    scheduleTimer();
+    if (cfg.enabled) pollOnce().catch(() => {});
+    appendLog(`服务启动：enabled=${cfg.enabled} interval=${cfg.intervalSec}s`);
+  }, 1500);
 })();
 
 const port = Number(process.env.PORT || 3000);
