@@ -1,0 +1,2169 @@
+[
+  {
+    "moduleName": "__i18n__.auto.k0001",
+    "iconBase64": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAQlJREFUWEdjZBhgwDjA9jNgOMDVM9aegYlBjNoOY2Rk/M/I8O/2zi1LLiKbjeIAN5/YPEYGhonUthzJvL//GBmcd29efBAmhuIAd5+Y2QwMjCk0dADD//+M2bu2LpqG1QEeHgkK/1j+TGP4zyhK0BGMDNqMDAycUHWv//9neEhQD8P/G7++/sw8cGD1F6wOIGwAQoWbT+w1RgYGTajI7J1bFqeRon/UAaMhMBoCoyEwGgKjITAaAqMhMBoCoyFAcQi4+8SCOhh6IIP+//8/bdfWJdn0bZR6xRYyMP7vZWRg/Paf4b/brq1LjtHVASDL3HxjFZn//Piyffvq1+RYDtIz+Dqn5PqEXH0A9hGnIbhiy9wAAAAASUVORK5CYII=",
+    "moduleJson": {
+      "attrs": {
+        "dataKey": [],
+        "moduleAttr": [
+          {
+            "attrGroupName": "__i18n__.auto.k0002",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0003",
+                "attrCode": "eventKey",
+                "attrType": "hardwareInputNew",
+                "attrWhere": "this"
+              }
+            ]
+          },
+          {
+            "attrGroupName": "__i18n__.auto.k0004",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0005",
+                "attrCode": "text",
+                "attrType": "textarea",
+                "attrWhere": "description"
+              },
+              {
+                "attrName": "__i18n__.auto.k0006",
+                "attrCode": "lineHeight",
+                "attrType": "number",
+                "attrWhere": "description"
+              },
+              {
+                "attrName": "__i18n__.auto.k0007",
+                "attrCode": "fontSize",
+                "attrType": "number",
+                "attrWhere": "description"
+              },
+              {
+                "attrName": "__i18n__.auto.k0008",
+                "attrCode": "fill",
+                "attrType": "color",
+                "attrWhere": "description"
+              },
+              {
+                "attrName": "__i18n__.auto.k0009",
+                "attrCode": "fontFamily",
+                "attrType": "selectFamily",
+                "attrWhere": "description"
+              },
+              {
+                "attrName": "__i18n__.auto.k0010",
+                "attrCode": "fontStyle",
+                "attrType": "select",
+                "attrWhere": "description"
+              }
+            ]
+          }
+        ]
+      },
+      "children": [
+        {
+          "attrs": {
+            "text": "__i18n__.auto.k0001",
+            "fontSize": 18,
+            "lineHeight": 1,
+            "fontFamily": "__i18n__.auto.k0011",
+            "fill": "#000000",
+            "padding": 10,
+            "align": "center",
+            "fontStyle": "normal",
+            "verticalAlign": "middle",
+            "name": "description"
+          },
+          "className": "Text"
+        }
+      ],
+      "width": 56,
+      "height": 38
+    }
+  },
+  {
+    "moduleName": "__i18n__.auto.k0012",
+    "iconBase64": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAUtJREFUWEftlz1Lw1AYhc9Juoiz4uCgU1HBv+AgprHEf2DAQfyEQn9IQZc6dLPdOtpQoktdnERwMBGcBMGha7UqbV5pqB9IoYlUAnLveDn3PQ/PdF8i4cOE+/EJsLJqL0HD5KiBSAoR3Lm1yvWg2SGAYdk5AoejLv82rxsQy2cn5fOfHSFAxlovAdz8QwCIcP/UOS4OBDDNjZkg1SlCODEUglggMNbPNUVwP/QN5Pbt6XW30ai2BgIMH/CVMCzbIzDXvym5tfJWnPcKQBlQBpQBZUAZUAaUAWXgfxoQJ50DtHTkv6FIGykWaPqPsTejjGX3FozFXpmIFN2dywo0XkQu/wgKjmj5e7EBjKydB6VA8Fkghrt99QBdPADjsSCIPLP+QWyAcJNas2f1zkurXq82QxPO/BTQnY4MoOttmt5NL/8rgMhFEYKJA7wDpR29IfixrdcAAAAASUVORK5CYII=",
+    "moduleJson": {
+      "attrs": {
+        "dataKey": [],
+        "moduleAttr": [
+          {
+            "attrGroupName": "__i18n__.auto.k0002",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0003",
+                "attrCode": "dataKey",
+                "attrType": "hardwareInputNew",
+                "attrWhere": "this"
+              }
+            ]
+          },
+          {
+            "attrGroupName": "__i18n__.auto.k0004",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0005",
+                "attrCode": "text",
+                "attrType": "textarea",
+                "attrWhere": "description"
+              },
+              {
+                "attrName": "__i18n__.auto.k0007",
+                "attrCode": "fontSize",
+                "attrType": "number",
+                "attrWhere": "description"
+              },
+              {
+                "attrName": "__i18n__.auto.k0008",
+                "attrCode": "fill",
+                "attrType": "color",
+                "attrWhere": "description"
+              },
+              {
+                "attrName": "__i18n__.auto.k0009",
+                "attrCode": "fontFamily",
+                "attrType": "selectFamily",
+                "attrWhere": "description"
+              },
+              {
+                "attrName": "__i18n__.auto.k0010",
+                "attrCode": "fontStyle",
+                "attrType": "select",
+                "attrWhere": "description"
+              }
+            ]
+          }
+        ]
+      },
+      "children": [
+        {
+          "attrs": {
+            "text": "__i18n__.auto.k0012",
+            "fontSize": 18,
+            "lineHeight": 1,
+            "fontFamily": "__i18n__.auto.k0011",
+            "fill": "#000000",
+            "padding": 10,
+            "align": "center",
+            "fontStyle": "normal",
+            "verticalAlign": "middle",
+            "name": "description"
+          },
+          "className": "Text"
+        }
+      ],
+      "width": 92,
+      "height": 38
+    }
+  },
+  {
+    "moduleName": "__i18n__.auto.k0013",
+    "iconBase64": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAaRJREFUWEftlztLw2AUht+TdBHBQVBEHHQqKvgXHMQ0xvgPDDiI1guCg3/AyUXQwYo4ad0cbW2jSwVREBEc2gjqIAgOrmq9pDmSWi+UQr/YSkHyjR/vOe/De+C7EGq8qMb++ALoHzB6IaG52kBExATn0oxtnZfqnQdQdGOGgOVqm//ol3MIffs70YNijzxASB9eB2j0DwHATFN78c1ISQBVHWl3AnYETE1lIQjdBNQVdPfMuClbA754fXyZSKW2H0oClG/wrVB0I0NAZ2Fn3YxFx7zU+wB+An4CfgJ+An4C/zMBTnY3wnZahW9F6S1L2tW1q/f8Jiy+jpOTx/PgQBqgBmGAD+E0DVorVQA42QBLhx7NAfAaDV6EKweIRcex2zkHICgMwZwF2QukXd1WDOC/iNwEOB6cASRvIwjQIqnWnecRhHTD/WD0uPNm5ogZPt2CREfC8/8UMlZJtyY9AyiaMQviRQI9MVgxx89uIXMGQL0nCMIsadaSZwDXRBkyOmT7+SGR2L7PJxHvagFybcIAspwlNZP+1UEkbCIo/FUCgr2FZO+Dr9YhOLMOHwAAAABJRU5ErkJggg==",
+    "moduleJson": {
+      "attrs": {
+        "dataKey": [],
+        "where": [
+          {
+            "id": "1",
+            "conditionNum": "",
+            "statusSelectColor": "#000000"
+          },
+          {
+            "id": "2",
+            "conditionNum": "",
+            "statusSelectColor": "#000000"
+          },
+          {
+            "id": "3",
+            "conditionNum": "",
+            "statusSelectColor": "#000000"
+          }
+        ],
+        "moduleAttr": [
+          {
+            "attrGroupName": "__i18n__.auto.k0002",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0003",
+                "attrCode": "dataKey",
+                "attrType": "hardwareInputNew",
+                "attrWhere": "this"
+              },
+              {
+                "attrName": "__i18n__.auto.k0014",
+                "attrCode": "where",
+                "attrType": "whereStatusTableNew",
+                "attrWhere": "this"
+              }
+            ]
+          },
+          {
+            "attrGroupName": "__i18n__.auto.k0004",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0005",
+                "attrCode": "text",
+                "attrType": "textarea",
+                "attrWhere": "complexTextValue"
+              },
+              {
+                "attrName": "__i18n__.auto.k0007",
+                "attrCode": "fontSize",
+                "attrType": "number",
+                "attrWhere": "complexTextValue"
+              },
+              {
+                "attrName": "__i18n__.auto.k0008",
+                "attrCode": "fill",
+                "attrType": "color",
+                "attrWhere": "complexTextValue"
+              },
+              {
+                "attrName": "__i18n__.auto.k0009",
+                "attrCode": "fontFamily",
+                "attrType": "selectFamily",
+                "attrWhere": "complexTextValue"
+              },
+              {
+                "attrName": "__i18n__.auto.k0010",
+                "attrCode": "fontStyle",
+                "attrType": "select",
+                "attrWhere": "complexTextValue"
+              }
+            ]
+          }
+        ]
+      },
+      "children": [
+        {
+          "attrs": {
+            "text": "__i18n__.auto.k0013",
+            "fontSize": 18,
+            "fontFamily": "__i18n__.auto.k0011",
+            "fill": "#000000",
+            "padding": 10,
+            "align": "center",
+            "fontStyle": "normal",
+            "name": "complexTextValue"
+          },
+          "className": "Text"
+        }
+      ],
+      "width": 92,
+      "height": 38
+    }
+  },
+  {
+    "moduleName": "__i18n__.auto.k0015",
+    "iconBase64": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAArNJREFUWEftlktsjFEYhp/3/5sKtdCIWGkQTKcWbIjYWaiOf9wWSqK1QYSFiASpO03cIhELLLDRSlwSFZlpp7XoEhuJhXYGQawFcU0x55N/GlU1CWM6moizPIvvec77fefkiBFeGmE+/wVyCdTVNURcmdowq5ZU0lTMzJDS3hdbkUq1ZnKwRfGGc6D1f3ce7HxnonVDv0DQeBWxsgiBN2AZ0Jz+GvbYULmgKjyxpDsGswWjBxjGtc5kS/2wCJhjW1d7y8lF8cZHwDQv6yaBP8H5dg+43ZlomV8bX3NYeE0lEQAyMrpMbAZ8w27IqEBaCPSBnQaFCU8qlUDh3RvOFhROD8ck3ww41mZ9F/axZMvHm45xMa+Al3UzOzou9ZSMDsRia2qc7z34dwTs4sQKxlfuJmvntDTz9Ffp/XEClqiqVPz5q6EAa4/uxTgEbquCzKncM9Q9eZwWPHudT+aPBKwjugLHBVBMQc/db4WtbfI4ykc/Acpw2ala8vCFpWbMJeuncKzTkt62oRIFC1gisgB5HYCHx3LFetsHBJLVB0D7wY4oSO/KnT4RDRAh2GEupnime7BE4QLJ6DFgR+6t15dZWvy4rx9UVYnGhD0Xvj9FdQ9e5vbbp43Cyu6DIsBxBb07ixPorhnLB7sFzEO2XYvTJ3KgZLQZ2IPRrHjvvu+pRLaDdxxxh8+uVssyb4sSGHTaPbz3mlTf88muV49nFE9AjjEfpwweOLtaU06FO4p9aM43tAW3IN8kWzKyBbxTYAcUpA/+6uoVncBPVy8xfSoq28h7Nau+591fFygEWPQ1LAb2+w9RvPEysApjP2bp4Yb+UE+qRoRzc6Uz0bI69yWrDRo2STpTUvCQ4ma2uSvZenbgC14XNCy10M6spN9yJJNZOpVsvRk6lRb2G5H+FxjxBL4CWB3BMAkWNHkAAAAASUVORK5CYII=",
+    "moduleJson": {
+      "attrs": {
+        "moduleAttr": [
+          {
+            "attrGroupName": "__i18n__.auto.k0004",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0016",
+                "attrCode": "width",
+                "attrType": "number",
+                "attrWhere": "myImage"
+              },
+              {
+                "attrName": "__i18n__.auto.k0017",
+                "attrCode": "height",
+                "attrType": "number",
+                "attrWhere": "myImage"
+              },
+              {
+                "attrName": "__i18n__.auto.k0015",
+                "attrCode": "image",
+                "attrType": "image",
+                "attrWhere": "myImage"
+              }
+            ]
+          }
+        ]
+      },
+      "children": [
+        {
+          "attrs": {
+            "name": "myImage",
+            "image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAArNJREFUWEftlktsjFEYhp/3/5sKtdCIWGkQTKcWbIjYWaiOf9wWSqK1QYSFiASpO03cIhELLLDRSlwSFZlpp7XoEhuJhXYGQawFcU0x55N/GlU1CWM6moizPIvvec77fefkiBFeGmE+/wVyCdTVNURcmdowq5ZU0lTMzJDS3hdbkUq1ZnKwRfGGc6D1f3ce7HxnonVDv0DQeBWxsgiBN2AZ0Jz+GvbYULmgKjyxpDsGswWjBxjGtc5kS/2wCJhjW1d7y8lF8cZHwDQv6yaBP8H5dg+43ZlomV8bX3NYeE0lEQAyMrpMbAZ8w27IqEBaCPSBnQaFCU8qlUDh3RvOFhROD8ck3ww41mZ9F/axZMvHm45xMa+Al3UzOzou9ZSMDsRia2qc7z34dwTs4sQKxlfuJmvntDTz9Ffp/XEClqiqVPz5q6EAa4/uxTgEbquCzKncM9Q9eZwWPHudT+aPBKwjugLHBVBMQc/db4WtbfI4ykc/Acpw2ala8vCFpWbMJeuncKzTkt62oRIFC1gisgB5HYCHx3LFetsHBJLVB0D7wY4oSO/KnT4RDRAh2GEupnime7BE4QLJ6DFgR+6t15dZWvy4rx9UVYnGhD0Xvj9FdQ9e5vbbp43Cyu6DIsBxBb07ixPorhnLB7sFzEO2XYvTJ3KgZLQZ2IPRrHjvvu+pRLaDdxxxh8+uVssyb4sSGHTaPbz3mlTf88muV49nFE9AjjEfpwweOLtaU06FO4p9aM43tAW3IN8kWzKyBbxTYAcUpA/+6uoVncBPVy8xfSoq28h7Nau+591fFygEWPQ1LAb2+w9RvPEysApjP2bp4Yb+UE+qRoRzc6Uz0bI69yWrDRo2STpTUvCQ4ma2uSvZenbgC14XNCy10M6spN9yJJNZOpVsvRk6lRb2G5H+FxjxBL4CWB3BMAkWNHkAAAAASUVORK5CYII=",
+            "width": 50,
+            "height": 50
+          },
+          "className": "Image"
+        }
+      ],
+      "width": 50,
+      "height": 50
+    }
+  },
+  {
+    "moduleName": "__i18n__.auto.k0018",
+    "iconBase64": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAA4FJREFUWEfNl21oU2cUx///m6TOF4rSNVbxBQQnviwOOwXnC9VKak0qIouiJrgPw7GPwqp+9IuorV/2aQMRxcTXokhNiLcWTVEEdRuYQkUqG5Opqx2VOheb2JsjSUy5aVJzb1p191uenPM/v3POc577XOIjP/wQ8T8/+KRasVivCNAxGMM3XfvtL7NxPwiA48izr5lESyqoAL/FhQ0P9lY+Sf0eE4B5h3unj1NQjWRhPRGNiqI0AliRgeAjSWruzn1VnWmAla7tUybQ8hMgGwmON9oWNehP+zuaev8kZJZRvzSEoCe6116VFqhzec+B3GJGIGWbBVjc9OwigPWZCht7hOiINto3pAGcbl+MQDpzgfQQ7DYiowb9q4zYvcsmUwG3L0Mu6NPiA3Pa21v6zQg7mnqvArLWqA9BAaT13h775lwAIKoG/YuNCmXtHE09qarZzfgJ5FF0z9TZRgHorPetEcpcCrvbwv7r+n47mvsWQV6HCGY2InFLwEMjAVEgCRt+vb+78mlRgPr6HeWawsskVw8JitzQ4vEGfavmH+idZrOhlZAv090kt0UbK88Wq0pRAKfL+zPJ74YLCXC0LejfpV93NP89kaIcF2AtmHRFG6tuD/erqfFMikRack/CoU1YYA/UuX3/AKjIz4R9avBkgfXCOde5fSmYZfrxzXRLPwUFAJxu33MCk/NkRfrVUCB/fYSalw7g8p4guTNfV06qwUCB9TGuQE3Dtk/LxNpOQD+e0TgHayOXz6TaY+gpuQIp9erqXbaKaQObAZkLwcO//hi42NXVktBHXrDAUzZj9rgNtPAzQfL3xMvHlyKRyGDWZlQAxVJc5/bNsghCIBbpbO/gtWxS1cDTt/ustE1YLPjy5Z7x5RWf3AWwMG9URToT/8W/So3de6uA0+VtJvnDSKAicqwtFPjWNIDH47G8iNlWJ8nJVg0PwuFTXcOD1K7fsdRq5S2A1ndUKqlpyRUWi/Kj4XOg1rV9jgXKBZJfZIVF8AvII/2aFr4dPvWizu1dAvASgJnF2iTANQKTDAFIAptYho6RhEVEQAyYuTm9fXH9C6C8yEko3QBjyJ35Ygma/j97kyp0FJsWK8Xh/wegvxOWkpEZHwFetQX9E7I+o7oVmwk8ZCtyXg0FtuYAlPpdYAZAIK8AtsZE+/5m6PTzHAAzQmNtOyafZqOB+ugAbwAtcKYwCXMQEwAAAABJRU5ErkJggg==",
+    "moduleJson": {
+      "attrs": {
+        "dataKey": [],
+        "where": [
+          {
+            "id": "1",
+            "conditionNum": "",
+            "statusSelectColor": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAA4FJREFUWEfNl21oU2cUx///m6TOF4rSNVbxBQQnviwOOwXnC9VKak0qIouiJrgPw7GPwqp+9IuorV/2aQMRxcTXokhNiLcWTVEEdRuYQkUqG5Opqx2VOheb2JsjSUy5aVJzb1p191uenPM/v3POc577XOIjP/wQ8T8/+KRasVivCNAxGMM3XfvtL7NxPwiA48izr5lESyqoAL/FhQ0P9lY+Sf0eE4B5h3unj1NQjWRhPRGNiqI0AliRgeAjSWruzn1VnWmAla7tUybQ8hMgGwmON9oWNehP+zuaev8kZJZRvzSEoCe6116VFqhzec+B3GJGIGWbBVjc9OwigPWZCht7hOiINto3pAGcbl+MQDpzgfQQ7DYiowb9q4zYvcsmUwG3L0Mu6NPiA3Pa21v6zQg7mnqvArLWqA9BAaT13h775lwAIKoG/YuNCmXtHE09qarZzfgJ5FF0z9TZRgHorPetEcpcCrvbwv7r+n47mvsWQV6HCGY2InFLwEMjAVEgCRt+vb+78mlRgPr6HeWawsskVw8JitzQ4vEGfavmH+idZrOhlZAv090kt0UbK88Wq0pRAKfL+zPJ74YLCXC0LejfpV93NP89kaIcF2AtmHRFG6tuD/erqfFMikRack/CoU1YYA/UuX3/AKjIz4R9avBkgfXCOde5fSmYZfrxzXRLPwUFAJxu33MCk/NkRfrVUCB/fYSalw7g8p4guTNfV06qwUCB9TGuQE3Dtk/LxNpOQD+e0TgHayOXz6TaY+gpuQIp9erqXbaKaQObAZkLwcO//hi42NXVktBHXrDAUzZj9rgNtPAzQfL3xMvHlyKRyGDWZlQAxVJc5/bNsghCIBbpbO/gtWxS1cDTt/ustE1YLPjy5Z7x5RWf3AWwMG9URToT/8W/So3de6uA0+VtJvnDSKAicqwtFPjWNIDH47G8iNlWJ8nJVg0PwuFTXcOD1K7fsdRq5S2A1ndUKqlpyRUWi/Kj4XOg1rV9jgXKBZJfZIVF8AvII/2aFr4dPvWizu1dAvASgJnF2iTANQKTDAFIAptYho6RhEVEQAyYuTm9fXH9C6C8yEko3QBjyJ35Ygma/j97kyp0FJsWK8Xh/wegvxOWkpEZHwFetQX9E7I+o7oVmwk8ZCtyXg0FtuYAlPpdYAZAIK8AtsZE+/5m6PTzHAAzQmNtOyafZqOB+ugAbwAtcKYwCXMQEwAAAABJRU5ErkJggg=="
+          },
+          {
+            "id": "2",
+            "conditionNum": "",
+            "statusSelectColor": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAA4FJREFUWEfNl21oU2cUx///m6TOF4rSNVbxBQQnviwOOwXnC9VKak0qIouiJrgPw7GPwqp+9IuorV/2aQMRxcTXokhNiLcWTVEEdRuYQkUqG5Opqx2VOheb2JsjSUy5aVJzb1p191uenPM/v3POc577XOIjP/wQ8T8/+KRasVivCNAxGMM3XfvtL7NxPwiA48izr5lESyqoAL/FhQ0P9lY+Sf0eE4B5h3unj1NQjWRhPRGNiqI0AliRgeAjSWruzn1VnWmAla7tUybQ8hMgGwmON9oWNehP+zuaev8kZJZRvzSEoCe6116VFqhzec+B3GJGIGWbBVjc9OwigPWZCht7hOiINto3pAGcbl+MQDpzgfQQ7DYiowb9q4zYvcsmUwG3L0Mu6NPiA3Pa21v6zQg7mnqvArLWqA9BAaT13h775lwAIKoG/YuNCmXtHE09qarZzfgJ5FF0z9TZRgHorPetEcpcCrvbwv7r+n47mvsWQV6HCGY2InFLwEMjAVEgCRt+vb+78mlRgPr6HeWawsskVw8JitzQ4vEGfavmH+idZrOhlZAv090kt0UbK88Wq0pRAKfL+zPJ74YLCXC0LejfpV93NP89kaIcF2AtmHRFG6tuD/erqfFMikRack/CoU1YYA/UuX3/AKjIz4R9avBkgfXCOde5fSmYZfrxzXRLPwUFAJxu33MCk/NkRfrVUCB/fYSalw7g8p4guTNfV06qwUCB9TGuQE3Dtk/LxNpOQD+e0TgHayOXz6TaY+gpuQIp9erqXbaKaQObAZkLwcO//hi42NXVktBHXrDAUzZj9rgNtPAzQfL3xMvHlyKRyGDWZlQAxVJc5/bNsghCIBbpbO/gtWxS1cDTt/ustE1YLPjy5Z7x5RWf3AWwMG9URToT/8W/So3de6uA0+VtJvnDSKAicqwtFPjWNIDH47G8iNlWJ8nJVg0PwuFTXcOD1K7fsdRq5S2A1ndUKqlpyRUWi/Kj4XOg1rV9jgXKBZJfZIVF8AvII/2aFr4dPvWizu1dAvASgJnF2iTANQKTDAFIAptYho6RhEVEQAyYuTm9fXH9C6C8yEko3QBjyJ35Ygma/j97kyp0FJsWK8Xh/wegvxOWkpEZHwFetQX9E7I+o7oVmwk8ZCtyXg0FtuYAlPpdYAZAIK8AtsZE+/5m6PTzHAAzQmNtOyafZqOB+ugAbwAtcKYwCXMQEwAAAABJRU5ErkJggg=="
+          },
+          {
+            "id": "3",
+            "conditionNum": "",
+            "statusSelectColor": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAA4FJREFUWEfNl21oU2cUx///m6TOF4rSNVbxBQQnviwOOwXnC9VKak0qIouiJrgPw7GPwqp+9IuorV/2aQMRxcTXokhNiLcWTVEEdRuYQkUqG5Opqx2VOheb2JsjSUy5aVJzb1p191uenPM/v3POc577XOIjP/wQ8T8/+KRasVivCNAxGMM3XfvtL7NxPwiA48izr5lESyqoAL/FhQ0P9lY+Sf0eE4B5h3unj1NQjWRhPRGNiqI0AliRgeAjSWruzn1VnWmAla7tUybQ8hMgGwmON9oWNehP+zuaev8kZJZRvzSEoCe6116VFqhzec+B3GJGIGWbBVjc9OwigPWZCht7hOiINto3pAGcbl+MQDpzgfQQ7DYiowb9q4zYvcsmUwG3L0Mu6NPiA3Pa21v6zQg7mnqvArLWqA9BAaT13h775lwAIKoG/YuNCmXtHE09qarZzfgJ5FF0z9TZRgHorPetEcpcCrvbwv7r+n47mvsWQV6HCGY2InFLwEMjAVEgCRt+vb+78mlRgPr6HeWawsskVw8JitzQ4vEGfavmH+idZrOhlZAv090kt0UbK88Wq0pRAKfL+zPJ74YLCXC0LejfpV93NP89kaIcF2AtmHRFG6tuD/erqfFMikRack/CoU1YYA/UuX3/AKjIz4R9avBkgfXCOde5fSmYZfrxzXRLPwUFAJxu33MCk/NkRfrVUCB/fYSalw7g8p4guTNfV06qwUCB9TGuQE3Dtk/LxNpOQD+e0TgHayOXz6TaY+gpuQIp9erqXbaKaQObAZkLwcO//hi42NXVktBHXrDAUzZj9rgNtPAzQfL3xMvHlyKRyGDWZlQAxVJc5/bNsghCIBbpbO/gtWxS1cDTt/ustE1YLPjy5Z7x5RWf3AWwMG9URToT/8W/So3de6uA0+VtJvnDSKAicqwtFPjWNIDH47G8iNlWJ8nJVg0PwuFTXcOD1K7fsdRq5S2A1ndUKqlpyRUWi/Kj4XOg1rV9jgXKBZJfZIVF8AvII/2aFr4dPvWizu1dAvASgJnF2iTANQKTDAFIAptYho6RhEVEQAyYuTm9fXH9C6C8yEko3QBjyJ35Ygma/j97kyp0FJsWK8Xh/wegvxOWkpEZHwFetQX9E7I+o7oVmwk8ZCtyXg0FtuYAlPpdYAZAIK8AtsZE+/5m6PTzHAAzQmNtOyafZqOB+ugAbwAtcKYwCXMQEwAAAABJRU5ErkJggg=="
+          }
+        ],
+        "moduleAttr": [
+          {
+            "attrGroupName": "__i18n__.auto.k0002",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0003",
+                "attrCode": "dataKey",
+                "attrType": "hardwareInputNew",
+                "attrWhere": "this"
+              },
+              {
+                "attrName": "__i18n__.auto.k0019",
+                "attrCode": "where",
+                "attrType": "imagesStatusTableNew",
+                "attrWhere": "this"
+              }
+            ]
+          },
+          {
+            "attrGroupName": "__i18n__.auto.k0004",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0020",
+                "attrCode": "width",
+                "attrType": "number",
+                "attrWhere": "statusImage"
+              },
+              {
+                "attrName": "__i18n__.auto.k0021",
+                "attrCode": "height",
+                "attrType": "number",
+                "attrWhere": "statusImage"
+              }
+            ]
+          }
+        ]
+      },
+      "children": [
+        {
+          "attrs": {
+            "name": "statusImage",
+            "image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAA4FJREFUWEfNl21oU2cUx///m6TOF4rSNVbxBQQnviwOOwXnC9VKak0qIouiJrgPw7GPwqp+9IuorV/2aQMRxcTXokhNiLcWTVEEdRuYQkUqG5Opqx2VOheb2JsjSUy5aVJzb1p191uenPM/v3POc577XOIjP/wQ8T8/+KRasVivCNAxGMM3XfvtL7NxPwiA48izr5lESyqoAL/FhQ0P9lY+Sf0eE4B5h3unj1NQjWRhPRGNiqI0AliRgeAjSWruzn1VnWmAla7tUybQ8hMgGwmON9oWNehP+zuaev8kZJZRvzSEoCe6116VFqhzec+B3GJGIGWbBVjc9OwigPWZCht7hOiINto3pAGcbl+MQDpzgfQQ7DYiowb9q4zYvcsmUwG3L0Mu6NPiA3Pa21v6zQg7mnqvArLWqA9BAaT13h775lwAIKoG/YuNCmXtHE09qarZzfgJ5FF0z9TZRgHorPetEcpcCrvbwv7r+n47mvsWQV6HCGY2InFLwEMjAVEgCRt+vb+78mlRgPr6HeWawsskVw8JitzQ4vEGfavmH+idZrOhlZAv090kt0UbK88Wq0pRAKfL+zPJ74YLCXC0LejfpV93NP89kaIcF2AtmHRFG6tuD/erqfFMikRack/CoU1YYA/UuX3/AKjIz4R9avBkgfXCOde5fSmYZfrxzXRLPwUFAJxu33MCk/NkRfrVUCB/fYSalw7g8p4guTNfV06qwUCB9TGuQE3Dtk/LxNpOQD+e0TgHayOXz6TaY+gpuQIp9erqXbaKaQObAZkLwcO//hi42NXVktBHXrDAUzZj9rgNtPAzQfL3xMvHlyKRyGDWZlQAxVJc5/bNsghCIBbpbO/gtWxS1cDTt/ustE1YLPjy5Z7x5RWf3AWwMG9URToT/8W/So3de6uA0+VtJvnDSKAicqwtFPjWNIDH47G8iNlWJ8nJVg0PwuFTXcOD1K7fsdRq5S2A1ndUKqlpyRUWi/Kj4XOg1rV9jgXKBZJfZIVF8AvII/2aFr4dPvWizu1dAvASgJnF2iTANQKTDAFIAptYho6RhEVEQAyYuTm9fXH9C6C8yEko3QBjyJ35Ygma/j97kyp0FJsWK8Xh/wegvxOWkpEZHwFetQX9E7I+o7oVmwk8ZCtyXg0FtuYAlPpdYAZAIK8AtsZE+/5m6PTzHAAzQmNtOyafZqOB+ugAbwAtcKYwCXMQEwAAAABJRU5ErkJggg==",
+            "width": 50,
+            "height": 50
+          },
+          "className": "Image"
+        }
+      ],
+      "width": 50,
+      "height": 50
+    }
+  },
+  {
+    "moduleName": "__i18n__.auto.k0022",
+    "iconBase64": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAABWdJREFUWEfFl2tsk2UUx///t+02YAF0cjMjkTikGyYLXlASYxaEldKNS8hIkHYQgxCZQRRQgwKDiKIDxXAxaFBcu82wL8jabe1YwA8okS2SoBQdXhJ0XAV1XrqtfY55exl1l27FoefTm/d53//5Ped5znnOQ/zPxpv1n1e46I6UkLYMmpYNoIWdst/rdV1IVi9pgLy8PKMpPbNEAzcBuC3OYZsArxpCV9+qq6trHyhIUgAWW/EMUHYCmBx1cEWAGkBmEbwz+u6cElnT4HEdHgjEgADyCx0TILKD4DwAFEEnqN7pMJo2HTt04Je8vKL0lPS0lwg8CyA16tgrDK721VSdTQTSL4Bltn0BNJYDGBoWEhzpCAZXH/VWfdVd2GKxZ8GEHQDnRMakg+SK+hrngb4gEgJYLPZxMPFc1LmIqKd9noq9/YV2ZoFjtiY4CGKYHi0GJcfrdek6PSwhQL7Nvpzkvq6/RH4VcuOIIYE91dXVod4E862O6TTgTQC5sXEFvNDgdr6RNIClwPE8gNcF0kqhBmJsOLAipzRqK+vd5Z/FRGcWPD5RE0MZCD38+sRCArQRGCnAaz63c/2/AMAnKhCYq6WlbSFkJUAjACUiH0AM5aCaR6IEQEp07RsBrIFwM4i5gwLgczvzdPEZ1uIpmkHtJfhw9xkJpIVKrfPWVn6sj1lsjkODDhB1ynyb4wlQthIcI5BLFG67enHInubmdztjYLcSIOwjv8DhIrCYgl31HueqHml5CyPw3wDk2+xrSZaJyHGfx/VI9xn2H4FiNyg2CLZ6Pc6Xk86CmTb7HI3UN1SHEtgbPM7qeJFEAOFiBBwEMAyQJVAwhCBNR2orTsdr9ChEUmPOB1HMgrN2/eRLTR//OYApkcqKI0GlnmmsqzjT1x7oXo5FpKXtWnvu8Iw0PTXv09PT63buiUF0AYiAqDVvh36gCAIwdd5Fy7eXrdaiUSFD6r74g4iUve1GY2lKMLQ7tgkDfwTW9ziQBPXtSj0JowqkiPEogXsjhUyt8nkqdunPNwDc5u0g10TJGtAhyzn/7A83Uqp4BqDeBpkTfXcFgusg7gGkWYBxiY5kq9WaqrRR5aAsBNAelFBOo6fyuzCAuM33gzgJkCB2wup/joR03zSRJcksQc9mJLpC8jvArX01JTpEyJBxmuBEgWz2uV2lEYBacxmEawF8iZP+XJZC9bZjY+/Cy6KlvkJyabj8igRBVimt88WGwx+1JvrXUuDYDaBERCp8Hpc9AuDJdgKwAyinzb8kkUD82GPzizMM7ZKFIL73+ZyXB/KfxeY4AeIhEdnu87jWRSOQvQGCLaC0AsFszj7320DEkv3GYnPoh9NGCRunNtQ6m6IAWZkQk9466Tl7FGJawILT1+MdSCk0PDipEEqaWPjNT8k4t1oXZyoDdwJcEMkC7PJFS3dcFkyyA/wQpAZBKzRuwPkzTq5A+HARj3kRwEoIWvBnWy4X/vhXIoicnKKU8ROGPArIYhCLunpFwXvDhwaeijU0/yhE4jHrhPsBjoiKXwSkChQ3RF0DjCeiQmW0+fVmJWzTrUvuNmihyQTGgsiicAogU0EOj4M8DyVrvbUuvTp2Wc9KWJ89DkpKobgUjDUY4YrRCQlnh971BgE1jbavm3TnRk35SZh6iYj+/aeAvK+Ffq7s7b7QZ08o3rtHI2iyQzgPxDQAehd0wwT7WeBfpt+QUpWhSYCRIC9QcF4opwCtOaR1Hms8XHUp0VL125aH1798zDBk3O4CoN8LdLsA0sbZZ75IZjP29u3AAGqzRkFM0TyX4zCwiLP8Sd8DbxogHAW3eT00GjDav40PRDJjMGxAERgMR31p/A0poHg/2Nf1fAAAAABJRU5ErkJggg==",
+    "moduleJson": {
+      "attrs": {
+        "dataKey": [],
+        "where": [
+          {
+            "id": "1",
+            "conditionNum": "",
+            "statusSelectColor": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAA4FJREFUWEfNl21oU2cUx///m6TOF4rSNVbxBQQnviwOOwXnC9VKak0qIouiJrgPw7GPwqp+9IuorV/2aQMRxcTXokhNiLcWTVEEdRuYQkUqG5Opqx2VOheb2JsjSUy5aVJzb1p191uenPM/v3POc577XOIjP/wQ8T8/+KRasVivCNAxGMM3XfvtL7NxPwiA48izr5lESyqoAL/FhQ0P9lY+Sf0eE4B5h3unj1NQjWRhPRGNiqI0AliRgeAjSWruzn1VnWmAla7tUybQ8hMgGwmON9oWNehP+zuaev8kZJZRvzSEoCe6116VFqhzec+B3GJGIGWbBVjc9OwigPWZCht7hOiINto3pAGcbl+MQDpzgfQQ7DYiowb9q4zYvcsmUwG3L0Mu6NPiA3Pa21v6zQg7mnqvArLWqA9BAaT13h775lwAIKoG/YuNCmXtHE09qarZzfgJ5FF0z9TZRgHorPetEcpcCrvbwv7r+n47mvsWQV6HCGY2InFLwEMjAVEgCRt+vb+78mlRgPr6HeWawsskVw8JitzQ4vEGfavmH+idZrOhlZAv090kt0UbK88Wq0pRAKfL+zPJ74YLCXC0LejfpV93NP89kaIcF2AtmHRFG6tuD/erqfFMikRack/CoU1YYA/UuX3/AKjIz4R9avBkgfXCOde5fSmYZfrxzXRLPwUFAJxu33MCk/NkRfrVUCB/fYSalw7g8p4guTNfV06qwUCB9TGuQE3Dtk/LxNpOQD+e0TgHayOXz6TaY+gpuQIp9erqXbaKaQObAZkLwcO//hi42NXVktBHXrDAUzZj9rgNtPAzQfL3xMvHlyKRyGDWZlQAxVJc5/bNsghCIBbpbO/gtWxS1cDTt/ustE1YLPjy5Z7x5RWf3AWwMG9URToT/8W/So3de6uA0+VtJvnDSKAicqwtFPjWNIDH47G8iNlWJ8nJVg0PwuFTXcOD1K7fsdRq5S2A1ndUKqlpyRUWi/Kj4XOg1rV9jgXKBZJfZIVF8AvII/2aFr4dPvWizu1dAvASgJnF2iTANQKTDAFIAptYho6RhEVEQAyYuTm9fXH9C6C8yEko3QBjyJ35Ygma/j97kyp0FJsWK8Xh/wegvxOWkpEZHwFetQX9E7I+o7oVmwk8ZCtyXg0FtuYAlPpdYAZAIK8AtsZE+/5m6PTzHAAzQmNtOyafZqOB+ugAbwAtcKYwCXMQEwAAAABJRU5ErkJggg=="
+          }
+        ],
+        "moduleAttr": [
+          {
+            "attrGroupName": "__i18n__.auto.k0002",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0003",
+                "attrCode": "dataKey",
+                "attrType": "hardwareInputNew",
+                "attrWhere": "this"
+              },
+              {
+                "attrName": "__i18n__.auto.k0015",
+                "attrCode": "image",
+                "attrType": "image",
+                "attrWhere": "myImage"
+              },
+              {
+                "attrName": "__i18n__.auto.k0023",
+                "attrCode": "where",
+                "attrType": "rotateTableNewNew",
+                "attrWhere": "this"
+              }
+            ]
+          },
+          {
+            "attrGroupName": "__i18n__.auto.k0004",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0020",
+                "attrCode": "width",
+                "attrType": "number",
+                "attrWhere": "myImage"
+              },
+              {
+                "attrName": "__i18n__.auto.k0021",
+                "attrCode": "height",
+                "attrType": "number",
+                "attrWhere": "myImage"
+              }
+            ]
+          }
+        ]
+      },
+      "children": [
+        {
+          "attrs": {
+            "name": "myImage",
+            "image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAABWdJREFUWEfFl2tsk2UUx///t+02YAF0cjMjkTikGyYLXlASYxaEldKNS8hIkHYQgxCZQRRQgwKDiKIDxXAxaFBcu82wL8jabe1YwA8okS2SoBQdXhJ0XAV1XrqtfY55exl1l27FoefTm/d53//5Ped5znnOQ/zPxpv1n1e46I6UkLYMmpYNoIWdst/rdV1IVi9pgLy8PKMpPbNEAzcBuC3OYZsArxpCV9+qq6trHyhIUgAWW/EMUHYCmBx1cEWAGkBmEbwz+u6cElnT4HEdHgjEgADyCx0TILKD4DwAFEEnqN7pMJo2HTt04Je8vKL0lPS0lwg8CyA16tgrDK721VSdTQTSL4Bltn0BNJYDGBoWEhzpCAZXH/VWfdVd2GKxZ8GEHQDnRMakg+SK+hrngb4gEgJYLPZxMPFc1LmIqKd9noq9/YV2ZoFjtiY4CGKYHi0GJcfrdek6PSwhQL7Nvpzkvq6/RH4VcuOIIYE91dXVod4E862O6TTgTQC5sXEFvNDgdr6RNIClwPE8gNcF0kqhBmJsOLAipzRqK+vd5Z/FRGcWPD5RE0MZCD38+sRCArQRGCnAaz63c/2/AMAnKhCYq6WlbSFkJUAjACUiH0AM5aCaR6IEQEp07RsBrIFwM4i5gwLgczvzdPEZ1uIpmkHtJfhw9xkJpIVKrfPWVn6sj1lsjkODDhB1ynyb4wlQthIcI5BLFG67enHInubmdztjYLcSIOwjv8DhIrCYgl31HueqHml5CyPw3wDk2+xrSZaJyHGfx/VI9xn2H4FiNyg2CLZ6Pc6Xk86CmTb7HI3UN1SHEtgbPM7qeJFEAOFiBBwEMAyQJVAwhCBNR2orTsdr9ChEUmPOB1HMgrN2/eRLTR//OYApkcqKI0GlnmmsqzjT1x7oXo5FpKXtWnvu8Iw0PTXv09PT63buiUF0AYiAqDVvh36gCAIwdd5Fy7eXrdaiUSFD6r74g4iUve1GY2lKMLQ7tgkDfwTW9ziQBPXtSj0JowqkiPEogXsjhUyt8nkqdunPNwDc5u0g10TJGtAhyzn/7A83Uqp4BqDeBpkTfXcFgusg7gGkWYBxiY5kq9WaqrRR5aAsBNAelFBOo6fyuzCAuM33gzgJkCB2wup/joR03zSRJcksQc9mJLpC8jvArX01JTpEyJBxmuBEgWz2uV2lEYBacxmEawF8iZP+XJZC9bZjY+/Cy6KlvkJyabj8igRBVimt88WGwx+1JvrXUuDYDaBERCp8Hpc9AuDJdgKwAyinzb8kkUD82GPzizMM7ZKFIL73+ZyXB/KfxeY4AeIhEdnu87jWRSOQvQGCLaC0AsFszj7320DEkv3GYnPoh9NGCRunNtQ6m6IAWZkQk9466Tl7FGJawILT1+MdSCk0PDipEEqaWPjNT8k4t1oXZyoDdwJcEMkC7PJFS3dcFkyyA/wQpAZBKzRuwPkzTq5A+HARj3kRwEoIWvBnWy4X/vhXIoicnKKU8ROGPArIYhCLunpFwXvDhwaeijU0/yhE4jHrhPsBjoiKXwSkChQ3RF0DjCeiQmW0+fVmJWzTrUvuNmihyQTGgsiicAogU0EOj4M8DyVrvbUuvTp2Wc9KWJ89DkpKobgUjDUY4YrRCQlnh971BgE1jbavm3TnRk35SZh6iYj+/aeAvK+Ffq7s7b7QZ08o3rtHI2iyQzgPxDQAehd0wwT7WeBfpt+QUpWhSYCRIC9QcF4opwCtOaR1Hms8XHUp0VL125aH1798zDBk3O4CoN8LdLsA0sbZZ75IZjP29u3AAGqzRkFM0TyX4zCwiLP8Sd8DbxogHAW3eT00GjDav40PRDJjMGxAERgMR31p/A0poHg/2Nf1fAAAAABJRU5ErkJggg==",
+            "width": 50,
+            "height": 50
+          },
+          "className": "Image"
+        }
+      ],
+      "width": 50,
+      "height": 50
+    }
+  },
+  {
+    "moduleName": "__i18n__.auto.k0024",
+    "iconBase64": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADQAAAA0CAYAAADFeBvrAAAA3klEQVRoQ+2awQ5AQAxE15fz56RCsjgwDhMmby8WW21nZhsaQ2ttakFjSE7o70yt8fcMkdDHth4MfYyQSzgwBENmBJCcGXDZHQzJkJkNYMgMuOwOhmTIzAYwZAZcdgdDMmRmAxgyAy67gyEZMrMBDJkBl92N1WdMazTOaQlFtYKRnLxLzQZxZTtSclFFAcmZ97jsLo4hEpI1YDaILNu8nJpVJLmLk1xcQnFlO46huIQiJXf4fJi3383qWKMaKP28ru1r9nranz+ZS3X4zeK+63MO9vy8u/t3Sb6JT7ZZAAthWTHeutHuAAAAAElFTkSuQmCC",
+    "moduleJson": {
+      "attrs": {
+        "moduleAttr": [
+          {
+            "attrGroupName": "__i18n__.auto.k0004",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0025",
+                "attrCode": "fill",
+                "attrType": "color",
+                "attrWhere": "myShape"
+              },
+              {
+                "attrName": "__i18n__.auto.k0026",
+                "attrCode": "strokeWidth",
+                "attrType": "number",
+                "attrWhere": "myShape"
+              },
+              {
+                "attrName": "__i18n__.auto.k0027",
+                "attrCode": "stroke",
+                "attrType": "color",
+                "attrWhere": "myShape"
+              },
+              {
+                "attrName": "__i18n__.auto.k0020",
+                "attrCode": "width",
+                "attrType": "number",
+                "attrWhere": "myShape"
+              },
+              {
+                "attrName": "__i18n__.auto.k0021",
+                "attrCode": "height",
+                "attrType": "number",
+                "attrWhere": "myShape"
+              },
+              {
+                "attrName": "__i18n__.auto.k0028",
+                "attrCode": "opacity",
+                "attrType": "number",
+                "attrWhere": "myShape"
+              }
+            ]
+          }
+        ]
+      },
+      "children": [
+        {
+          "attrs": {
+            "name": "myShape",
+            "width": 50,
+            "height": 50,
+            "stroke": "#000000",
+            "strokeWidth": 0,
+            "fill": "#000000",
+            "opacity": 1
+          },
+          "className": "Rect"
+        }
+      ],
+      "width": 50,
+      "height": 50
+    }
+  },
+  {
+    "moduleName": "__i18n__.auto.k0029",
+    "iconBase64": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAxhJREFUWEftlU9IFHEUx79vdl1XsszMUTskhpVrtqt5SMigssAUJCELITrkuaNTQaZmh1qLCjoFlUgiHSqpNAiNtIL2YLhruoFZ3dI1TSt0W915sWsrY+6fGVG8+DvO773v+8z7vT+EFT60wvGxCrCagZAZyKxhQ1TMUDYJUSlg2bCoYiXBw/L0t+mp5J7+GvIE01gAYK7/JQqYqmbGCQDrFhV4odNPItyXEVPrqFzrUl7PAzBfGc0jeFtASFqiwPNlGMMM3RHHmYR3gYs5gGyrayuDbADHMyATqBkQGmXvzCcS9EHTFwmS5RmDoNOnA/JJBpcTIAD0g8C7eyRxwOc/B2CxDncAdACgaRAdt1dufBwpgJZ7S/33UjA/ADgK4Jd2KalgDsBsHdlF4O5ZQaq2S4kXtYirtbVYRy4AXOuzZ1CuQ0p878+Axeo6D6AOII9e1ondZzdMKEXNVtdeAUgOfDPoPKjadFVsHikd73ebgj6PDAw5JPG1Uif38ljcjOB1Aezrqiq7JF4KANwBcArAB7sk7lQ6ZVuH9zDojfLbafE2KhKbMODegrLBeyETQOD8HinprdLAYnX1AsgCcNcuiRWLAriVKiE/1gYGkNPXuSQAmp7g+fayc8l6V44vck5f57FgBJqeQGsRcpupDYzD/pItdqreJyGLcLYQ1behEgBADwRqgXHyJvZ99U08OVhGwrahz0HLILLtKGg00p/9ikAMMHuh6/wynXb96Xjh54bh8glNg8gnZr42mkczkUdxoAhDVd+AOw1lgw0Lr8ON4oB1qGVUFPcCR+OfoGmsDKXxrf4uCHWCdIe6ZaQU/H8d2zIPNRrIY5RB8qS8xhMr/DaGm4D+7ljMOg75V22mdjD881vNUdsdqluIH2UkIJpe/ZtikRjcVOyMiWTkb2M1RgEbfmhKQTS6QEiP4DdExc4UNdqaAHyC3GpKBdAFYHOYGdxBRc6DywIwC5GxDfA/R7C/lKFDCRU6W5cNwA/RnpUEt7cOhBIA6wGeAFEvmG9Q8cdnaoJrrgG1olrsNNeAFnE1tqsAfwENdXIwem/N7wAAAABJRU5ErkJggg==",
+    "moduleJson": {
+      "attrs": {
+        "moduleAttr": [
+          {
+            "attrGroupName": "__i18n__.auto.k0004",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0030",
+                "attrCode": "text",
+                "attrType": "text",
+                "attrWhere": "buttonText"
+              },
+              {
+                "attrName": "__i18n__.auto.k0031",
+                "attrCode": "width",
+                "attrType": "number",
+                "attrWhere": "buttonRect"
+              },
+              {
+                "attrName": "__i18n__.auto.k0032",
+                "attrCode": "height",
+                "attrType": "number",
+                "attrWhere": "buttonRect"
+              },
+              {
+                "attrName": "__i18n__.auto.k0033",
+                "attrCode": "cornerRadius",
+                "attrType": "number",
+                "attrWhere": "buttonRect"
+              },
+              {
+                "attrName": "__i18n__.auto.k0028",
+                "attrCode": "opacity",
+                "attrType": "number",
+                "attrWhere": "buttonRect"
+              },
+              {
+                "attrName": "__i18n__.auto.k0034",
+                "attrCode": "align",
+                "attrType": "selectAlign",
+                "attrWhere": "buttonText"
+              },
+              {
+                "attrName": "__i18n__.auto.k0035",
+                "attrCode": "verticalAlign",
+                "attrType": "selectverticalAlign",
+                "attrWhere": "buttonText"
+              },
+              {
+                "attrName": "__i18n__.auto.k0036",
+                "attrCode": "padding",
+                "attrType": "number",
+                "attrWhere": "buttonText"
+              },
+              {
+                "attrName": "__i18n__.auto.k0007",
+                "attrCode": "fontSize",
+                "attrType": "number",
+                "attrWhere": "buttonText"
+              },
+              {
+                "attrName": "__i18n__.auto.k0008",
+                "attrCode": "fill",
+                "attrType": "color",
+                "attrWhere": "buttonText"
+              },
+              {
+                "attrName": "__i18n__.auto.k0009",
+                "attrCode": "fontFamily",
+                "attrType": "selectFamily",
+                "attrWhere": "buttonText"
+              },
+              {
+                "attrName": "__i18n__.auto.k0010",
+                "attrCode": "fontStyle",
+                "attrType": "select",
+                "attrWhere": "buttonText"
+              },
+              {
+                "attrName": "__i18n__.auto.k0025",
+                "attrCode": "fill",
+                "attrType": "color",
+                "attrWhere": "buttonRect"
+              },
+              {
+                "attrName": "__i18n__.auto.k0026",
+                "attrCode": "strokeWidth",
+                "attrType": "number",
+                "attrWhere": "buttonRect"
+              },
+              {
+                "attrName": "__i18n__.auto.k0027",
+                "attrCode": "stroke",
+                "attrType": "color",
+                "attrWhere": "buttonRect"
+              }
+            ]
+          }
+        ]
+      },
+      "children": [
+        {
+          "attrs": {
+            "width": 58,
+            "height": 38,
+            "stroke": "#000000",
+            "fill": "#378FEB",
+            "strokeWidth": 1,
+            "name": "buttonRect",
+            "opacity": 1,
+            "cornerRadius": 10,
+            "strokeScaleEnabled": false
+          },
+          "className": "Rect"
+        },
+        {
+          "attrs": {
+            "text": "__i18n__.auto.k0029",
+            "fontSize": 18,
+            "fontFamily": "__i18n__.auto.k0011",
+            "fill": "#000000",
+            "fontStyle": "normal",
+            "align": "center",
+            "verticalAlign": "middle",
+            "padding": 10,
+            "name": "buttonText"
+          },
+          "className": "Text"
+        }
+      ],
+      "width": 58,
+      "height": 38
+    }
+  },
+  {
+    "moduleName": "__i18n__.auto.k0037",
+    "iconBase64": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAQlJREFUWEdjZBhgwDjA9jNgOMDVM9aegYlBjNoOY2Rk/M/I8O/2zi1LLiKbjeIAN5/YPEYGhonUthzJvL//GBmcd29efBAmhuIAd5+Y2QwMjCk0dADD//+M2bu2LpqG1QEeHgkK/1j+TGP4zyhK0BGMDNqMDAycUHWv//9neEhQD8P/G7++/sw8cGD1F6wOIGwAQoWbT+w1RgYGTajI7J1bFqeRon/UAaMhMBoCoyEwGgKjITAaAqMhMBoCoyFAcQi4+8SCOhh6IIP+//8/bdfWJdn0bZR6xRYyMP7vZWRg/Paf4b/brq1LjtHVASDL3HxjFZn//Piyffvq1+RYDtIz+Dqn5PqEXH0A9hGnIbhiy9wAAAAASUVORK5CYII=",
+    "moduleJson": {
+      "attrs": {
+        "moduleAttr": [
+          {
+            "attrGroupName": "__i18n__.auto.k0004",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0007",
+                "attrCode": "fontSize",
+                "attrType": "number",
+                "attrWhere": "curTime"
+              },
+              {
+                "attrName": "__i18n__.auto.k0008",
+                "attrCode": "fill",
+                "attrType": "color",
+                "attrWhere": "curTime"
+              },
+              {
+                "attrName": "__i18n__.auto.k0009",
+                "attrCode": "fontFamily",
+                "attrType": "selectFamily",
+                "attrWhere": "curTime"
+              },
+              {
+                "attrName": "__i18n__.auto.k0010",
+                "attrCode": "fontStyle",
+                "attrType": "select",
+                "attrWhere": "curTime"
+              },
+              {
+                "attrName": "__i18n__.auto.k0038",
+                "attrCode": "type",
+                "attrType": "selectTime",
+                "attrWhere": "curTime"
+              }
+            ]
+          }
+        ]
+      },
+      "children": [
+        {
+          "attrs": {
+            "text": "__i18n__.auto.k0037",
+            "fontSize": 18,
+            "lineHeight": 1,
+            "fontFamily": "__i18n__.auto.k0011",
+            "fill": "#000000",
+            "padding": 10,
+            "align": "center",
+            "fontStyle": "normal",
+            "verticalAlign": "middle",
+            "name": "curTime",
+            "type": "1"
+          },
+          "className": "Text"
+        }
+      ],
+      "width": 197,
+      "height": 38
+    }
+  },
+  {
+    "moduleName": "__i18n__.auto.k0039",
+    "iconBase64": "Images/icon/1.png",
+    "moduleJson": {
+      "attrs": {
+        "dataKey": [],
+        "moduleAttr": [
+          {
+            "attrGroupName": "__i18n__.auto.k0002",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0003",
+                "attrCode": "dataKey",
+                "attrType": "hardwareInputNew",
+                "attrWhere": "this"
+              }
+            ]
+          },
+          {
+            "attrGroupName": "__i18n__.auto.k0004",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0020",
+                "attrCode": "width",
+                "attrType": "number",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0021",
+                "attrCode": "height",
+                "attrType": "number",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0040",
+                "attrCode": "max",
+                "attrType": "number",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0041",
+                "attrCode": "min",
+                "attrType": "number",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0042",
+                "attrCode": "titleSwitch",
+                "attrType": "showSelect",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0043",
+                "attrCode": "title",
+                "attrType": "textarea",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0044",
+                "attrCode": "titleFontSize",
+                "attrType": "number",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0045",
+                "attrCode": "titleColor",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0046",
+                "attrCode": "dataFontSize",
+                "attrType": "number",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0047",
+                "attrCode": "dataColor",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0048",
+                "attrCode": "markColor",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0049",
+                "attrCode": "markFontColor",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0050",
+                "attrCode": "axisLine1",
+                "attrType": "number",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0051",
+                "attrCode": "axisLineColor1",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0052",
+                "attrCode": "axisLine2",
+                "attrType": "number",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0053",
+                "attrCode": "axisLineColor2",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0054",
+                "attrCode": "axisLine3",
+                "attrType": "number",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0055",
+                "attrCode": "axisLineColor3",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0056",
+                "attrCode": "axisLine4",
+                "attrType": "number",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0057",
+                "attrCode": "axisLineColor4",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0058",
+                "attrCode": "progressSelect",
+                "attrType": "showSelect",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0059",
+                "attrCode": "progressColor",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              }
+            ]
+          }
+        ]
+      },
+      "children": [
+        {
+          "attrs": {
+            "title": "__i18n__.auto.k0039",
+            "titleSwitch": "1",
+            "titleFontSize": 24,
+            "titleColor": "#000000",
+            "titleFontFamily": "__i18n__.auto.k0011",
+            "max": 5,
+            "min": 0,
+            "markColor": "#999999",
+            "markFontColor": "#999999",
+            "dataColor": "#000000",
+            "axisLine1": 0,
+            "axisLineColor1": "#ffffff",
+            "axisLine2": 0,
+            "axisLineColor2": "#ffffff",
+            "axisLine3": 0,
+            "axisLineColor3": "#ffffff",
+            "axisLine4": 1,
+            "axisLineColor4": "#999999",
+            "progressSelect": "1",
+            "progressColor": "#1e9fff",
+            "dataFontSize": 24,
+            "dataFontFamily": "__i18n__.auto.k0011",
+            "name": "Echart",
+            "width": 250,
+            "height": 250,
+            "cat": "gauge",
+            "data": 2.5
+          },
+          "className": "Echart"
+        }
+      ],
+      "width": 250,
+      "height": 250
+    }
+  },
+  {
+    "moduleName": "__i18n__.auto.k0060",
+    "iconBase64": "Images/icon/2.png",
+    "moduleJson": {
+      "attrs": {
+        "dataKey": [],
+        "moduleAttr": [
+          {
+            "attrGroupName": "__i18n__.auto.k0002",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0003",
+                "attrCode": "dataParamsKey",
+                "attrType": "hardwareInputNew",
+                "attrWhere": "this"
+              }
+            ]
+          },
+          {
+            "attrGroupName": "__i18n__.auto.k0004",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0020",
+                "attrCode": "width",
+                "attrType": "number",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0021",
+                "attrCode": "height",
+                "attrType": "number",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0042",
+                "attrCode": "titleSwitch",
+                "attrType": "showSelect",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0043",
+                "attrCode": "title",
+                "attrType": "textarea",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0044",
+                "attrCode": "titleFontSize",
+                "attrType": "number",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0045",
+                "attrCode": "titleColor",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0061",
+                "attrCode": "iconSwitch",
+                "attrType": "showSelect",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0062",
+                "attrCode": "iconColor",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0063",
+                "attrCode": "dataType",
+                "attrType": "selectDataType",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0064",
+                "attrCode": "dataSwitch",
+                "attrType": "showSelect",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0046",
+                "attrCode": "dataFontSize",
+                "attrType": "number",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0047",
+                "attrCode": "dataColor",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0048",
+                "attrCode": "markColor",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0049",
+                "attrCode": "markFontColor",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0065",
+                "attrCode": "xshow",
+                "attrType": "showSelect",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0066",
+                "attrCode": "xaxisLine",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0067",
+                "attrCode": "xTextShow",
+                "attrType": "showSelect",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0068",
+                "attrCode": "xColor",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0069",
+                "attrCode": "yshow",
+                "attrType": "showSelect",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0070",
+                "attrCode": "yaxisLine",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0071",
+                "attrCode": "yColor",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0072",
+                "attrCode": "splitSwitch",
+                "attrType": "showSelect",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0073",
+                "attrCode": "splitColor",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0074",
+                "attrCode": "areaSwitch",
+                "attrType": "showSelect",
+                "attrWhere": "Echart"
+              }
+            ]
+          }
+        ]
+      },
+      "children": [
+        {
+          "attrs": {
+            "title": "__i18n__.auto.k0060",
+            "titleSwitch": "1",
+            "titleFontSize": 24,
+            "titleFontFamily": "__i18n__.auto.k0011",
+            "titleColor": "#000000",
+            "iconSwitch": "1",
+            "iconColor": "#000000",
+            "dataSwitch": "1",
+            "dataFontSize": 12,
+            "dataFontFamily": "__i18n__.auto.k0011",
+            "dataColor": "#000000",
+            "markColor": "#999999",
+            "markFontColor": "#999999",
+            "xshow": "2",
+            "xTextShow": "2",
+            "xaxisLine": "#000000",
+            "xColor": "#000000",
+            "yshow": "2",
+            "yaxisLine": "#000000",
+            "yColor": "#000000",
+            "splitSwitch": "2",
+            "splitColor": "#ffffff",
+            "areaSwitch": "1",
+            "name": "Echart",
+            "width": 350,
+            "height": 250,
+            "cat": "line",
+            "dataType": "day",
+            "data": [
+              {
+                "name": "__i18n__.auto.k0075",
+                "data": [
+                  820,
+                  932,
+                  901,
+                  934,
+                  1290,
+                  1330,
+                  1320
+                ],
+                "type": "line",
+                "smooth": true
+              },
+              {
+                "name": "__i18n__.auto.k0076",
+                "data": [
+                  125,
+                  528,
+                  752,
+                  129,
+                  452,
+                  489,
+                  753
+                ],
+                "type": "line",
+                "smooth": true
+              },
+              {
+                "name": "__i18n__.auto.k0077",
+                "data": [
+                  115,
+                  852,
+                  453,
+                  856,
+                  452,
+                  459,
+                  963
+                ],
+                "type": "line",
+                "smooth": true
+              }
+            ],
+            "xdata": [
+              "Mon",
+              "Tue",
+              "Wed",
+              "Thu",
+              "Fri",
+              "Sat",
+              "Sun"
+            ]
+          },
+          "className": "Echart"
+        }
+      ],
+      "width": 350,
+      "height": 250
+    }
+  },
+  {
+    "moduleName": "__i18n__.auto.k0078",
+    "iconBase64": "Images/icon/3.png",
+    "moduleJson": {
+      "attrs": {
+        "dataKey": [],
+        "moduleAttr": [
+          {
+            "attrGroupName": "__i18n__.auto.k0002",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0003",
+                "attrCode": "dataParamsKey",
+                "attrType": "hardwareInputNew",
+                "attrWhere": "this"
+              }
+            ]
+          },
+          {
+            "attrGroupName": "__i18n__.auto.k0004",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0020",
+                "attrCode": "width",
+                "attrType": "number",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0021",
+                "attrCode": "height",
+                "attrType": "number",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0042",
+                "attrCode": "titleSwitch",
+                "attrType": "showSelect",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0043",
+                "attrCode": "title",
+                "attrType": "textarea",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0044",
+                "attrCode": "titleFontSize",
+                "attrType": "number",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0045",
+                "attrCode": "titleColor",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0061",
+                "attrCode": "iconSwitch",
+                "attrType": "showSelect",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0062",
+                "attrCode": "iconColor",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0064",
+                "attrCode": "dataSwitch",
+                "attrType": "showSelect",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0046",
+                "attrCode": "dataFontSize",
+                "attrType": "number",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0047",
+                "attrCode": "dataColor",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0048",
+                "attrCode": "markColor",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0049",
+                "attrCode": "markFontColor",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0065",
+                "attrCode": "xshow",
+                "attrType": "showSelect",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0066",
+                "attrCode": "xaxisLine",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0067",
+                "attrCode": "xTextShow",
+                "attrType": "showSelect",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0068",
+                "attrCode": "xColor",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0079",
+                "attrCode": "barbackgroundSwitch",
+                "attrType": "showSelect",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0080",
+                "attrCode": "barbackground",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0069",
+                "attrCode": "yshow",
+                "attrType": "showSelect",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0070",
+                "attrCode": "yaxisLine",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0071",
+                "attrCode": "yColor",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0072",
+                "attrCode": "splitSwitch",
+                "attrType": "showSelect",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0073",
+                "attrCode": "splitColor",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              }
+            ]
+          }
+        ]
+      },
+      "children": [
+        {
+          "attrs": {
+            "title": "__i18n__.auto.k0078",
+            "titleSwitch": "1",
+            "titleFontSize": 24,
+            "titleFontFamily": "__i18n__.auto.k0011",
+            "titleColor": "#000000",
+            "iconSwitch": "1",
+            "iconColor": "#000000",
+            "dataSwitch": "1",
+            "dataFontSize": 12,
+            "dataFontFamily": "__i18n__.auto.k0011",
+            "dataColor": "#000000",
+            "markColor": "#999999",
+            "markFontColor": "#999999",
+            "xshow": "2",
+            "xTextShow": "2",
+            "xaxisLine": "#000000",
+            "xColor": "#000000",
+            "barbackgroundSwitch": "1",
+            "barbackground": "#ffffff",
+            "yshow": "2",
+            "yaxisLine": "#000000",
+            "yColor": "#000000",
+            "splitSwitch": "2",
+            "splitColor": "#cccccc",
+            "name": "Echart",
+            "width": 350,
+            "height": 250,
+            "cat": "bar",
+            "data": [
+              {
+                "name": "__i18n__.auto.k0002",
+                "data": [
+                  120,
+                  200,
+                  150,
+                  80,
+                  70,
+                  110,
+                  130
+                ],
+                "type": "bar"
+              }
+            ],
+            "xdata": [
+              "Mon",
+              "Tue",
+              "Wed",
+              "Thu",
+              "Fri",
+              "Sat",
+              "Sun"
+            ]
+          },
+          "className": "Echart"
+        }
+      ],
+      "width": 350,
+      "height": 250
+    }
+  },
+  {
+    "moduleName": "__i18n__.auto.k2001",
+    "iconBase64": "Images/icon/3.png",
+    "moduleJson": {
+      "attrs": {
+        "dataKey": [],
+        "moduleAttr": [
+          {
+            "attrGroupName": "__i18n__.auto.k0002",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0003",
+                "attrCode": "dataParamsKey",
+                "attrType": "hardwareInputNew",
+                "attrWhere": "this"
+              }
+            ]
+          },
+          {
+            "attrGroupName": "__i18n__.auto.k0004",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0020",
+                "attrCode": "width",
+                "attrType": "number",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0021",
+                "attrCode": "height",
+                "attrType": "number",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0042",
+                "attrCode": "titleSwitch",
+                "attrType": "showSelect",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0043",
+                "attrCode": "title",
+                "attrType": "textarea",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0044",
+                "attrCode": "titleFontSize",
+                "attrType": "number",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0045",
+                "attrCode": "titleColor",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0061",
+                "attrCode": "iconSwitch",
+                "attrType": "showSelect",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0062",
+                "attrCode": "iconColor",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0064",
+                "attrCode": "dataSwitch",
+                "attrType": "showSelect",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0046",
+                "attrCode": "dataFontSize",
+                "attrType": "number",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0047",
+                "attrCode": "dataColor",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0048",
+                "attrCode": "markColor",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0049",
+                "attrCode": "markFontColor",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0065",
+                "attrCode": "xshow",
+                "attrType": "showSelect",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0066",
+                "attrCode": "xaxisLine",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0067",
+                "attrCode": "xTextShow",
+                "attrType": "showSelect",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0068",
+                "attrCode": "xColor",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0079",
+                "attrCode": "barbackgroundSwitch",
+                "attrType": "showSelect",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0080",
+                "attrCode": "barbackground",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k2002",
+                "attrCode": "sortEnable",
+                "attrType": "showSelect",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k2003",
+                "attrCode": "sortOrder",
+                "attrType": "sortOrderSelect",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "显示前N个",
+                "attrCode": "sortTopN",
+                "attrType": "sortTopN",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0069",
+                "attrCode": "yshow",
+                "attrType": "showSelect",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0070",
+                "attrCode": "yaxisLine",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0071",
+                "attrCode": "yColor",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0072",
+                "attrCode": "splitSwitch",
+                "attrType": "showSelect",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0073",
+                "attrCode": "splitColor",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              }
+            ]
+          }
+        ]
+      },
+      "children": [
+        {
+          "attrs": {
+            "title": "__i18n__.auto.k2001",
+            "titleSwitch": "1",
+            "titleFontSize": 24,
+            "titleFontFamily": "__i18n__.auto.k0011",
+            "titleColor": "#000000",
+            "iconSwitch": "1",
+            "iconColor": "#000000",
+            "dataSwitch": "1",
+            "dataFontSize": 12,
+            "dataFontFamily": "__i18n__.auto.k0011",
+            "dataColor": "#000000",
+            "markColor": "#999999",
+            "markFontColor": "#999999",
+            "xshow": "2",
+            "xTextShow": "2",
+            "xaxisLine": "#000000",
+            "xColor": "#000000",
+            "barbackgroundSwitch": "1",
+            "barbackground": "#ffffff",
+            "sortEnable": "2",
+            "sortOrder": "desc",
+            "sortTarget": "first",
+            "sortTopN": 0,
+            "yshow": "2",
+            "yaxisLine": "#000000",
+            "yColor": "#000000",
+            "splitSwitch": "2",
+            "splitColor": "#cccccc",
+            "name": "Echart",
+            "width": 350,
+            "height": 250,
+            "cat": "bar",
+            "data": [
+              {
+                "name": "__i18n__.auto.k0002",
+                "data": [
+                  120,
+                  200,
+                  150,
+                  80,
+                  70,
+                  110,
+                  130
+                ],
+                "type": "bar"
+              }
+            ],
+            "xdata": [
+              "Mon",
+              "Tue",
+              "Wed",
+              "Thu",
+              "Fri",
+              "Sat",
+              "Sun"
+            ]
+          },
+          "className": "Echart"
+        }
+      ],
+      "width": 350,
+      "height": 250
+    }
+  },
+  {
+    "moduleName": "__i18n__.auto.k0081",
+    "iconBase64": "Images/icon/4.png",
+    "moduleJson": {
+      "attrs": {
+        "dataKey": [],
+        "moduleAttr": [
+          {
+            "attrGroupName": "__i18n__.auto.k0002",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0003",
+                "attrCode": "dataParamsKey",
+                "attrType": "hardwareInputNew",
+                "attrWhere": "this"
+              }
+            ]
+          },
+          {
+            "attrGroupName": "__i18n__.auto.k0004",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0020",
+                "attrCode": "width",
+                "attrType": "number",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0021",
+                "attrCode": "height",
+                "attrType": "number",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0042",
+                "attrCode": "titleSwitch",
+                "attrType": "showSelect",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0043",
+                "attrCode": "title",
+                "attrType": "textarea",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0044",
+                "attrCode": "titleFontSize",
+                "attrType": "number",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0045",
+                "attrCode": "titleColor",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0061",
+                "attrCode": "iconSwitch",
+                "attrType": "showSelect",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0062",
+                "attrCode": "iconColor",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0046",
+                "attrCode": "dataFontSize",
+                "attrType": "number",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0047",
+                "attrCode": "dataColor",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0082",
+                "attrCode": "roseSwitch",
+                "attrType": "showSelect",
+                "attrWhere": "Echart"
+              }
+            ]
+          }
+        ]
+      },
+      "children": [
+        {
+          "attrs": {
+            "title": "__i18n__.auto.k0081",
+            "titleSwitch": "1",
+            "titleFontSize": 24,
+            "titleFontFamily": "__i18n__.auto.k0011",
+            "titleColor": "#000000",
+            "iconSwitch": "1",
+            "iconColor": "#000000",
+            "dataFontSize": 12,
+            "dataColor": "#000000",
+            "dataFontFamily": "__i18n__.auto.k0011",
+            "orient": "vertical",
+            "algin": "right",
+            "roseSwitch": "1",
+            "name": "Echart",
+            "width": 380,
+            "height": 250,
+            "cat": "pie",
+            "data": [
+              {
+                "value": 343,
+                "name": "__i18n__.auto.k0083"
+              },
+              {
+                "value": 735,
+                "name": "__i18n__.auto.k0084"
+              },
+              {
+                "value": 580,
+                "name": "__i18n__.auto.k0085"
+              },
+              {
+                "value": 120,
+                "name": "__i18n__.auto.k0086"
+              },
+              {
+                "value": 484,
+                "name": "__i18n__.auto.k0087"
+              }
+            ]
+          },
+          "className": "Echart"
+        }
+      ],
+      "width": 380,
+      "height": 250
+    }
+  },
+  {
+    "moduleName": "__i18n__.auto.k0088",
+    "iconBase64": "Images/icon/5.png",
+    "moduleJson": {
+      "attrs": {
+        "dataKey": [],
+        "moduleAttr": [
+          {
+            "attrGroupName": "__i18n__.auto.k0002",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0003",
+                "attrCode": "dataParamsKey",
+                "attrType": "hardwareInputNew",
+                "attrWhere": "this"
+              }
+            ]
+          },
+          {
+            "attrGroupName": "__i18n__.auto.k0004",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0020",
+                "attrCode": "width",
+                "attrType": "number",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0021",
+                "attrCode": "height",
+                "attrType": "number",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0042",
+                "attrCode": "titleSwitch",
+                "attrType": "showSelect",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0043",
+                "attrCode": "title",
+                "attrType": "textarea",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0044",
+                "attrCode": "titleFontSize",
+                "attrType": "number",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0045",
+                "attrCode": "titleColor",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0061",
+                "attrCode": "iconSwitch",
+                "attrType": "showSelect",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0062",
+                "attrCode": "iconColor",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0064",
+                "attrCode": "dataSwitch",
+                "attrType": "showSelect",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0046",
+                "attrCode": "dataFontSize",
+                "attrType": "number",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0047",
+                "attrCode": "dataColor",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              }
+            ]
+          }
+        ]
+      },
+      "children": [
+        {
+          "attrs": {
+            "title": "__i18n__.auto.k0088",
+            "titleSwitch": "1",
+            "titleFontSize": 24,
+            "titleFontFamily": "__i18n__.auto.k0011",
+            "titleColor": "#000000",
+            "iconSwitch": "1",
+            "iconColor": "#000000",
+            "dataFontSize": 16,
+            "dataFontFamily": "__i18n__.auto.k0011",
+            "dataSwitch": "1",
+            "dataColor": "#000000",
+            "orient": "vertical",
+            "algin": "right",
+            "roseSwitch": "1",
+            "name": "Echart",
+            "width": 380,
+            "height": 250,
+            "cat": "huan",
+            "data": [
+              {
+                "value": 343,
+                "name": "__i18n__.auto.k0083"
+              },
+              {
+                "value": 735,
+                "name": "__i18n__.auto.k0084"
+              },
+              {
+                "value": 580,
+                "name": "__i18n__.auto.k0085"
+              },
+              {
+                "value": 120,
+                "name": "__i18n__.auto.k0086"
+              },
+              {
+                "value": 484,
+                "name": "__i18n__.auto.k0087"
+              }
+            ]
+          },
+          "className": "Echart"
+        }
+      ],
+      "width": 380,
+      "height": 250
+    }
+  },
+  {
+    "moduleName": "__i18n__.auto.k0089",
+    "iconBase64": "Images/icon/full.png",
+    "moduleJson": {
+      "attrs": {
+        "moduleAttr": [
+          {
+            "attrGroupName": "__i18n__.auto.k0004",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0016",
+                "attrCode": "width",
+                "attrType": "number",
+                "attrWhere": "fullSreen"
+              },
+              {
+                "attrName": "__i18n__.auto.k0017",
+                "attrCode": "height",
+                "attrType": "number",
+                "attrWhere": "fullSreen"
+              }
+            ]
+          }
+        ]
+      },
+      "children": [
+        {
+          "attrs": {
+            "name": "fullSreen",
+            "image": "Images/icon/full.png",
+            "width": 50,
+            "height": 50
+          },
+          "className": "Image"
+        }
+      ],
+      "width": 50,
+      "height": 50,
+      "clickEvnt": [
+        {
+          "full": true
+        }
+      ]
+    }
+  },
+  {
+    "moduleName": "__i18n__.auto.k0090",
+    "iconBase64": "Images/icon/play.png",
+    "moduleJson": {
+      "attrs": {
+        "dataKey": [],
+        "moduleAttr": [
+          {
+            "attrGroupName": "__i18n__.auto.k0002",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0003",
+                "attrCode": "pageKey",
+                "attrType": "hardwareInputNew",
+                "attrWhere": "this"
+              }
+            ]
+          },
+          {
+            "attrGroupName": "__i18n__.auto.k0004",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0016",
+                "attrCode": "width",
+                "attrType": "number",
+                "attrWhere": "play"
+              },
+              {
+                "attrName": "__i18n__.auto.k0017",
+                "attrCode": "height",
+                "attrType": "number",
+                "attrWhere": "play"
+              },
+              {
+                "attrName": "__i18n__.auto.k0091",
+                "attrCode": "ani",
+                "attrType": "aniSelect",
+                "attrWhere": "play"
+              },
+              {
+                "attrName": "__i18n__.auto.k0092",
+                "attrCode": "anitime",
+                "attrType": "number",
+                "attrWhere": "play"
+              },
+              {
+                "attrName": "__i18n__.auto.k0093",
+                "attrCode": "anispeed",
+                "attrType": "number",
+                "attrWhere": "play"
+              }
+            ]
+          }
+        ]
+      },
+      "children": [
+        {
+          "attrs": {
+            "name": "play",
+            "image": "Images/icon/play.png",
+            "width": 50,
+            "height": 50,
+            "ani": "slide",
+            "anitime": 5,
+            "anispeed": 300
+          },
+          "className": "Image"
+        }
+      ],
+      "width": 50,
+      "height": 50
+    }
+  },
+  {
+    "moduleName": "__i18n__.auto.k0094",
+    "iconBase64": "data:image/png;base64,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",
+    "moduleJson": {
+      "attrs": {
+        "moduleAttr": [
+          {
+            "attrGroupName": "__i18n__.auto.k0004",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0020",
+                "attrCode": "width",
+                "attrType": "number",
+                "attrWhere": "pageIn"
+              },
+              {
+                "attrName": "__i18n__.auto.k0021",
+                "attrCode": "height",
+                "attrType": "number",
+                "attrWhere": "pageIn"
+              },
+              {
+                "attrName": "URL",
+                "attrCode": "URL",
+                "attrType": "textarea",
+                "attrWhere": "pageIn"
+              }
+            ]
+          }
+        ]
+      },
+      "children": [
+        {
+          "attrs": {
+            "name": "pageIn",
+            "image": "data:image/png;base64,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",
+            "width": 50,
+            "URL": "",
+            "height": 50
+          },
+          "className": "Image"
+        }
+      ],
+      "width": 50,
+      "height": 50
+    }
+  },
+  {
+    "moduleName": "__i18n__.auto.k0095",
+    "iconBase64": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAA4FJREFUWEfNl21oU2cUx///m6TOF4rSNVbxBQQnviwOOwXnC9VKak0qIouiJrgPw7GPwqp+9IuorV/2aQMRxcTXokhNiLcWTVEEdRuYQkUqG5Opqx2VOheb2JsjSUy5aVJzb1p191uenPM/v3POc577XOIjP/wQ8T8/+KRasVivCNAxGMM3XfvtL7NxPwiA48izr5lESyqoAL/FhQ0P9lY+Sf0eE4B5h3unj1NQjWRhPRGNiqI0AliRgeAjSWruzn1VnWmAla7tUybQ8hMgGwmON9oWNehP+zuaev8kZJZRvzSEoCe6116VFqhzec+B3GJGIGWbBVjc9OwigPWZCht7hOiINto3pAGcbl+MQDpzgfQQ7DYiowb9q4zYvcsmUwG3L0Mu6NPiA3Pa21v6zQg7mnqvArLWqA9BAaT13h775lwAIKoG/YuNCmXtHE09qarZzfgJ5FF0z9TZRgHorPetEcpcCrvbwv7r+n47mvsWQV6HCGY2InFLwEMjAVEgCRt+vb+78mlRgPr6HeWawsskVw8JitzQ4vEGfavmH+idZrOhlZAv090kt0UbK88Wq0pRAKfL+zPJ74YLCXC0LejfpV93NP89kaIcF2AtmHRFG6tuD/erqfFMikRack/CoU1YYA/UuX3/AKjIz4R9avBkgfXCOde5fSmYZfrxzXRLPwUFAJxu33MCk/NkRfrVUCB/fYSalw7g8p4guTNfV06qwUCB9TGuQE3Dtk/LxNpOQD+e0TgHayOXz6TaY+gpuQIp9erqXbaKaQObAZkLwcO//hi42NXVktBHXrDAUzZj9rgNtPAzQfL3xMvHlyKRyGDWZlQAxVJc5/bNsghCIBbpbO/gtWxS1cDTt/ustE1YLPjy5Z7x5RWf3AWwMG9URToT/8W/So3de6uA0+VtJvnDSKAicqwtFPjWNIDH47G8iNlWJ8nJVg0PwuFTXcOD1K7fsdRq5S2A1ndUKqlpyRUWi/Kj4XOg1rV9jgXKBZJfZIVF8AvII/2aFr4dPvWizu1dAvASgJnF2iTANQKTDAFIAptYho6RhEVEQAyYuTm9fXH9C6C8yEko3QBjyJ35Ygma/j97kyp0FJsWK8Xh/wegvxOWkpEZHwFetQX9E7I+o7oVmwk8ZCtyXg0FtuYAlPpdYAZAIK8AtsZE+/5m6PTzHAAzQmNtOyafZqOB+ugAbwAtcKYwCXMQEwAAAABJRU5ErkJggg==",
+    "moduleJson": {
+      "attrs": {
+        "moduleAttr": [
+          {
+            "attrGroupName": "__i18n__.auto.k0004",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0096",
+                "attrCode": "ipKey",
+                "attrType": "textarea",
+                "attrWhere": "ipImage"
+              },
+              {
+                "attrName": "__i18n__.auto.k0016",
+                "attrCode": "width",
+                "attrType": "number",
+                "attrWhere": "ipImage"
+              },
+              {
+                "attrName": "__i18n__.auto.k0017",
+                "attrCode": "height",
+                "attrType": "number",
+                "attrWhere": "ipImage"
+              },
+              {
+                "attrName": "__i18n__.auto.k0015",
+                "attrCode": "image",
+                "attrType": "image",
+                "attrWhere": "ipImage"
+              },
+              {
+                "attrName": "__i18n__.auto.k0097",
+                "attrCode": "alarmImage",
+                "attrType": "image",
+                "attrWhere": "ipImage"
+              }
+            ]
+          }
+        ]
+      },
+      "children": [
+        {
+          "attrs": {
+            "name": "ipImage",
+            "image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAA4FJREFUWEfNl21oU2cUx///m6TOF4rSNVbxBQQnviwOOwXnC9VKak0qIouiJrgPw7GPwqp+9IuorV/2aQMRxcTXokhNiLcWTVEEdRuYQkUqG5Opqx2VOheb2JsjSUy5aVJzb1p191uenPM/v3POc577XOIjP/wQ8T8/+KRasVivCNAxGMM3XfvtL7NxPwiA48izr5lESyqoAL/FhQ0P9lY+Sf0eE4B5h3unj1NQjWRhPRGNiqI0AliRgeAjSWruzn1VnWmAla7tUybQ8hMgGwmON9oWNehP+zuaev8kZJZRvzSEoCe6116VFqhzec+B3GJGIGWbBVjc9OwigPWZCht7hOiINto3pAGcbl+MQDpzgfQQ7DYiowb9q4zYvcsmUwG3L0Mu6NPiA3Pa21v6zQg7mnqvArLWqA9BAaT13h775lwAIKoG/YuNCmXtHE09qarZzfgJ5FF0z9TZRgHorPetEcpcCrvbwv7r+n47mvsWQV6HCGY2InFLwEMjAVEgCRt+vb+78mlRgPr6HeWawsskVw8JitzQ4vEGfavmH+idZrOhlZAv090kt0UbK88Wq0pRAKfL+zPJ74YLCXC0LejfpV93NP89kaIcF2AtmHRFG6tuD/erqfFMikRack/CoU1YYA/UuX3/AKjIz4R9avBkgfXCOde5fSmYZfrxzXRLPwUFAJxu33MCk/NkRfrVUCB/fYSalw7g8p4guTNfV06qwUCB9TGuQE3Dtk/LxNpOQD+e0TgHayOXz6TaY+gpuQIp9erqXbaKaQObAZkLwcO//hi42NXVktBHXrDAUzZj9rgNtPAzQfL3xMvHlyKRyGDWZlQAxVJc5/bNsghCIBbpbO/gtWxS1cDTt/ustE1YLPjy5Z7x5RWf3AWwMG9URToT/8W/So3de6uA0+VtJvnDSKAicqwtFPjWNIDH47G8iNlWJ8nJVg0PwuFTXcOD1K7fsdRq5S2A1ndUKqlpyRUWi/Kj4XOg1rV9jgXKBZJfZIVF8AvII/2aFr4dPvWizu1dAvASgJnF2iTANQKTDAFIAptYho6RhEVEQAyYuTm9fXH9C6C8yEko3QBjyJ35Ygma/j97kyp0FJsWK8Xh/wegvxOWkpEZHwFetQX9E7I+o7oVmwk8ZCtyXg0FtuYAlPpdYAZAIK8AtsZE+/5m6PTzHAAzQmNtOyafZqOB+ugAbwAtcKYwCXMQEwAAAABJRU5ErkJggg==",
+            "alarmImage": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAA4FJREFUWEfNl21oU2cUx///m6TOF4rSNVbxBQQnviwOOwXnC9VKak0qIouiJrgPw7GPwqp+9IuorV/2aQMRxcTXokhNiLcWTVEEdRuYQkUqG5Opqx2VOheb2JsjSUy5aVJzb1p191uenPM/v3POc577XOIjP/wQ8T8/+KRasVivCNAxGMM3XfvtL7NxPwiA48izr5lESyqoAL/FhQ0P9lY+Sf0eE4B5h3unj1NQjWRhPRGNiqI0AliRgeAjSWruzn1VnWmAla7tUybQ8hMgGwmON9oWNehP+zuaev8kZJZRvzSEoCe6116VFqhzec+B3GJGIGWbBVjc9OwigPWZCht7hOiINto3pAGcbl+MQDpzgfQQ7DYiowb9q4zYvcsmUwG3L0Mu6NPiA3Pa21v6zQg7mnqvArLWqA9BAaT13h775lwAIKoG/YuNCmXtHE09qarZzfgJ5FF0z9TZRgHorPetEcpcCrvbwv7r+n47mvsWQV6HCGY2InFLwEMjAVEgCRt+vb+78mlRgPr6HeWawsskVw8JitzQ4vEGfavmH+idZrOhlZAv090kt0UbK88Wq0pRAKfL+zPJ74YLCXC0LejfpV93NP89kaIcF2AtmHRFG6tuD/erqfFMikRack/CoU1YYA/UuX3/AKjIz4R9avBkgfXCOde5fSmYZfrxzXRLPwUFAJxu33MCk/NkRfrVUCB/fYSalw7g8p4guTNfV06qwUCB9TGuQE3Dtk/LxNpOQD+e0TgHayOXz6TaY+gpuQIp9erqXbaKaQObAZkLwcO//hi42NXVktBHXrDAUzZj9rgNtPAzQfL3xMvHlyKRyGDWZlQAxVJc5/bNsghCIBbpbO/gtWxS1cDTt/ustE1YLPjy5Z7x5RWf3AWwMG9URToT/8W/So3de6uA0+VtJvnDSKAicqwtFPjWNIDH47G8iNlWJ8nJVg0PwuFTXcOD1K7fsdRq5S2A1ndUKqlpyRUWi/Kj4XOg1rV9jgXKBZJfZIVF8AvII/2aFr4dPvWizu1dAvASgJnF2iTANQKTDAFIAptYho6RhEVEQAyYuTm9fXH9C6C8yEko3QBjyJ35Ygma/j97kyp0FJsWK8Xh/wegvxOWkpEZHwFetQX9E7I+o7oVmwk8ZCtyXg0FtuYAlPpdYAZAIK8AtsZE+/5m6PTzHAAzQmNtOyafZqOB+ugAbwAtcKYwCXMQEwAAAABJRU5ErkJggg==",
+            "width": 50,
+            "height": 50,
+            "ipKey": "",
+            "haveAlarm": "0"
+          },
+          "className": "Image"
+        }
+      ],
+      "width": 50,
+      "height": 50
+    }
+  }
+]

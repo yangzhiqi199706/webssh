@@ -1,0 +1,130 @@
+{
+  "match_rules": [
+    {
+      "trigger_type": "j2_only",
+      "trigger_j2": 1,
+      "f_value": 0,
+      "mode": "01/02功能码（线圈读取）",
+      "description": "J=1且K为空→01/02功能码，ColCount=2，无Formats节点",
+      "func_code": 2,
+      "is_coil_mode": true
+    },
+    {
+      "trigger_type": "k2_only",
+      "trigger_k2": 1,
+      "f_value": 0,
+      "mode": "01/02功能码（线圈读取）",
+      "description": "K2=1且J为空→01/02功能码，ColCount=2，无Formats节点",
+      "func_code": 2,
+      "is_coil_mode": true
+    },
+    {
+      "trigger_type": "j2_k2",
+      "trigger_j2": 4,
+      "trigger_k2": 1,
+      "f_value": 1,
+      "mode": "16位无符号整形（1寄存器=1名称）",
+      "description": "J2=4且K2=1→16位无符号整形解析"
+    },
+    {
+      "trigger_type": "j2_k2",
+      "trigger_j2": 4,
+      "trigger_k2": 9,
+      "f_value": 0,
+      "mode": "16位有符号整形（1寄存器=1名称）",
+      "description": "J2=4且K2=9→16位有符号整形解析（常用）"
+    },
+    {
+      "trigger_type": "j2_k2",
+      "trigger_j2": 8,
+      "trigger_k2": 5,
+      "f_value": 10,
+      "mode": "32位浮点数小端模式",
+      "description": "J2=8且K2=5→32位浮点数小端解析"
+    },
+    {
+      "trigger_type": "j2_k2",
+      "trigger_j2": 8,
+      "trigger_k2": 15,
+      "f_value": 5,
+      "mode": "32位浮点数大端模式",
+      "description": "J2=8且K2=15或K2=3→32位浮点数大端解析（D59适用）"
+    },
+    {
+      "trigger_type": "j2_k2",
+      "trigger_j2": 8,
+      "trigger_k2": 3,
+      "f_value": 5,
+      "mode": "32位浮点数大端模式",
+      "description": "J2=8且K2=3→32位浮点数大端解析"
+    },
+    {
+      "trigger_type": "k2_only",
+      "trigger_k2": 2,
+      "f_value": 4,
+      "mode": "32位浮点数小端模式交换",
+      "description": "仅K2=2→32位浮点数小端交换解析"
+    },
+    {
+      "trigger_type": "j2_k2",
+      "trigger_j2": 8,
+      "trigger_k2": 1,
+      "f_value": 17,
+      "mode": "32位无符号大端模式",
+      "description": "J2=8且K2=1→32位无符号大端解析"
+    },
+    {
+      "trigger_type": "j2_k2",
+      "trigger_j2": 8,
+      "trigger_k2": 17,
+      "f_value": 9,
+      "mode": "INT32 大端模式",
+      "description": "J2=8且K2=17→INT32大端解析"
+    },
+    {
+      "trigger_type": "j2_k2",
+      "trigger_j2": 8,
+      "trigger_k2": 8,
+      "f_value": 18,
+      "mode": "UINT32 小端模式交换",
+      "description": "J2=8且K2=8→UINT32小端交换解析"
+    },
+    {
+      "trigger_type": "j2_k2",
+      "trigger_j2": 8,
+      "trigger_k2": 10,
+      "f_value": 8,
+      "mode": "INT32 小端模式交换",
+      "description": "J2=8且K2=10→INT32小端交换解析"
+    },
+    {
+      "trigger_type": "j2_k2",
+      "trigger_j2": 8,
+      "trigger_k2": 14,
+      "f_value": 20,
+      "mode": "UINT32 小端模式",
+      "description": "J2=8且K2=14→UINT32小端解析"
+    },
+    {
+      "trigger_type": "j2_k2",
+      "trigger_j2": 8,
+      "trigger_k2": 18,
+      "f_value": 14,
+      "mode": "INT32 小端模式（默认）",
+      "description": "J2=8且K2=18→INT32小端解析"
+    },
+    {
+      "trigger_type": "k2_only",
+      "trigger_k2": 5,
+      "f_value": 10,
+      "mode": "32位浮点数小端",
+      "description": "仅K2=5→32位浮点数小端解析"
+    }
+  ],
+  "default_rule": {
+    "f_value": 14,
+    "mode": "INT32 小端模式（默认）",
+    "description": "J2/K2无匹配时使用的默认规则",
+    "is_coil_mode": false
+  }
+}

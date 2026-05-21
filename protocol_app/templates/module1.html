@@ -1,0 +1,317 @@
+{# protocol_app/templates/module1.html — XLS 文件处理 #}
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>模块 1 · XLS 文件处理 · 协议助手</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='webssh-theme.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='vendor/fontawesome/css/all.min.css') }}">
+  <script src="{{ url_for('static', filename='vendor/xlsx/xlsx.full.min.js') }}"></script>
+  <meta name="protocol-prefix" content="{{ config.PROTOCOL_PREFIX }}">
+  <script>
+    window.PROTOCOL_PREFIX = (document.querySelector('meta[name="protocol-prefix"]') || {}).content || '';
+  </script>
+  <style>
+    /* 全屏数据模式：与 webssh 主题协同 */
+    body.fullscreen-data-mode .top-bar,
+    body.fullscreen-data-mode .module-nav-card,
+    body.fullscreen-data-mode #coreInfoWrapper,
+    body.fullscreen-data-mode #statsArea,
+    body.fullscreen-data-mode #uploadCard,
+    body.fullscreen-data-mode #originalPreviewPanel,
+    body.fullscreen-data-mode .tab-header,
+    body.fullscreen-data-mode #downloadArea,
+    body.fullscreen-data-mode .main-foot {
+      display: none !important;
+    }
+    body.fullscreen-data-mode .main { padding: 0; }
+    body.fullscreen-data-mode .column { border-radius: 0; border: 0; }
+    body.fullscreen-data-mode #processedPreviewPanel { display: block !important; }
+    body.fullscreen-data-mode .preview-container { max-height: calc(100vh - 60px); }
+    .fullscreen-data-switch {
+      display: none;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    body.fullscreen-data-mode .fullscreen-data-switch { display: flex; }
+    .exit-fullscreen-btn { display: none; position: fixed; top: 12px; right: 16px; z-index: 100; }
+    body.fullscreen-data-mode .exit-fullscreen-btn { display: inline-flex; }
+
+    .core-info-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    @media (max-width: 720px) {
+      .core-info-grid { grid-template-columns: 1fr; }
+    }
+    .core-info-grid ul { margin: 0; padding-left: 18px; color: var(--text-strong); font-size: 12px; line-height: 1.8; }
+    .core-info-grid li { margin: 0; }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="top-bar">
+      <div class="title">协议助手</div>
+      <span class="muted">/</span>
+      <span style="color:var(--text-strong);font-weight:600">模块 1 · XLS 文件处理</span>
+      <div class="spacer"></div>
+      <button class="btn" onclick="window.location.href=BACKEND_CONFIG.indexUrl">
+        <i class="fas fa-arrow-left"></i> 返回模块选择
+      </button>
+    </header>
+
+    <section class="main">
+      <div class="column">
+        <div class="column-head">
+          <h2><i class="fas fa-file-excel" style="color:var(--cyan);margin-right:6px"></i>XLS 文件处理（v3.1）</h2>
+          <span class="muted">数据清洗 · 单位匹配 · 故障标记</span>
+        </div>
+
+        <div class="column-body">
+          <!-- 提示区 -->
+          <div id="msgArea" class="msg hidden"></div>
+
+          <!-- 上传区 -->
+          <div class="card" id="uploadCard">
+            <div class="card-title">
+              <i class="fas fa-cloud-upload-alt" style="color:var(--cyan)"></i>
+              <span>上传文件</span>
+              <span class="muted">仅支持 .xls 格式，单文件 ≤ 10 MB</span>
+            </div>
+            <div class="upload-area" id="uploadArea">
+              <p><i class="fas fa-file-upload" style="margin-right:6px;color:var(--cyan)"></i>点击或拖拽文件到此处</p>
+              <div class="upload-tip">仅支持 .xls 格式，最大 10 MB</div>
+              <input type="file" id="fileInput" accept=".xls" style="display:none">
+              <div style="margin-top:14px">
+                <button class="btn primary" id="uploadBtn">
+                  <i class="fas fa-folder-open"></i> 选择文件并处理
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 核心特性说明（处理后展开） -->
+          <div class="card" id="coreInfoWrapper" style="display:none">
+            <div class="card-title">
+              <i class="fas fa-cogs" style="color:var(--amber)"></i>
+              <span>核心处理逻辑</span>
+            </div>
+            <div class="core-info-grid">
+              <div>
+                <div class="muted" style="font-size:11px;margin-bottom:4px">🔧 后端规则</div>
+                <ul>
+                  <li>B 列：清洗特殊字符 + 空值延续</li>
+                  <li>D / G 列：保留原始值，不做去 .0 处理</li>
+                  <li>J 列：去 .0 处理 + 空值延续</li>
+                  <li>R 列：A 类标 1，B / C 类标 2</li>
+                  <li>I 列：R=1 时匹配单位（温度→℃、湿度→%）</li>
+                  <li>M 列：R=2 且含故障关键词标 1</li>
+                  <li>完整读写所有行列（已支持 S/T/U/V 列）</li>
+                </ul>
+              </div>
+              <div>
+                <div class="muted" style="font-size:11px;margin-bottom:4px">🎯 前端能力</div>
+                <ul>
+                  <li>占满浏览器宽度，无白边</li>
+                  <li>全屏数据模式，专注查看</li>
+                  <li>表格内容完整显示，无文本省略</li>
+                  <li>支持横向 / 纵向滚动</li>
+                  <li>拖拽 / 点击上传</li>
+                  <li>实时预览原始 / 处理后数据</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+
+          <!-- 统计信息 -->
+          <div class="info-area" id="statsArea" style="display:none"></div>
+
+          <!-- 全屏切换 -->
+          <div class="fullscreen-data-switch">
+            <button class="btn" id="switchOriginalBtn"><i class="fas fa-undo"></i> 查看原始数据</button>
+            <button class="btn primary" id="switchProcessedBtn"><i class="fas fa-check"></i> 查看处理后数据</button>
+          </div>
+
+          <!-- 预览 Tab -->
+          <div class="card" id="previewCard" style="display:none">
+            <div class="card-title">
+              <i class="fas fa-table" style="color:var(--cyan)"></i>
+              <span>数据预览</span>
+            </div>
+            <div class="tab-header">
+              <div class="tab-item active" data-tab="originalPreview">原始数据</div>
+              <div class="tab-item" data-tab="processedPreview">处理后数据</div>
+            </div>
+            <div class="tab-content">
+              <div class="tab-panel active" id="originalPreviewPanel">
+                <div id="originalPreview" class="preview-container"></div>
+              </div>
+              <div class="tab-panel" id="processedPreviewPanel">
+                <div id="processedPreview" class="preview-container"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 下载 -->
+          <div class="card" id="downloadArea" style="display:none">
+            <div class="row">
+              <button class="btn success" id="downloadBtn">
+                <i class="fas fa-download"></i> 下载处理后文件
+              </button>
+              <button class="btn" id="enterFullscreenBtn">
+                <i class="fas fa-expand"></i> 进入全屏数据模式
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <button class="btn danger exit-fullscreen-btn" id="exitFullscreenBtn">
+    <i class="fas fa-times"></i> 退出全屏数据模式
+  </button>
+
+  <script src="{{ url_for('static', filename='common.js') }}"></script>
+  <script>
+    // 业务逻辑（从原模板迁移，未改动 fetch URL / DOM ID）
+    let globalOriginalData = [];
+    let globalProcessedData = [];
+    let globalTaskId = '';
+    let globalOriginalMeta = null;
+    let globalProcessedMeta = null;
+    let isFullscreen = false;
+
+    window.onload = function() {
+      const fileInput = document.getElementById('fileInput');
+      const uploadBtn = document.getElementById('uploadBtn');
+      const uploadArea = document.getElementById('uploadArea');
+      const downloadBtn = document.getElementById('downloadBtn');
+      const enterFullscreenBtn = document.getElementById('enterFullscreenBtn');
+      const exitFullscreenBtn = document.getElementById('exitFullscreenBtn');
+      const switchOriginalBtn = document.getElementById('switchOriginalBtn');
+      const switchProcessedBtn = document.getElementById('switchProcessedBtn');
+      const tabItems = document.querySelectorAll('.tab-item');
+
+      uploadArea.addEventListener('click', (e) => {
+        if (e.target.id !== 'uploadBtn' && !e.target.closest('#uploadBtn')) {
+          fileInput.click();
+        }
+      });
+      fileInput.addEventListener('change', handleUpload);
+      uploadBtn.addEventListener('click', () => fileInput.click());
+
+      uploadArea.addEventListener('dragover', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        uploadArea.classList.add('dragover');
+      });
+      uploadArea.addEventListener('dragleave', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        uploadArea.classList.remove('dragover');
+      });
+      uploadArea.addEventListener('drop', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        uploadArea.classList.remove('dragover');
+        const files = e.dataTransfer.files;
+        if (files.length > 0) { fileInput.files = files; handleUpload(); }
+      });
+
+      tabItems.forEach(item => {
+        item.addEventListener('click', () => {
+          if (isFullscreen) return;
+          tabItems.forEach(t => t.classList.remove('active'));
+          document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+          item.classList.add('active');
+          const panelId = item.dataset.tab + 'Panel';
+          document.getElementById(panelId).classList.add('active');
+          if (item.dataset.tab === 'originalPreview') {
+            renderModule1Preview(globalOriginalData, 'originalPreview', globalOriginalMeta);
+          } else {
+            renderModule1Preview(globalProcessedData, 'processedPreview', globalProcessedMeta);
+          }
+        });
+      });
+
+      downloadBtn.addEventListener('click', () => {
+        if (!globalTaskId) { showMsg('请先上传并处理文件！', true); return; }
+        window.location.href = `${BACKEND_CONFIG.module1.downloadUrl}/${globalTaskId}`;
+      });
+
+      enterFullscreenBtn.addEventListener('click', () => {
+        document.body.classList.add('fullscreen-data-mode');
+        isFullscreen = true;
+        renderModule1Preview(globalProcessedData, 'processedPreview', globalProcessedMeta);
+      });
+      exitFullscreenBtn.addEventListener('click', () => {
+        document.body.classList.remove('fullscreen-data-mode');
+        isFullscreen = false;
+      });
+      switchOriginalBtn.addEventListener('click', () => {
+        renderModule1Preview(globalOriginalData, 'processedPreview', globalOriginalMeta);
+      });
+      switchProcessedBtn.addEventListener('click', () => {
+        renderModule1Preview(globalProcessedData, 'processedPreview', globalProcessedMeta);
+      });
+    };
+
+    function handleUpload() {
+      const fileInput = document.getElementById('fileInput');
+      const uploadBtn = document.getElementById('uploadBtn');
+      const file = fileInput.files[0];
+      if (!file) return;
+      if (!file.name.endsWith('.xls')) {
+        showMsg('仅支持 .xls 格式文件！', true);
+        fileInput.value = '';
+        return;
+      }
+      const formData = new FormData();
+      formData.append('file', file);
+
+      uploadBtn.disabled = true;
+      uploadBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 正在处理...';
+
+      fetch(BACKEND_CONFIG.module1.uploadUrl, { method: 'POST', body: formData })
+        .then(res => res.json())
+        .then(data => {
+          if (data.status === 'success') {
+            globalTaskId = data.task_id || '';
+            globalOriginalData = data.preview_original.preview_data || [];
+            globalProcessedData = data.preview_processed.preview_data || [];
+            globalOriginalMeta = {
+              total_rows: data.preview_original.total_rows,
+              preview_rows: data.preview_original.preview_rows,
+              truncated: data.preview_original.truncated
+            };
+            globalProcessedMeta = {
+              total_rows: data.preview_processed.total_rows,
+              preview_rows: data.preview_processed.preview_rows,
+              truncated: data.preview_processed.truncated
+            };
+            showModule1Info({
+              original_filename: data.original_filename,
+              file_size: data.file_size,
+              process_result: data.process_result
+            });
+            document.getElementById('statsArea').style.display = 'block';
+            document.getElementById('coreInfoWrapper').style.display = 'block';
+            document.getElementById('previewCard').style.display = 'block';
+            renderModule1Preview(globalOriginalData, 'originalPreview', globalOriginalMeta);
+            renderModule1Preview(globalProcessedData, 'processedPreview', globalProcessedMeta);
+            document.getElementById('downloadArea').style.display = 'block';
+            showMsg('文件处理成功！');
+          } else {
+            showMsg(data.msg, true);
+          }
+        })
+        .catch(err => showMsg('处理失败：' + err.message, true))
+        .finally(() => {
+          uploadBtn.disabled = false;
+          uploadBtn.innerHTML = '<i class="fas fa-folder-open"></i> 选择文件并处理';
+          fileInput.value = '';
+        });
+    }
+  </script>
+</body>
+</html>

@@ -5,6 +5,7 @@ const net = require('net');
 const WebSocket = require('ws');
 const { Client } = require('ssh2');
 const { spawn } = require('child_process');
+const httpProxy = require('http-proxy');
 
 const app = express();
 const server = http.createServer(app);
@@ -34,6 +35,38 @@ server.on('upgrade', function (request, socket, head) {
 
 // 保存当前已打开的串口设备 → 独占锁，防止一个串口被两个 WS 同时打开
 const serialLocks = new Map();
+
+// ===================== 协议助手反向代理 =====================
+// 浏览器 -> Node(3010)/protocol/* -> Flask(127.0.0.1:5000)/protocol/*
+// Flask 内部已经把所有路由挂在 /protocol 子路径下（PROTOCOL_PREFIX），所以
+// 这里不剥前缀，直接转发即可。
+const PROTOCOL_TARGET = process.env.PROTOCOL_TARGET || 'http://127.0.0.1:5000';
+const protocolProxy = httpProxy.createProxyServer({
+  target: PROTOCOL_TARGET,
+  changeOrigin: false,
+  ws: false,
+  proxyTimeout: 120000,    // 大文件上传/Excel 解析可能耗时
+  timeout: 120000,
+});
+protocolProxy.on('error', function (err, _req, res) {
+  if (res && !res.headersSent) {
+    try {
+      res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({
+        ok: false,
+        msg: '协议助手服务未启动或无响应：' + err.message,
+        target: PROTOCOL_TARGET,
+      }));
+    } catch (_) { /* ignore */ }
+  }
+});
+// 注意：必须在 express.static 之前注册，否则 /protocol/static/... 会被本目录静态命中
+// 用 app.all + 通配，而不是 app.use('/protocol', ...)。
+// 因为 app.use(prefix, ...) 会从 req.url 剥掉 prefix，转发到 Flask 时就成了根路径，
+// 导致 Flask 的 DispatcherMiddleware 把请求当成根路径兜底 404。
+app.all(/^\/protocol(\/.*)?$/, function (req, res) {
+  protocolProxy.web(req, res);
+});
 
 app.use(express.static(__dirname));
 
@@ -224,6 +257,31 @@ function downloadBuffer(sftpClient, targetPath, callback) {
   stream.on('end', function () {
     finish(null, Buffer.concat(chunks));
   });
+}
+
+// 在已就绪的 ssh2 Client 上跑一条 shell 命令，收集 stdout / stderr / exit code
+function runRemoteCommand(sshClient, cmd, callback) {
+  let done = false;
+  function finish(err, result) {
+    if (done) return;
+    done = true;
+    callback(err || null, result);
+  }
+  try {
+    sshClient.exec(cmd, function (err, stream) {
+      if (err) { finish(err); return; }
+      let stdout = '';
+      let stderr = '';
+      stream.on('data', function (data) { stdout += data.toString('utf8'); });
+      stream.stderr.on('data', function (data) { stderr += data.toString('utf8'); });
+      stream.on('close', function (code, signal) {
+        finish(null, { code: typeof code === 'number' ? code : -1, signal: signal || null, stdout: stdout, stderr: stderr });
+      });
+      stream.on('error', function (e) { finish(e); });
+    });
+  } catch (e) {
+    finish(e);
+  }
 }
 
 wss.on('connection', function (ws) {
@@ -436,6 +494,102 @@ wss.on('connection', function (ws) {
             message: uploadErr.message,
           });
         }
+      });
+      return;
+    }
+
+    // 8081src 覆盖更新：上传 tar.gz → 备份 → 解压 → 失败回滚
+    if (msg.type === 'update:apply') {
+      const reqId = payload.requestId;
+      const TARGET_DIR = '/dcim/admin/localhost_8081/wwwroot/src';
+      const TARGET_PARENT = '/dcim/admin/localhost_8081/wwwroot';
+      const MAX_BYTES = 200 * 1024 * 1024;
+
+      const progress = function (line, status) {
+        send('update:progress', { requestId: reqId, line: String(line || ''), status: status || null });
+      };
+      const fail = function (message) {
+        send('update:error', { requestId: reqId, message: String(message || '未知错误') });
+      };
+
+      if (!sshReady) { fail('SSH 尚未就绪，请先连接服务器'); return; }
+
+      const fileName = String(payload.fileName || '').trim();
+      const lower = fileName.toLowerCase();
+      if (!fileName) { fail('缺少文件名'); return; }
+      if (!(lower.endsWith('.tar.gz') || lower.endsWith('.tgz'))) {
+        fail('仅支持 .tar.gz / .tgz 包');
+        return;
+      }
+
+      let buffer;
+      try { buffer = dataUrlToBuffer(payload.content || ''); }
+      catch (e) { fail('解析上传内容失败：' + e.message); return; }
+      if (!buffer || !buffer.length) { fail('上传内容为空'); return; }
+      if (buffer.length > MAX_BYTES) { fail('包大小超过 200MB 上限（实际 ' + buffer.length + ' 字节）'); return; }
+
+      // 时间戳：YYYYMMDDHHMMSS（仅数字，无注入面）
+      const ts = new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14);
+      const remoteTmp = '/tmp/webssh-update-' + ts + '.tar.gz';
+      const backupDir = TARGET_DIR + '.bak-' + ts;
+
+      ensureSftp(function (err, sftpClient) {
+        if (err) { fail('打开 SFTP 失败：' + err.message); return; }
+
+        progress('上传中：' + fileName + ' → ' + remoteTmp + '（' + buffer.length + ' 字节）', '上传中');
+        uploadBuffer(sftpClient, remoteTmp, buffer, function (writeErr) {
+          if (writeErr) { fail('上传失败：' + writeErr.message); return; }
+          progress('上传完成，开始备份并解压…', '解压中');
+
+          // 备份 + 解压 + 清理临时包；任何一步失败都触发回滚
+          // 注意：脚本内的所有路径都是常量或仅含数字的时间戳，不接收用户可控字符
+          const applyScript = [
+            'set -e',
+            "mkdir -p '" + TARGET_PARENT + "'",
+            "if [ -e '" + TARGET_DIR + "' ]; then mv '" + TARGET_DIR + "' '" + backupDir + "'; fi",
+            "mkdir -p '" + TARGET_DIR + "'",
+            "tar -xzf '" + remoteTmp + "' -C '" + TARGET_DIR + "'",
+            "rm -f '" + remoteTmp + "'",
+            'echo OK',
+          ].join(' && ');
+
+          runRemoteCommand(ssh, "sh -lc '" + applyScript.replace(/'/g, "'\\''") + "'", function (cmdErr, result) {
+            if (cmdErr) { fail('执行远端命令失败：' + cmdErr.message); return; }
+
+            if (result.stdout) progress('stdout:\n' + result.stdout.trim());
+            if (result.stderr) progress('stderr:\n' + result.stderr.trim());
+
+            if (result.code !== 0) {
+              // 解压失败：自动回滚（删掉半成品 src，恢复 backupDir）
+              progress('解压失败（exit=' + result.code + '），开始回滚…', '回滚中');
+              const rollbackScript = [
+                'set -e',
+                "rm -rf '" + TARGET_DIR + "'",
+                "if [ -e '" + backupDir + "' ]; then mv '" + backupDir + "' '" + TARGET_DIR + "'; fi",
+                "rm -f '" + remoteTmp + "'",
+                'echo ROLLBACK_OK',
+              ].join(' && ');
+              runRemoteCommand(ssh, "sh -lc '" + rollbackScript.replace(/'/g, "'\\''") + "'", function (rbErr, rbResult) {
+                if (rbErr) {
+                  fail('解压失败且回滚异常：' + rbErr.message + '；请手动检查 ' + backupDir);
+                  return;
+                }
+                if (rbResult && rbResult.stdout) progress('rollback stdout:\n' + rbResult.stdout.trim());
+                if (rbResult && rbResult.stderr) progress('rollback stderr:\n' + rbResult.stderr.trim());
+                fail('解压失败（exit=' + result.code + '），已尝试回滚到备份 ' + backupDir);
+              });
+              return;
+            }
+
+            send('update:result', {
+              requestId: reqId,
+              targetDir: TARGET_DIR,
+              backupDir: backupDir,
+              fileName: fileName,
+              size: buffer.length,
+            });
+          });
+        });
       });
       return;
     }

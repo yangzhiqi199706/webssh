@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>功能模块1 - XLS文件处理</title>
+    <!-- 复用全局公共样式 -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='common.css') }}">
+    <!-- 引入XLS解析库（本地资源，离线可用） -->
+    <script src="{{ url_for('static', filename='vendor/xlsx/xlsx.full.min.js') }}"></script>
+    <script>window.PROTOCOL_PREFIX = {{ config.PROTOCOL_PREFIX|tojson }};</script>
+</head>
+<body>
+    <div class="container">
+        <h1>功能模块1 - XLS文件处理（版本3.0）</h1>
+
+        <!-- 模块导航（返回主页面） -->
+        <div class="module-nav" style="margin-bottom: 20px;">
+            <button class="nav-btn" onclick="window.location.href=BACKEND_CONFIG.indexUrl">← 返回主页面</button>
+        </div>
+
+        <!-- 核心特性说明区域（后端+前端） -->
+        <div class="core-info-wrapper" id="coreInfoWrapper" style="display: none;">
+            <div class="core-logic-backend">
+                <h3 class="core-info-title">🔧 后端核心逻辑</h3>
+                <ul class="core-logic-list" id="coreLogicBackend">
+                    <li>B列：清洗特殊字符+空值延续</li>
+                    <li>D/G列：保留原始值，不做去.0处理</li>
+                    <li>J列：去.0处理+空值延续</li>
+                    <li>R列：A类标1，B/C类标2</li>
+                    <li>I列：R=1时匹配完整单位（电压→V、电流→A等）</li>
+                    <li>M列：R=2且含故障关键词标1</li>
+                    <li>完整读写所有行列，无截断限制</li>
+                </ul>
+            </div>
+            <div class="core-logic-frontend">
+                <h3 class="core-info-title">🎯 前端核心特性</h3>
+                <ul class="core-logic-list" id="coreLogicFrontend">
+                    <li>界面无留白，占满浏览器宽度</li>
+                    <li>全屏数据模式，专注查看数据</li>
+                    <li>表格内容完整显示，无文本省略</li>
+                    <li>支持横向/纵向滚动，适配多行列</li>
+                    <li>拖拽/点击上传，操作便捷</li>
+                    <li>实时预览原始/处理后数据</li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- 上传区域 -->
+        <div class="upload-area" id="uploadArea">
+            <p>点击或拖拽文件到此处上传</p>
+            <p style="color: #999; margin-top: 10px;">仅支持.xls格式，最大10MB</p>
+            <input type="file" id="fileInput" accept=".xls">
+            <button class="btn-primary" id="uploadBtn" style="margin-top: 10px;">选择文件</button>
+        </div>
+
+        <!-- 结果区域 -->
+        <div class="result-area" id="resultArea" style="display: none; margin-top: 20px;">
+            <div class="stats-area" id="statsArea"></div>
+            
+            <div class="tab-container">
+                <div class="tab-header">
+                    <div class="tab-item active" data-tab="processLog">处理日志</div>
+                    <div class="tab-item" data-tab="originalPreview">原始数据预览</div>
+                    <div class="tab-item" data-tab="processedPreview">处理后数据预览</div>
+                </div>
+                <div class="tab-content">
+                    <div class="tab-panel active" id="processLogPanel">
+                        <div class="log-area" id="processLog"></div>
+                    </div>
+                    <div class="tab-panel" id="originalPreviewPanel">
+                        <div id="originalPreview" class="preview-container"></div>
+                    </div>
+                    <div class="tab-panel" id="processedPreviewPanel">
+                        <div id="processedPreview" class="preview-container"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div style="margin-top: 20px;">
+                <a href="#" class="btn-success" id="downloadProcessed">下载处理后文件</a>
+                <button class="btn-primary" id="enterFullscreenDataBtn" style="margin-left: 10px;">进入全屏数据模式</button>
+            </div>
+        </div>
+
+        <!-- 全屏模式切换 -->
+        <div class="fullscreen-data-switch">
+            <button class="btn-primary" id="switchOriginalFullBtn">查看原始数据</button>
+            <button class="btn-primary" id="switchProcessedFullBtn" style="margin-left: 10px;">查看处理后数据</button>
+        </div>
+        <button class="btn-danger exit-fullscreen-btn" id="exitFullscreenDataBtn">退出全屏数据模式</button>
+    </div>
+
+    <!-- 复用全局公共脚本 -->
+    <script src="{{ url_for('static', filename='common.js') }}"></script>
+    <script>
+        // 模块1专属变量
+        let globalOriginalData = [];
+        let globalProcessedData = [];
+        let isFullscreenDataMode = false;
+        let currentOutputFilename = "";
+
+        // 初始化
+        window.onload = function() {
+            // 上传按钮绑定 - 核心修复：阻止冒泡+默认行为，避免重复触发
+            document.getElementById('uploadBtn').addEventListener('click', (e) => {
+                e.stopPropagation(); // 阻止事件冒泡到上传区域
+                e.preventDefault();  // 阻止默认行为
+                document.getElementById('fileInput').click();
+            });
+
+            // 文件选择事件
+            document.getElementById('fileInput').addEventListener('change', handleFileUpload);
+
+            // 给fileInput添加点击事件，阻止嵌套触发
+            document.getElementById('fileInput').addEventListener('click', (e) => {
+                e.stopPropagation();
+            });
+
+            // 标签页切换
+            document.querySelectorAll('.tab-item').forEach(item => {
+                item.addEventListener('click', () => {
+                    if (isFullscreenDataMode) return;
+                    document.querySelectorAll('.tab-item').forEach(t => t.classList.remove('active'));
+                    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+                    item.classList.add('active');
+                    document.getElementById(`${item.dataset.tab}Panel`).classList.add('active');
+                    // 切换标签时重新渲染预览（修复预览不显示问题）
+                    if (item.dataset.tab === 'originalPreview') {
+                        renderPreview(globalOriginalData, 'originalPreview');
+                    } else if (item.dataset.tab === 'processedPreview') {
+                        renderPreview(globalProcessedData, 'processedPreview');
+                    }
+                });
+            });
+
+            // 全屏模式 - 完整恢复
+            document.getElementById('enterFullscreenDataBtn').addEventListener('click', () => {
+                if (!globalProcessedData.length) { 
+                    alert('请先上传并处理文件！'); 
+                    return; 
+                }
+                isFullscreenDataMode = true;
+                document.body.classList.add('fullscreen-data-mode');
+                document.querySelector('.tab-item[data-tab="processedPreview"]').click();
+                renderPreview(globalProcessedData, 'processedPreview');
+            });
+
+            document.getElementById('exitFullscreenDataBtn').addEventListener('click', () => {
+                isFullscreenDataMode = false;
+                document.body.classList.remove('fullscreen-data-mode');
+                document.querySelector('.tab-item[data-tab="processLog"]').click();
+            });
+
+            // 全屏模式切换数据
+            document.getElementById('switchOriginalFullBtn').addEventListener('click', () => {
+                document.querySelector('.tab-item[data-tab="originalPreview"]').click();
+                renderPreview(globalOriginalData, 'originalPreview');
+            });
+
+            document.getElementById('switchProcessedFullBtn').addEventListener('click', () => {
+                document.querySelector('.tab-item[data-tab="processedPreview"]').click();
+                renderPreview(globalProcessedData, 'processedPreview');
+            });
+
+            // 下载按钮
+            document.getElementById('downloadProcessed').addEventListener('click', (e) => {
+                e.preventDefault();
+                if (!currentOutputFilename) {
+                    alert('暂无可下载的文件！');
+                    return;
+                }
+                const downloadUrl = `${BACKEND_CONFIG.BASE_URL}/xls/download?filename=${encodeURIComponent(currentOutputFilename)}`;
+                window.open(downloadUrl, '_blank');
+            });
+
+            // 拖拽上传 - 修复拖拽逻辑
+            const uploadArea = document.getElementById('uploadArea');
+            uploadArea.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                e.stopPropagation(); // 阻止事件冒泡
+                uploadArea.style.borderColor = '#409eff';
+            });
+            uploadArea.addEventListener('dragleave', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                uploadArea.style.borderColor = '#ccc';
+            });
+            uploadArea.addEventListener('drop', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                uploadArea.style.borderColor = '#ccc';
+                const file = e.dataTransfer.files[0];
+                if (file) {
+                    document.getElementById('fileInput').files = e.dataTransfer.files;
+                    handleFileUpload();
+                }
+            });
+
+            // 上传区域点击事件 - 核心修复：仅在点击空白区域时触发，排除按钮/输入框
+            uploadArea.addEventListener('click', (e) => {
+                e.stopPropagation();
+                // 排除点击uploadBtn和fileInput的情况，避免重复触发
+                const target = e.target;
+                if (target.id !== 'uploadBtn' && target.id !== 'fileInput' && !target.closest('#uploadBtn')) {
+                    document.getElementById('fileInput').click();
+                }
+            });
+        };
+
+        // 处理文件上传 - 修复原始数据解析逻辑
+        async function handleFileUpload() {
+            const fileInput = document.getElementById('fileInput');
+            const file = fileInput.files[0];
+            if (!file) return;
+
+            // 验证格式
+            const fileExt = file.name.split('.').pop().toLowerCase();
+            if (fileExt !== 'xls') {
+                alert('仅支持.xls格式文件！');
+                // 清空文件选择框，避免重复提示
+                fileInput.value = '';
+                return;
+            }
+
+            // 显示结果区域
+            document.getElementById('resultArea').style.display = 'block';
+            document.getElementById('processLog').textContent = '正在上传并处理文件...';
+            
+            // 构建FormData
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                // 1. 先解析原始数据（确保原始数据预览优先获取）
+                const originalPreview = await parseOriginalFilePreview(file);
+                globalOriginalData = originalPreview.preview_data || [];
+                console.log('原始数据解析结果：', globalOriginalData); // 调试日志
+
+                // 2. 发送上传请求处理文件
+                const result = await requestAjax(`${BACKEND_CONFIG.BASE_URL}/xls/upload`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (result.status === 'success') {
+                    // 处理后数据
+                    globalProcessedData = result.preview_result?.preview_data || [];
+                    currentOutputFilename = result.output_filename;
+                    console.log('处理后数据解析结果：', globalProcessedData); // 调试日志
+
+                    // 显示核心逻辑（后端+前端）
+                    document.getElementById('coreInfoWrapper').style.display = 'flex';
+                    
+                    // 显示统计信息
+                    const stats = result.process_result || {};
+                    document.getElementById('statsArea').innerHTML = `
+                        <strong>📊 文件处理统计</strong><br>
+                        源文件名：${result.original_filename}<br>
+                        文件大小：${result.file_size} KB<br>
+                        总行数：${stats.row_count || 0}（含表头）<br>
+                        总列数：${stats.col_count || 0}<br>
+                        故障标记行数：${stats.fault_count || 0}
+                    `;
+
+                    // 显示处理日志
+                    document.getElementById('processLog').textContent = [
+                        `✅ 文件上传成功：${result.original_filename}`,
+                        `✅ 文件处理完成，总行数：${stats.row_count || 0}`,
+                        `✅ 故障标记行数：${stats.fault_count || 0}`,
+                        `✅ I列匹配规则（R=1时）：`,
+                        `   - 电压 → V`,
+                        `   - 电流 → A`,
+                        `   - 有功功率 → Kw`,
+                        `   - 无功功率 → Kwar`,
+                        `   - 视在功率 → Kva`,
+                        `   - 有功电能 → Kwh`,
+                        `   - 无功电能 → Kwarh`,
+                        `   - 频率 → Hz`,
+                        `   - 时间 → min`,
+                        `✅ 处理后文件：${result.output_filename}`,
+                        `✅ 可点击“下载处理后文件”获取结果`,
+                        `✅ 原始数据共 ${globalOriginalData.length-1} 行，${globalOriginalData[0]?.length || 0} 列`,
+                        `✅ 处理后数据共 ${globalProcessedData.length-1} 行，${globalProcessedData[0]?.length || 0} 列`
+                    ].join('\n');
+
+                    // 强制渲染原始/处理后数据预览（修复不显示问题）
+                    renderPreview(globalOriginalData, 'originalPreview');
+                    renderPreview(globalProcessedData, 'processedPreview');
+                } else {
+                    document.getElementById('processLog').textContent = `❌ 处理失败：${result.msg || '未知错误'}`;
+                }
+            } catch (error) {
+                document.getElementById('processLog').textContent = `❌ 上传失败：${error.message}`;
+                console.error('上传/解析错误：', error);
+            } finally {
+                // 清空文件选择框，避免重复选择同一文件无反应
+                fileInput.value = '';
+            }
+        }
+
+        // 修复原始XLS文件解析函数（确保兼容所有xls格式）
+        function parseOriginalFilePreview(file) {
+            return new Promise((resolve) => {
+                try {
+                    const reader = new FileReader();
+                    reader.onload = function(e) {
+                        try {
+                            const data = new Uint8Array(e.target.result);
+                            // 兼容xls格式的解析配置
+                            const workbook = XLSX.read(data, { 
+                                type: 'array',
+                                cellText: true,
+                                cellDates: false,
+                                raw: false // 不使用原始值，确保格式统一
+                            });
+                            const firstSheetName = workbook.SheetNames[0];
+                            const worksheet = workbook.Sheets[firstSheetName];
+                            // 解析为二维数组，确保和后端返回格式一致
+                            const jsonData = XLSX.utils.sheet_to_json(worksheet, { 
+                                header: 1,
+                                defval: "" // 空值填充为空字符串
+                            });
+                            resolve({ preview_data: jsonData });
+                        } catch (err) {
+                            console.error('解析原始文件失败：', err);
+                            // 兜底数据，确保预览区域不空白
+                            resolve({ preview_data: [
+                                ['列1','列2','列3','列4','列5','列6','列7','列8','列9','列10'],
+                                ['解析失败，请检查文件格式', '', '', '', '', '', '', '', '', '']
+                            ] });
+                        }
+                    };
+                    reader.readAsArrayBuffer(file);
+                } catch (err) {
+                    console.error('读取文件失败：', err);
+                    resolve({ preview_data: [
+                        ['列1','列2','列3','列4','列5','列6','列7','列8','列9','列10'],
+                        ['读取文件失败，请重新上传', '', '', '', '', '', '', '', '', '']
+                    ] });
+                }
+            });
+        }
+
+        // 修复渲染函数 - 确保表格完整显示+滚动
+        function renderPreview(data, containerId) {
+            const container = document.getElementById(containerId);
+            if (!data || data.length === 0) {
+                container.innerHTML = '<p class="loading">无预览数据</p>';
+                return;
+            }
+
+            let tableHtml = '<table class="table-common"><thead><tr>';
+            // 表头 - 完整渲染所有列
+            const headerRow = data[0] || [];
+            headerRow.forEach((header, idx) => {
+                const headerText = header || `列${idx+1}`;
+                // 标记关键列，方便识别
+                let mark = headerText;
+                if (idx === 8) mark = `${headerText}(I列/单位)`;
+                if (idx === 17) mark = `${headerText}(R列/分类)`;
+                if (idx === 12) mark = `${headerText}(M列/故障)`;
+                tableHtml += `<th>${mark}</th>`;
+            });
+            tableHtml += '</tr></thead><tbody>';
+
+            // 数据行 - 完整渲染所有行，补全列数
+            for (let i=1; i<data.length; i++) {
+                tableHtml += '<tr>';
+                const row = data[i] || [];
+                // 确保每行列数和表头一致，避免列缺失
+                for (let j=0; j<headerRow.length; j++) {
+                    const cellValue = row[j] || '';
+                    tableHtml += `<td>${cellValue}</td>`;
+                }
+                tableHtml += '</tr>';
+            }
+
+            // 统计信息 - 显示完整的行列数
+            const rowCount = data.length - 1; // 排除表头
+            const colCount = headerRow.length;
+            tableHtml += `</tbody></table><div style="padding:10px; color:#666; margin-top:10px;">
+                共 ${rowCount} 行数据，${colCount} 列（完整显示，支持横向/纵向滚动）
+            </div>`;
+
+            container.innerHTML = tableHtml;
+        }
+    </script>
+</body>
+</html>

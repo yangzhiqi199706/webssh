@@ -1,0 +1,630 @@
+{# protocol_app/templates/module4.html — MBP 文件生成器 #}
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>模块 4 · MBP 生成工具 · 协议助手</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='webssh-theme.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='vendor/fontawesome/css/all.min.css') }}">
+  <meta name="protocol-prefix" content="{{ config.PROTOCOL_PREFIX }}">
+  <script>
+    window.PROTOCOL_PREFIX = (document.querySelector('meta[name="protocol-prefix"]') || {}).content || '';
+  </script>
+  <script src="{{ url_for('static', filename='common.js') }}"></script>
+  <style>
+    /* J2K2 规则匹配表 */
+    table.j2k2-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+      table-layout: fixed;
+    }
+    table.j2k2-table th {
+      background: var(--panel);
+      color: var(--muted);
+      font-weight: 600;
+      text-align: left;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    table.j2k2-table td {
+      padding: 8px 10px;
+      border-bottom: 1px dashed var(--border);
+      color: var(--text-strong);
+      vertical-align: top;
+      word-break: break-word;
+    }
+    table.j2k2-table small { color: var(--muted); font-size: 11px; }
+    .format-code {
+      font-family: ui-monospace, monospace;
+      background: rgba(34, 211, 238, .12);
+      color: var(--link);
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .mode-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      background: rgba(148, 163, 184, .14);
+      color: #cbd5e1;
+      border-radius: 4px;
+      font-size: 11px;
+    }
+    .tag-success { color: #6ee7b7; font-size: 11px; }
+    .tag-warning { color: #fcd34d; font-size: 11px; }
+    .tag-info    { color: #67e8f9; font-size: 11px; }
+
+    /* 下载卡片 */
+    .download-card {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--panel-3);
+      padding: 12px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .download-card .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin: 0;
+      padding: 0;
+    }
+    .download-card .btn-name {
+      font-weight: 700;
+      color: var(--text-strong);
+      font-size: 13px;
+    }
+    .download-card .card-body { font-size: 12px; color: var(--muted); }
+    .param-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 8px 16px;
+    }
+    .param-item { font-size: 12px; color: var(--text-strong); }
+    .param-key { color: var(--muted); margin-right: 4px; }
+    .preview-btn {
+      background: rgba(34, 211, 238, .12);
+      color: var(--link);
+      border: 1px solid rgba(34, 211, 238, .3);
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: 11px;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .preview-btn:hover { background: rgba(34, 211, 238, .2); }
+
+    /* 寄存器预览弹窗（直接复用主题 .modal-mask） */
+    .preview-modal {
+      position: fixed;
+      inset: 0;
+      background: rgba(2, 6, 23, .72);
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity .15s, visibility .15s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      z-index: 80;
+    }
+    .preview-modal .modal-content {
+      width: min(720px, 100%);
+      max-height: 80vh;
+      border: 1px solid var(--border-2);
+      border-radius: 16px;
+      background: var(--panel);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .preview-modal .modal-header {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .preview-modal .modal-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--text-strong);
+    }
+    .preview-modal .modal-subtitle {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+    .preview-modal .close-modal {
+      background: transparent;
+      border: 0;
+      color: var(--muted);
+      font-size: 22px;
+      cursor: pointer;
+      padding: 0 6px;
+      line-height: 1;
+    }
+    .preview-modal .close-modal:hover { color: var(--text); }
+    .preview-modal #paramListContainer {
+      padding: 16px;
+      overflow: auto;
+      flex: 1;
+    }
+    .preview-modal .empty-tip {
+      text-align: center;
+      padding: 32px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .preview-modal .empty-icon { font-size: 32px; margin-bottom: 8px; }
+    .preview-modal .param-list {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+      gap: 6px;
+    }
+    .preview-modal .param-list-item {
+      padding: 6px 10px;
+      background: var(--panel-3);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 12px;
+      color: var(--text-strong);
+      display: flex;
+      gap: 6px;
+    }
+    .preview-modal .param-index {
+      color: var(--muted-2);
+      font-family: ui-monospace, monospace;
+      font-size: 11px;
+      flex-shrink: 0;
+    }
+    .preview-modal .param-name {
+      flex: 1;
+      min-width: 0;
+      word-break: break-all;
+    }
+    .preview-modal .modal-footer {
+      padding: 12px 16px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      justify-content: flex-end;
+    }
+    .preview-modal .confirm-btn {
+      background: var(--cyan-strong);
+      color: var(--cyan-on);
+      border: 0;
+      border-radius: 8px;
+      padding: 7px 18px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .preview-modal .confirm-btn:hover { background: var(--cyan); }
+
+    /* 状态条三态 */
+    .status-loading { background: rgba(34, 211, 238, .08);  border: 1px solid rgba(34, 211, 238, .35);  color: var(--link); }
+    .status-success { background: rgba(52, 211, 153, .08);  border: 1px solid rgba(52, 211, 153, .35);  color: #6ee7b7; }
+    .status-error   { background: rgba(248, 113, 113, .08); border: 1px solid rgba(248, 113, 113, .35); color: #fca5a5; }
+    .status-section {
+      padding: 10px 14px;
+      border-radius: 10px;
+      font-size: 12px;
+      display: none;
+    }
+
+    /* 文件信息 */
+    .file-info-line {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 6px;
+    }
+    .file-info-line.has-file { color: var(--text-strong); }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="top-bar">
+      <div class="title">协议助手</div>
+      <span class="muted">/</span>
+      <span style="color:var(--text-strong);font-weight:600">模块 4 · MBP 生成工具</span>
+      <div class="spacer"></div>
+      <a class="btn" href="{{ url_for('index') }}">
+        <i class="fas fa-arrow-left"></i> 返回模块选择
+      </a>
+    </header>
+
+    <section class="main">
+      <div class="column">
+        <div class="column-head">
+          <h2><i class="fas fa-cogs" style="color:#fdba74;margin-right:6px"></i>维杜电量仪 MBP 生成工具</h2>
+          <span class="muted">遍历 Excel D 列 · 自动匹配 J/K 列模式</span>
+        </div>
+
+        <div class="column-body">
+          <!-- 上传 -->
+          <div class="card">
+            <div class="card-title">
+              <i class="fas fa-cloud-upload-alt" style="color:var(--cyan)"></i>
+              <span>上传 Excel 文件</span>
+              <span class="muted">仅支持 .xls 格式</span>
+            </div>
+            <div class="upload-area" id="uploadArea">
+              <p><i class="fas fa-file-upload" style="margin-right:6px;color:var(--cyan)"></i>点击或拖拽文件到此处</p>
+              <div class="upload-tip">仅支持 .xls 格式，请勿上传 .xlsx 或其他格式</div>
+              <input type="file" id="fileInput" accept=".xls" style="display:none">
+              <div style="margin-top:14px">
+                <button class="btn primary" id="fileSelectBtn" type="button">
+                  <i class="fas fa-folder-open"></i> 选择 Excel 文件
+                </button>
+              </div>
+              <div class="file-info-line" id="fileInfo">未选择文件</div>
+            </div>
+
+            <div class="status-section mt-md" id="statusSection">
+              <span id="statusText"></span>
+            </div>
+          </div>
+
+          <!-- 下载列表 -->
+          <div class="card" id="downloadSection" style="display:none">
+            <div class="card-title">
+              <i class="fas fa-download" style="color:var(--green)"></i>
+              <span>生成成功，点击下载 MBP 文件</span>
+            </div>
+            <div id="btnList"></div>
+          </div>
+
+          <!-- 规则说明 -->
+          <div class="card" id="rulesCard">
+            <div class="card-title">
+              <i class="fas fa-table" style="color:var(--amber)"></i>
+              <span>J2/K2 → Formats 格式值匹配表</span>
+            </div>
+            <div class="preview-container" style="max-height:none">
+              <table class="j2k2-table" id="matchTable">
+                <thead>
+                  <tr>
+                    <th style="width:30%">触发条件</th>
+                    <th style="width:18%">格式值</th>
+                    <th style="width:22%">数据模式</th>
+                    <th style="width:30%">适用场景</th>
+                  </tr>
+                </thead>
+                <tbody id="matchTableBody">
+                  <tr><td colspan="4" style="text-align:center;color:var(--muted);padding:18px"><span class="loading">加载中...</span></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- 寄存器预览弹窗 -->
+  <div class="preview-modal" id="previewModal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div>
+          <div class="modal-title" id="modalTitle">寄存器名称列表</div>
+          <div class="modal-subtitle" id="modalSubtitle">共 0 个寄存器名称</div>
+        </div>
+        <button class="close-modal" id="closeModal" type="button">&times;</button>
+      </div>
+      <div id="paramListContainer">
+        <div class="empty-tip" id="emptyTip">
+          <div class="empty-icon">📋</div>
+          <div>暂无寄存器名称数据</div>
+        </div>
+        <div class="param-list" id="paramList" style="display:none"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="confirm-btn" id="confirmBtn" type="button">确认</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // 业务逻辑（保留所有 fetch URL / DOM ID）
+    const fileInput = document.getElementById("fileInput");
+    const fileSelectBtn = document.getElementById("fileSelectBtn");
+    const uploadArea = document.getElementById("uploadArea");
+    const fileInfo = document.getElementById("fileInfo");
+    const statusSection = document.getElementById("statusSection");
+    const statusText = document.getElementById("statusText");
+    const downloadSection = document.getElementById("downloadSection");
+    const btnList = document.getElementById("btnList");
+    const previewModal = document.getElementById("previewModal");
+    const modalTitle = document.getElementById("modalTitle");
+    const modalSubtitle = document.getElementById("modalSubtitle");
+    const paramListContainer = document.getElementById("paramListContainer");
+    const emptyTip = document.getElementById("emptyTip");
+    const paramList = document.getElementById("paramList");
+    const closeModal = document.getElementById("closeModal");
+    const confirmBtn = document.getElementById("confirmBtn");
+    const matchTableBody = document.getElementById("matchTableBody");
+
+    let fullParamMap = new Map();
+
+    // 上传区点击 / 拖拽
+    fileSelectBtn.addEventListener("click", () => fileInput.click());
+    uploadArea.addEventListener("click", (e) => {
+      if (!e.target.closest("button")) fileInput.click();
+    });
+    uploadArea.addEventListener("dragover", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      uploadArea.classList.add("dragover");
+    });
+    uploadArea.addEventListener("dragleave", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      uploadArea.classList.remove("dragover");
+    });
+    uploadArea.addEventListener("drop", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      uploadArea.classList.remove("dragover");
+      const files = e.dataTransfer.files;
+      if (files.length) {
+        fileInput.files = files;
+        fileInput.dispatchEvent(new Event("change"));
+      }
+    });
+
+    async function loadRules() {
+      try {
+        const response = await fetch(BACKEND_CONFIG.module4.getDynamicUrl);
+        const result = await response.json();
+        if (result.code === 200 && result.data.j2k2_table) {
+          renderMatchTable(result.data.j2k2_table);
+        }
+      } catch (error) {
+        console.error("加载规则失败:", error);
+        matchTableBody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#fca5a5;padding:18px">加载规则失败：' + error.message + '</td></tr>';
+      }
+    }
+
+    function renderMatchTable(rules) {
+      matchTableBody.innerHTML = "";
+      rules.forEach((rule) => {
+        const row = document.createElement("tr");
+        let triggerClass = "";
+        let triggerHtml = rule.trigger;
+        if (rule.trigger_tag) {
+          if (rule.trigger_tag.includes("新增规则")) triggerClass = "success";
+          else if (rule.trigger_tag.includes("k2_only") || rule.trigger_tag.includes("j2_only")) triggerClass = "warning";
+          else triggerClass = "info";
+          triggerHtml = `${rule.trigger}<br><small class="tag-${triggerClass}">${rule.trigger_tag}</small>`;
+        }
+        row.innerHTML = `
+          <td>${triggerHtml}</td>
+          <td><code class="format-code">F=${rule.format}</code></td>
+          <td><span class="mode-badge">${rule.mode}</span></td>
+          <td><small>${rule.scene}</small></td>
+        `;
+        matchTableBody.appendChild(row);
+      });
+    }
+
+    fileInput.addEventListener("change", (e) => {
+      const file = e.target.files[0];
+      if (file) {
+        const fileExt = file.name.split(".").pop().toLowerCase();
+        if (fileExt !== "xls") {
+          showStatus(`选择的文件格式无效（${file.name}），仅支持 .xls 格式`, "error");
+          fileInfo.textContent = "未选择文件（格式错误）";
+          fileInfo.classList.remove("has-file");
+          fileInput.value = "";
+          return;
+        }
+        fileInfo.textContent = `已选择：${file.name}（${formatFileSize(file.size)}）`;
+        fileInfo.classList.add("has-file");
+        showStatus("", "hide");
+      } else {
+        fileInfo.textContent = "未选择文件";
+        fileInfo.classList.remove("has-file");
+      }
+    });
+
+    fileInput.addEventListener("change", async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const fileExt = file.name.split(".").pop().toLowerCase();
+      if (fileExt !== "xls") return; // 上面已处理
+
+      const formData = new FormData();
+      formData.append("file", file);
+
+      try {
+        showStatus(`正在上传并生成 MBP 文件（${file.name}）...`, "loading");
+        btnList.innerHTML = "";
+        fullParamMap.clear();
+        downloadSection.style.display = "none";
+
+        const response = await fetch(BACKEND_CONFIG.module4.uploadUrl, { method: "POST", body: formData });
+        let result;
+        try { result = await response.json(); }
+        catch (jsonErr) { throw new Error("后端返回格式错误，非 JSON 数据"); }
+
+        if (result.code === 200 && Array.isArray(result.mbp_list)) {
+          const validMbpList = result.mbp_list.map((item) => {
+            item.full_params = Array.isArray(item.params) ? item.params
+                              : (Array.isArray(item.params_preview) ? item.params_preview : []);
+            item.full_params = item.full_params
+              .map((p) => (typeof p === "string" ? p.replace("...", "").trim() : p))
+              .filter((p) => p);
+            return item;
+          });
+          showStatus(result.msg, "success");
+          generateDownloadCards(validMbpList);
+          downloadSection.style.display = "block";
+        } else {
+          showStatus(`生成失败：${result.msg || "未知错误"}`, "error");
+        }
+      } catch (error) {
+        let errMsg = error.message;
+        if (error.name === "TimeoutError") errMsg = "请求超时，请检查后端服务或文件是否过大";
+        else if (error.name === "TypeError") errMsg = "网络异常，无法连接后端服务";
+        showStatus(`操作失败：${errMsg}`, "error");
+        console.error("上传错误详情：", error);
+      }
+    });
+
+    function generateDownloadCards(mbpList) {
+      mbpList.forEach((item) => {
+        const fullParams = item.full_params || [];
+        fullParamMap.set(item.mbp_filename, fullParams);
+
+        const card = document.createElement("div");
+        card.className = "download-card";
+
+        const cardHeader = document.createElement("div");
+        cardHeader.className = "card-header";
+
+        const btnName = document.createElement("div");
+        btnName.className = "btn-name";
+        btnName.innerHTML = `<i class="fas fa-microchip" style="color:#fdba74;margin-right:6px"></i>${item.button_name}`;
+
+        const downloadBtn = document.createElement("button");
+        downloadBtn.className = "btn success sm";
+        downloadBtn.innerHTML = '<i class="fas fa-download"></i> 下载 MBP';
+        downloadBtn.addEventListener("click", () => downloadMBP(item.mbp_filename, item.button_name));
+
+        cardHeader.appendChild(btnName);
+        cardHeader.appendChild(downloadBtn);
+
+        const cardBody = document.createElement("div");
+        cardBody.className = "card-body";
+
+        const paramRow = document.createElement("div");
+        paramRow.className = "param-row";
+
+        const funcCodeItem = document.createElement("div");
+        funcCodeItem.className = "param-item";
+        funcCodeItem.innerHTML = `<span class="param-key">功能码</span>${item.func_code}`;
+
+        const addrItem = document.createElement("div");
+        addrItem.className = "param-item";
+        addrItem.innerHTML = `<span class="param-key">起始地址</span>${item.start_addr}`;
+
+        const regCountItem = document.createElement("div");
+        regCountItem.className = "param-item";
+        regCountItem.innerHTML = `<span class="param-key">寄存器数</span>${item.register_count}`;
+
+        const modeItem = document.createElement("div");
+        modeItem.className = "param-item";
+        modeItem.innerHTML = `<span class="param-key">数据模式</span>${item.data_mode}（${(item.matched_mode||"").split("（")[0]}）`;
+
+        const previewItem = document.createElement("div");
+        previewItem.className = "param-item";
+        const previewBtn = document.createElement("button");
+        previewBtn.className = "preview-btn";
+        previewBtn.innerHTML = `<i class="fas fa-eye"></i> 预览寄存器（${fullParams.length}）`;
+        previewBtn.addEventListener("click", () =>
+          openParamPreview(item.mbp_filename, item.button_name, fullParams.length)
+        );
+        previewItem.appendChild(previewBtn);
+
+        paramRow.appendChild(funcCodeItem);
+        paramRow.appendChild(addrItem);
+        paramRow.appendChild(regCountItem);
+        paramRow.appendChild(modeItem);
+        paramRow.appendChild(previewItem);
+        cardBody.appendChild(paramRow);
+
+        card.appendChild(cardHeader);
+        card.appendChild(cardBody);
+        btnList.appendChild(card);
+      });
+    }
+
+    function openParamPreview(mbpFilename, btnName, paramCount) {
+      const fullParams = fullParamMap.get(mbpFilename) || [];
+      modalTitle.textContent = `${btnName} · 寄存器名称`;
+      modalSubtitle.textContent = `共 ${fullParams.length} 个`;
+      paramList.innerHTML = "";
+
+      if (fullParams.length > 0) {
+        emptyTip.style.display = "none";
+        paramList.style.display = "grid";
+        fullParams.forEach((param, index) => {
+          const paramItem = document.createElement("div");
+          paramItem.className = "param-list-item";
+          paramItem.innerHTML = `
+            <span class="param-index">${index + 1}.</span>
+            <span class="param-name">${param}</span>
+          `;
+          paramList.appendChild(paramItem);
+        });
+      } else {
+        emptyTip.style.display = "block";
+        paramList.style.display = "none";
+      }
+
+      previewModal.style.opacity = "1";
+      previewModal.style.visibility = "visible";
+      document.body.style.overflow = "hidden";
+    }
+
+    function closeParamPreview() {
+      previewModal.style.opacity = "0";
+      previewModal.style.visibility = "hidden";
+      document.body.style.overflow = "";
+    }
+
+    function downloadMBP(mbpFilename, btnName) {
+      try {
+        const encodedFilename = encodeURIComponent(mbpFilename);
+        const downloadUrl = `${BACKEND_CONFIG.module4.downloadUrl}/${encodedFilename}`;
+        showStatus(`正在下载：${btnName}...`, "loading");
+
+        const a = document.createElement("a");
+        a.href = downloadUrl;
+        a.download = mbpFilename;
+        a.style.display = "none";
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => {
+          document.body.removeChild(a);
+          showStatus(`下载请求已发出：${btnName}`, "success");
+        }, 800);
+      } catch (error) {
+        showStatus(`下载失败：${error.message}`, "error");
+        console.error("下载错误详情：", error);
+      }
+    }
+
+    function showStatus(msg, type) {
+      statusText.textContent = msg;
+      statusSection.classList.remove("status-loading", "status-success", "status-error");
+      if (type === "hide") { statusSection.style.display = "none"; return; }
+      statusSection.classList.add(`status-${type}`);
+      statusSection.style.display = "block";
+      if (type === "success") {
+        setTimeout(() => { statusSection.style.display = "none"; }, 3000);
+      }
+    }
+
+    function formatFileSize(bytes) {
+      if (bytes < 1024) return `${bytes} B`;
+      if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+      return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    }
+
+    closeModal.addEventListener("click", closeParamPreview);
+    confirmBtn.addEventListener("click", closeParamPreview);
+    previewModal.addEventListener("click", (e) => {
+      if (e.target === previewModal) closeParamPreview();
+    });
+
+    loadRules();
+  </script>
+</body>
+</html>

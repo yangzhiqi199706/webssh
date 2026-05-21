@@ -1,0 +1,962 @@
+[
+  {
+    "moduleName": "__i18n__.auto.k0098",
+    "iconBase64": "Images/icon/zu.png",
+    "moduleJson": {
+      "attrs": {
+        "dataKey": [],
+        "moduleAttr": [
+          {
+            "attrGroupName": "__i18n__.auto.k0002",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0003",
+                "attrCode": "dataDevKey",
+                "attrType": "hardwareInputNew",
+                "attrWhere": "this"
+              }
+            ]
+          },
+          {
+            "attrGroupName": "__i18n__.auto.k0004",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0001",
+                "attrCode": "text",
+                "attrType": "textarea",
+                "attrWhere": "wetHtml"
+              },
+              {
+                "attrName": "__i18n__.auto.k0020",
+                "attrCode": "width",
+                "attrType": "number",
+                "attrWhere": "wetHtml"
+              },
+              {
+                "attrName": "__i18n__.auto.k0021",
+                "attrCode": "height",
+                "attrType": "number",
+                "attrWhere": "wetHtml"
+              }
+            ]
+          }
+        ]
+      },
+      "children": [
+        {
+          "attrs": {
+            "width": 78,
+            "height": 48,
+            "text": "1#",
+            "name": "wetHtml",
+            "dataWen": 23.3,
+            "dataWet": 23.3,
+            "fill1": "#03DFFB",
+            "fill2": "#03DFFB"
+          },
+          "className": "wetHtml"
+        }
+      ],
+      "width": 78,
+      "height": 48
+    }
+  },
+  {
+    "moduleName": "__i18n__.auto.k0099",
+    "iconBase64": "Images/icon/zu.png",
+    "moduleJson": {
+      "attrs": {
+        "dataKey": [],
+        "moduleAttr": [
+          {
+            "attrGroupName": "__i18n__.auto.k0002",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0003",
+                "attrCode": "eventKey",
+                "attrType": "hardwareInputNew",
+                "attrWhere": "this"
+              }
+            ]
+          },
+          {
+            "attrGroupName": "__i18n__.auto.k0004",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0001",
+                "attrCode": "text",
+                "attrType": "textarea",
+                "attrWhere": "paoHtml"
+              },
+              {
+                "attrName": "__i18n__.auto.k0020",
+                "attrCode": "width",
+                "attrType": "number",
+                "attrWhere": "paoHtml"
+              },
+              {
+                "attrName": "__i18n__.auto.k0021",
+                "attrCode": "height",
+                "attrType": "number",
+                "attrWhere": "paoHtml"
+              }
+            ]
+          }
+        ]
+      },
+      "children": [
+        {
+          "attrs": {
+            "text": "__i18n__.auto.k0100",
+            "name": "paoHtml",
+            "width": 56,
+            "height": 32,
+            "fill": "#03DFFB"
+          },
+          "className": "paoHtml"
+        }
+      ],
+      "width": 56,
+      "height": 32
+    }
+  },
+  {
+    "moduleName": "__i18n__.auto.k0101",
+    "iconBase64": "Images/icon/zu.png",
+    "moduleJson": {
+      "attrs": {
+        "dataKey": [],
+        "moduleAttr": [
+          {
+            "attrGroupName": "__i18n__.auto.k0002",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0003",
+                "attrCode": "dataKey",
+                "attrType": "hardwareInputNew",
+                "attrWhere": "this"
+              }
+            ]
+          },
+          {
+            "attrGroupName": "__i18n__.auto.k0004",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0020",
+                "attrCode": "width",
+                "attrType": "number",
+                "attrWhere": "pueHtml"
+              },
+              {
+                "attrName": "__i18n__.auto.k0021",
+                "attrCode": "height",
+                "attrType": "number",
+                "attrWhere": "pueHtml"
+              }
+            ]
+          }
+        ]
+      },
+      "children": [
+        {
+          "attrs": {
+            "name": "pueHtml",
+            "width": 250,
+            "height": 250,
+            "cat": "pue",
+            "data": 2.5
+          },
+          "className": "pueHtml"
+        }
+      ],
+      "width": 250,
+      "height": 250
+    }
+  },
+  {
+    "moduleName": "__i18n__.auto.k0102",
+    "iconBase64": "Images/icon/zu.png",
+    "moduleJson": {
+      "attrs": {
+        "dataKey": [],
+        "moduleAttr": [
+          {
+            "attrGroupName": "__i18n__.auto.k0002",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0003",
+                "attrCode": "dataDevKey",
+                "attrType": "hardwareInputNew",
+                "attrWhere": "this"
+              }
+            ]
+          },
+          {
+            "attrGroupName": "__i18n__.auto.k0004",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0020",
+                "attrCode": "width",
+                "attrType": "number",
+                "attrWhere": "paraHtml"
+              },
+              {
+                "attrName": "__i18n__.auto.k0021",
+                "attrCode": "height",
+                "attrType": "number",
+                "attrWhere": "paraHtml"
+              },
+              {
+                "attrName": "__i18n__.auto.k0103",
+                "attrCode": "dataSwitch",
+                "attrType": "showSelect",
+                "attrWhere": "paraHtml"
+              },
+              {
+                "attrName": "__i18n__.auto.k0104",
+                "attrCode": "datadata",
+                "attrType": "dataSelect",
+                "attrWhere": "paraHtml"
+              },
+              {
+                "attrName": "__i18n__.auto.k0105",
+                "attrCode": "stateSwitch",
+                "attrType": "showSelect",
+                "attrWhere": "paraHtml"
+              },
+              {
+                "attrName": "__i18n__.auto.k0106",
+                "attrCode": "statedata",
+                "attrType": "dataSelect",
+                "attrWhere": "paraHtml"
+              },
+              {
+                "attrName": "__i18n__.auto.k0107",
+                "attrCode": "alarmSwitch",
+                "attrType": "showSelect",
+                "attrWhere": "paraHtml"
+              },
+              {
+                "attrName": "__i18n__.auto.k0108",
+                "attrCode": "alarmdata",
+                "attrType": "dataSelect",
+                "attrWhere": "paraHtml"
+              },
+              {
+                "attrName": "__i18n__.auto.k0028",
+                "attrCode": "opacity",
+                "attrType": "number",
+                "attrWhere": "paraHtml"
+              },
+              {
+                "attrName": "__i18n__.auto.k0109",
+                "attrCode": "background",
+                "attrType": "color",
+                "attrWhere": "paraHtml"
+              },
+              {
+                "attrName": "__i18n__.auto.k0110",
+                "attrCode": "tabSize",
+                "attrType": "number",
+                "attrWhere": "paraHtml"
+              },
+              {
+                "attrName": "__i18n__.auto.k0111",
+                "attrCode": "tabColor",
+                "attrType": "color",
+                "attrWhere": "paraHtml"
+              },
+              {
+                "attrName": "__i18n__.auto.k0112",
+                "attrCode": "tabshadowColor",
+                "attrType": "color",
+                "attrWhere": "paraHtml"
+              },
+              {
+                "attrName": "__i18n__.auto.k0113",
+                "attrCode": "theadSize",
+                "attrType": "number",
+                "attrWhere": "paraHtml"
+              },
+              {
+                "attrName": "__i18n__.auto.k0114",
+                "attrCode": "theadColor",
+                "attrType": "color",
+                "attrWhere": "paraHtml"
+              },
+              {
+                "attrName": "__i18n__.auto.k0115",
+                "attrCode": "theadshadowColor",
+                "attrType": "color",
+                "attrWhere": "paraHtml"
+              },
+              {
+                "attrName": "__i18n__.auto.k0116",
+                "attrCode": "tbodySize",
+                "attrType": "number",
+                "attrWhere": "paraHtml"
+              },
+              {
+                "attrName": "__i18n__.auto.k0117",
+                "attrCode": "tbodyColor",
+                "attrType": "color",
+                "attrWhere": "paraHtml"
+              },
+              {
+                "attrName": "__i18n__.auto.k0118",
+                "attrCode": "lineHeight",
+                "attrType": "number",
+                "attrWhere": "paraHtml"
+              }
+            ]
+          }
+        ]
+      },
+      "children": [
+        {
+          "attrs": {
+            "name": "paraHtml",
+            "width": 378,
+            "height": 330,
+            "dataSwitch": "2",
+            "datadata": "",
+            "stateSwitch": "2",
+            "statedata": "",
+            "alarmSwitch": "2",
+            "alarmdata": "",
+            "opacity": 1,
+            "background": "#0F1942",
+            "tabSize": 14,
+            "tabColor": "#9FCCFF",
+            "tabshadowColor": "#1a3151",
+            "theadSize": 14,
+            "theadColor": "#A9CFE8",
+            "theadshadowColor": "#1a3151",
+            "tbodySize": 14,
+            "tbodyColor": "#A9CFE8",
+            "lineHeight": 1.5,
+            "data1": [
+              {
+                "name": "__i18n__.auto.k0119",
+                "value": "2",
+                "unit": "A"
+              },
+              {
+                "name": "__i18n__.auto.k0119",
+                "value": "265",
+                "unit": "V"
+              }
+            ],
+            "data2": [
+              {
+                "name": "__i18n__.auto.k0119",
+                "value": "__i18n__.auto.k0120"
+              },
+              {
+                "name": "__i18n__.auto.k0119",
+                "value": "__i18n__.auto.k0120"
+              }
+            ],
+            "data3": [
+              {
+                "name": "__i18n__.auto.k0119",
+                "value": "__i18n__.auto.k0120"
+              },
+              {
+                "name": "__i18n__.auto.k0119",
+                "value": "__i18n__.auto.k0120"
+              }
+            ]
+          },
+          "className": "paraHtml"
+        }
+      ],
+      "width": 378,
+      "height": 330
+    }
+  },
+  {
+    "moduleName": "__i18n__.auto.k0121",
+    "iconBase64": "Images/icon/zu.png",
+    "moduleJson": {
+      "attrs": {
+        "moduleAttr": [
+          {
+            "attrGroupName": "__i18n__.auto.k0004",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0122",
+                "attrCode": "rowNum",
+                "attrType": "number",
+                "attrWhere": "line"
+              },
+              {
+                "attrName": "__i18n__.auto.k0123",
+                "attrCode": "colNum",
+                "attrType": "number",
+                "attrWhere": "line"
+              },
+              {
+                "attrName": "__i18n__.auto.k0124",
+                "attrCode": "cellWidth",
+                "attrType": "number",
+                "attrWhere": "line"
+              },
+              {
+                "attrName": "__i18n__.auto.k0125",
+                "attrCode": "cellHeight",
+                "attrType": "number",
+                "attrWhere": "line"
+              },
+              {
+                "attrName": "__i18n__.auto.k0126",
+                "attrCode": "fill",
+                "attrType": "color",
+                "attrWhere": "rectBackground"
+              },
+              {
+                "attrName": "__i18n__.auto.k0127",
+                "attrCode": "opacity",
+                "attrType": "number",
+                "attrWhere": "rectBackground"
+              },
+              {
+                "attrName": "__i18n__.auto.k0128",
+                "attrCode": "stroke",
+                "attrType": "color",
+                "attrWhere": "line"
+              },
+              {
+                "attrName": "__i18n__.auto.k0129",
+                "attrCode": "strokeWidth",
+                "attrType": "number",
+                "attrWhere": "line"
+              },
+              {
+                "attrName": "__i18n__.auto.k0026",
+                "attrCode": "strokeWidth",
+                "attrType": "number",
+                "attrWhere": "rectBorder"
+              },
+              {
+                "attrName": "__i18n__.auto.k0027",
+                "attrCode": "stroke",
+                "attrType": "color",
+                "attrWhere": "rectBorder"
+              },
+              {
+                "attrName": "__i18n__.auto.k0130",
+                "attrCode": "opacity",
+                "attrType": "number",
+                "attrWhere": "rectBorder"
+              }
+            ]
+          }
+        ]
+      },
+      "children": [
+        {
+          "attrs": {
+            "name": "rectBackground",
+            "width": 500,
+            "height": 250,
+            "fill": "#ffffff",
+            "opacity": 1,
+            "strokeWidth": 0
+          },
+          "className": "Rect"
+        },
+        {
+          "attrs": {
+            "points": [
+              0,
+              0,
+              500,
+              0,
+              500,
+              50,
+              0,
+              50,
+              0,
+              100,
+              500,
+              100,
+              500,
+              150,
+              0,
+              150,
+              0,
+              200,
+              500,
+              200
+            ],
+            "stroke": "#000000",
+            "strokeWidth": 1,
+            "name": "line",
+            "rowNum": 5,
+            "colNum": 5,
+            "cellWidth": 100,
+            "cellHeight": 50
+          },
+          "className": "Line"
+        },
+        {
+          "attrs": {
+            "points": [
+              500,
+              250,
+              0,
+              250,
+              0,
+              0,
+              0,
+              250,
+              100,
+              250,
+              100,
+              0,
+              200,
+              0,
+              200,
+              250,
+              300,
+              250,
+              300,
+              0,
+              400,
+              0,
+              400,
+              250,
+              500,
+              250,
+              500,
+              0
+            ],
+            "stroke": "#000000",
+            "strokeWidth": 1,
+            "name": "line"
+          },
+          "className": "Line"
+        },
+        {
+          "attrs": {
+            "name": "rectBorder",
+            "width": 500,
+            "height": 250,
+            "stroke": "#000000",
+            "opacity": 1,
+            "strokeWidth": 1
+          },
+          "className": "Rect"
+        }
+      ],
+      "width": 500,
+      "height": 250
+    }
+  },
+  {
+    "moduleName": "__i18n__.auto.k0131",
+    "iconBase64": "Images/icon/zu.png",
+    "moduleJson": {
+      "attrs": {
+        "moduleAttr": [
+          {
+            "attrGroupName": "__i18n__.auto.k0004",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0020",
+                "attrCode": "width",
+                "attrType": "number",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0021",
+                "attrCode": "height",
+                "attrType": "number",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0042",
+                "attrCode": "titleSwitch",
+                "attrType": "showSelect",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0043",
+                "attrCode": "title",
+                "attrType": "textarea",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0044",
+                "attrCode": "titleFontSize",
+                "attrType": "number",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0045",
+                "attrCode": "titleColor",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0061",
+                "attrCode": "iconSwitch",
+                "attrType": "showSelect",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0062",
+                "attrCode": "iconColor",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0047",
+                "attrCode": "dataColor",
+                "attrType": "color",
+                "attrWhere": "Echart"
+              },
+              {
+                "attrName": "__i18n__.auto.k0082",
+                "attrCode": "roseSwitch",
+                "attrType": "showSelect",
+                "attrWhere": "Echart"
+              }
+            ]
+          }
+        ]
+      },
+      "children": [
+        {
+          "attrs": {
+            "title": "__i18n__.auto.k0131",
+            "titleSwitch": "1",
+            "titleFontSize": 24,
+            "titleColor": "#000000",
+            "iconSwitch": "1",
+            "iconColor": "#000000",
+            "dataColor": "#000000",
+            "orient": "vertical",
+            "algin": "right",
+            "roseSwitch": "1",
+            "name": "Echart",
+            "width": 380,
+            "height": 250,
+            "cat": "alarmpie"
+          },
+          "className": "Echart"
+        }
+      ],
+      "width": 380,
+      "height": 250
+    }
+  },
+  {
+    "moduleName": "__i18n__.auto.k0132",
+    "iconBase64": "Images/icon/zu.png",
+    "moduleJson": {
+      "attrs": {
+        "moduleAttr": [
+          {
+            "attrGroupName": "__i18n__.auto.k0004",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0020",
+                "attrCode": "width",
+                "attrType": "number",
+                "attrWhere": "alarmList"
+              },
+              {
+                "attrName": "__i18n__.auto.k0021",
+                "attrCode": "height",
+                "attrType": "number",
+                "attrWhere": "alarmList"
+              },
+              {
+                "attrName": "__i18n__.auto.k0133",
+                "attrCode": "theadbgColor",
+                "attrType": "color",
+                "attrWhere": "alarmList"
+              },
+              {
+                "attrName": "__i18n__.auto.k0113",
+                "attrCode": "theadSize",
+                "attrType": "number",
+                "attrWhere": "alarmList"
+              },
+              {
+                "attrName": "__i18n__.auto.k0114",
+                "attrCode": "theadColor",
+                "attrType": "color",
+                "attrWhere": "alarmList"
+              },
+              {
+                "attrName": "__i18n__.auto.k0134",
+                "attrCode": "theadlineHeight",
+                "attrType": "number",
+                "attrWhere": "alarmList"
+              },
+              {
+                "attrName": "__i18n__.auto.k0135",
+                "attrCode": "tbodySize",
+                "attrType": "number",
+                "attrWhere": "alarmList"
+              },
+              {
+                "attrName": "__i18n__.auto.k0136",
+                "attrCode": "lineHeight",
+                "attrType": "number",
+                "attrWhere": "alarmList"
+              }
+            ]
+          }
+        ]
+      },
+      "children": [
+        {
+          "attrs": {
+            "width": 378,
+            "height": 330,
+            "name": "alarmList",
+            "theadSize": 14,
+            "theadColor": "#A9CFE8",
+            "theadlineHeight": 1.5,
+            "tbodySize": 14,
+            "lineHeight": 1.5,
+            "theadbgColor": "rgb(17,29,187)",
+            "data": [
+              {
+                "colorName": "level1color",
+                "AlarmName": "__i18n__.auto.k0137",
+                "LevelName": "__i18n__.auto.k0138",
+                "AlarmTime": "2024-12-08 00:00:00"
+              },
+              {
+                "colorName": "level2color",
+                "AlarmName": "__i18n__.auto.k0137",
+                "LevelName": "__i18n__.auto.k0139",
+                "AlarmTime": "2024-12-08 00:00:00"
+              },
+              {
+                "colorName": "level3color",
+                "AlarmName": "__i18n__.auto.k0137",
+                "LevelName": "__i18n__.auto.k0140",
+                "AlarmTime": "2024-12-08 00:00:00"
+              },
+              {
+                "colorName": "level4color",
+                "AlarmName": "__i18n__.auto.k0137",
+                "LevelName": "__i18n__.auto.k0141",
+                "AlarmTime": "2024-12-08 00:00:00"
+              },
+              {
+                "colorName": "level5color",
+                "AlarmName": "__i18n__.auto.k0137",
+                "LevelName": "__i18n__.auto.k0142",
+                "AlarmTime": "2024-12-08 00:00:00"
+              }
+            ]
+          },
+          "className": "alarmList"
+        }
+      ],
+      "width": 378,
+      "height": 330
+    }
+  },
+  {
+    "moduleName": "__i18n__.auto.k0143",
+    "iconBase64": "Images/icon/zu.png",
+    "moduleJson": {
+      "attrs": {
+        "moduleAttr": [
+          {
+            "attrGroupName": "__i18n__.auto.k0004",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0006",
+                "attrCode": "lineHeight",
+                "attrType": "number",
+                "attrWhere": "runDay"
+              },
+              {
+                "attrName": "__i18n__.auto.k0007",
+                "attrCode": "fontSize",
+                "attrType": "number",
+                "attrWhere": "runDay"
+              },
+              {
+                "attrName": "__i18n__.auto.k0008",
+                "attrCode": "fill",
+                "attrType": "color",
+                "attrWhere": "runDay"
+              },
+              {
+                "attrName": "__i18n__.auto.k0009",
+                "attrCode": "fontFamily",
+                "attrType": "selectFamily",
+                "attrWhere": "runDay"
+              },
+              {
+                "attrName": "__i18n__.auto.k0010",
+                "attrCode": "fontStyle",
+                "attrType": "select",
+                "attrWhere": "runDay"
+              }
+            ]
+          }
+        ]
+      },
+      "children": [
+        {
+          "attrs": {
+            "text": "000000",
+            "fontSize": 18,
+            "lineHeight": 1,
+            "fontFamily": "__i18n__.auto.k0011",
+            "fill": "#000000",
+            "padding": 10,
+            "align": "center",
+            "fontStyle": "normal",
+            "verticalAlign": "middle",
+            "name": "runDay"
+          },
+          "className": "Text"
+        }
+      ],
+      "width": 85,
+      "height": 38
+    }
+  },
+  {
+    "moduleName": "__i18n__.auto.k0144",
+    "iconBase64": "Images/icon/zu.png",
+    "moduleJson": {
+      "attrs": {
+        "dataKey": [],
+        "moduleAttr": [
+          {
+            "attrGroupName": "__i18n__.auto.k0002",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0003",
+                "attrCode": "dataKey",
+                "attrType": "hardwareInputNew",
+                "attrWhere": "this"
+              }
+            ]
+          },
+          {
+            "attrGroupName": "__i18n__.auto.k0004",
+            "attrGroupContent": [
+              {
+                "attrName": "__i18n__.auto.k0145",
+                "attrCode": "width",
+                "attrType": "number",
+                "attrWhere": "leakWater"
+              },
+              {
+                "attrName": "__i18n__.auto.k0146",
+                "attrCode": "height",
+                "attrType": "number",
+                "attrWhere": "leakWater"
+              },
+              {
+                "attrName": "__i18n__.auto.k0147",
+                "attrCode": "ropePos",
+                "attrType": "showYesNoSelect",
+                "attrWhere": "leakWater"
+              },
+              {
+                "attrName": "__i18n__.auto.k0148",
+                "attrCode": "ropeStart",
+                "attrType": "number",
+                "attrWhere": "leakWater"
+              },
+              {
+                "attrName": "__i18n__.auto.k0149",
+                "attrCode": "ropeEnd",
+                "attrType": "number",
+                "attrWhere": "leakWater"
+              },
+              {
+                "attrName": "__i18n__.auto.k0150",
+                "attrCode": "ropeDirection",
+                "attrType": "ropeDirection",
+                "attrWhere": "leakWater"
+              },
+              {
+                "attrName": "__i18n__.auto.k0151",
+                "attrCode": "ropeDataShow",
+                "attrType": "showSelect",
+                "attrWhere": "leakWater"
+              },
+              {
+                "attrName": "__i18n__.auto.k0152",
+                "attrCode": "ropeDataColor",
+                "attrType": "color",
+                "attrWhere": "leakWater"
+              },
+              {
+                "attrName": "__i18n__.auto.k0153",
+                "attrCode": "ropeDataSize",
+                "attrType": "number",
+                "attrWhere": "leakWater"
+              },
+              {
+                "attrName": "__i18n__.auto.k0154",
+                "attrCode": "ropeDataShowPos",
+                "attrType": "dataShowPos",
+                "attrWhere": "leakWater"
+              },
+              {
+                "attrName": "__i18n__.auto.k0155",
+                "attrCode": "ropeAlarmRange",
+                "attrType": "number",
+                "attrWhere": "leakWater"
+              },
+              {
+                "attrName": "__i18n__.auto.k0156",
+                "attrCode": "ropeAlarmBoxShow",
+                "attrType": "showSelect",
+                "attrWhere": "leakWater"
+              },
+              {
+                "attrName": "__i18n__.auto.k0157",
+                "attrCode": "ropeAlarmBoxPos",
+                "attrType": "dataShowPos",
+                "attrWhere": "leakWater"
+              }
+            ]
+          }
+        ]
+      },
+      "children": [
+        {
+          "attrs": {
+            "width": 200,
+            "height": 10,
+            "name": "leakWater",
+            "ropePos": "1",
+            "ropeStart": 0,
+            "ropeEnd": 20,
+            "ropeDirection": "1",
+            "ropeDataShow": "2",
+            "ropeDataShowPos": "1",
+            "ropeAlarmRange": 1,
+            "ropeAlarmBoxShow": "2",
+            "ropeAlarmBoxPos": "1",
+            "data": 10,
+            "haveAlarm": "0",
+            "ropeDataColor": "#A9CFE8",
+            "ropeDataSize": 12
+          },
+          "className": "leakWater"
+        }
+      ],
+      "width": 300,
+      "height": 10
+    }
+  }
+]

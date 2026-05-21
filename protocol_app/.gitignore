@@ -1,0 +1,9 @@
+# 运行时数据，不入库
+uploads/
+outputs/
+downloads/
+module4_uploads/
+module4_downloads/
+__pycache__/
+*.pyc
+*.pyo
