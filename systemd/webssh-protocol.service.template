@@ -1,0 +1,25 @@
+[Unit]
+Description=WebSSH Protocol Assistant (Flask)
+After=network.target webssh.service
+PartOf=webssh.service
+
+[Service]
+Type=simple
+WorkingDirectory=__INSTALL_DIR__/protocol/app
+Environment="PYTHONPATH=__INSTALL_DIR__/protocol/runtime/site-packages"
+Environment="PROTOCOL_HOST=127.0.0.1"
+Environment="PROTOCOL_PORT=5000"
+Environment="PROTOCOL_PREFIX=/protocol"
+Environment="PROTOCOL_DEBUG=0"
+Environment="PYTHONIOENCODING=utf-8"
+Environment="LANG=C.UTF-8"
+Environment="LC_ALL=C.UTF-8"
+ExecStart=__INSTALL_DIR__/protocol/runtime/python/bin/python3 __INSTALL_DIR__/protocol/app/app.py
+Restart=always
+RestartSec=3
+User=__RUN_USER__
+StandardOutput=append:__INSTALL_DIR__/logs/protocol.out.log
+StandardError=append:__INSTALL_DIR__/logs/protocol.err.log
+
+[Install]
+WantedBy=multi-user.target

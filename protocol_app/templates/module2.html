@@ -1,0 +1,185 @@
+{# protocol_app/templates/module2.html — 故障编码断续填充 #}
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>模块 2 · 故障编码断续填充 · 协议助手</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='webssh-theme.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='vendor/fontawesome/css/all.min.css') }}">
+  <meta name="protocol-prefix" content="{{ config.PROTOCOL_PREFIX }}">
+  <script>
+    window.PROTOCOL_PREFIX = (document.querySelector('meta[name="protocol-prefix"]') || {}).content || '';
+  </script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="top-bar">
+      <div class="title">协议助手</div>
+      <span class="muted">/</span>
+      <span style="color:var(--text-strong);font-weight:600">模块 2 · 故障编码断续填充</span>
+      <div class="spacer"></div>
+      <button class="btn" onclick="window.location.href=BACKEND_CONFIG.indexUrl">
+        <i class="fas fa-arrow-left"></i> 返回模块选择
+      </button>
+    </header>
+
+    <section class="main">
+      <div class="column">
+        <div class="column-head">
+          <h2><i class="fas fa-code" style="color:var(--green);margin-right:6px"></i>故障编码断续填充</h2>
+          <span class="muted">10/16 进制转换 · 缺失补全 · 序列填充</span>
+        </div>
+
+        <div class="column-body">
+          <div id="msgArea" class="msg hidden"></div>
+
+          <!-- 上传区 -->
+          <div class="card">
+            <div class="card-title">
+              <i class="fas fa-cloud-upload-alt" style="color:var(--cyan)"></i>
+              <span>上传文件</span>
+              <span class="muted">仅支持 .xlsx，需 3 列：A 序号 / B 故障名称 / C 编码</span>
+            </div>
+            <div class="upload-area" id="uploadArea">
+              <p><i class="fas fa-file-upload" style="margin-right:6px;color:var(--cyan)"></i>点击或拖拽文件到此处</p>
+              <div class="upload-tip">仅支持 .xlsx 格式，最大 10 MB</div>
+              <input type="file" id="fileInput" accept=".xlsx" style="display:none">
+              <div style="margin-top:14px">
+                <button class="btn primary" id="uploadBtn">
+                  <i class="fas fa-folder-open"></i> 选择文件并处理
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 统计信息 -->
+          <div class="info-area hidden" id="infoArea"></div>
+
+          <!-- 预览表格 -->
+          <div class="card hidden" id="tableContainer">
+            <div class="card-title">
+              <i class="fas fa-table" style="color:var(--cyan)"></i>
+              <span>处理后预览</span>
+            </div>
+            <div class="preview-container" id="previewBody">
+              <!-- 注：原 renderTable 直接覆盖 #tableContainer.innerHTML，所以保留兼容 -->
+            </div>
+          </div>
+
+          <!-- 下载 -->
+          <div class="card hidden" id="downloadArea">
+            <div class="row">
+              <button class="btn success" id="downloadBtn">
+                <i class="fas fa-download"></i> 一键下载处理后 Excel
+              </button>
+              <span class="muted">文件名：处理后_故障编码表.xlsx</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script src="{{ url_for('static', filename='common.js') }}"></script>
+  <script>
+    // 业务逻辑（保留所有 fetch URL / DOM ID）
+    window.onload = function() {
+      const fileInput = document.getElementById('fileInput');
+      const uploadBtn = document.getElementById('uploadBtn');
+      const uploadArea = document.getElementById('uploadArea');
+      const downloadBtn = document.getElementById('downloadBtn');
+
+      uploadArea.addEventListener('click', (e) => {
+        if (e.target.id !== 'uploadBtn' && !e.target.closest('#uploadBtn')) fileInput.click();
+      });
+      fileInput.addEventListener('change', handleProcess);
+      uploadBtn.addEventListener('click', () => fileInput.click());
+
+      uploadArea.addEventListener('dragover', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        uploadArea.classList.add('dragover');
+      });
+      uploadArea.addEventListener('dragleave', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        uploadArea.classList.remove('dragover');
+      });
+      uploadArea.addEventListener('drop', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        uploadArea.classList.remove('dragover');
+        const files = e.dataTransfer.files;
+        if (files.length > 0) { fileInput.files = files; handleProcess(); }
+      });
+
+      downloadBtn.addEventListener('click', () => {
+        fetch(BACKEND_CONFIG.module2.downloadUrl, { method: 'POST' })
+          .then(res => res.blob())
+          .then(blob => {
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = '处理后_故障编码表.xlsx';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            window.URL.revokeObjectURL(url);
+            showMsg('文件下载成功！');
+          })
+          .catch(err => showMsg('下载失败：' + err.message, true));
+      });
+    };
+
+    function handleProcess() {
+      const fileInput = document.getElementById('fileInput');
+      const uploadBtn = document.getElementById('uploadBtn');
+      const file = fileInput.files[0];
+      if (!file) return;
+      if (!file.name.endsWith('.xlsx')) {
+        showMsg('仅支持 .xlsx 格式文件！', true);
+        fileInput.value = '';
+        return;
+      }
+      const formData = new FormData();
+      formData.append('file', file);
+
+      uploadBtn.disabled = true;
+      uploadBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 正在处理...';
+
+      fetch(BACKEND_CONFIG.module2.processUrl, { method: 'POST', body: formData })
+        .then(res => res.json())
+        .then(data => {
+          if (data.status === 'success') {
+            showModule2Info(data.info);
+            renderTableInto(data.columns, data.preview, 'previewBody');
+            document.getElementById('tableContainer').classList.remove('hidden');
+            document.getElementById('downloadArea').classList.remove('hidden');
+            showMsg('文件处理成功！');
+          } else {
+            showMsg(data.msg, true);
+          }
+        })
+        .catch(err => showMsg('处理失败：' + err.message, true))
+        .finally(() => {
+          uploadBtn.disabled = false;
+          uploadBtn.innerHTML = '<i class="fas fa-folder-open"></i> 选择文件并处理';
+          fileInput.value = '';
+        });
+    }
+
+    // 改造版 renderTable：把表格渲染到指定容器（不破坏外层卡片）
+    function renderTableInto(columns, data, containerId) {
+      const c = document.getElementById(containerId);
+      let html = '<table class="table-common preview-table"><thead><tr>';
+      columns.forEach(col => html += `<th>${col}</th>`);
+      html += '</tr></thead><tbody>';
+      (data || []).forEach(row => {
+        html += '<tr>';
+        row.forEach(cell => html += `<td>${cell === null ? '' : cell}</td>`);
+        html += '</tr>';
+      });
+      html += '</tbody></table>';
+      c.innerHTML = html;
+    }
+  </script>
+</body>
+</html>

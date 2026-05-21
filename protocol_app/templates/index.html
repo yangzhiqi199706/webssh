@@ -1,0 +1,134 @@
+{# protocol_app/templates/index.html — 协议助手主页 #}
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>协议助手 · WebSSH</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='webssh-theme.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='vendor/fontawesome/css/all.min.css') }}">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="top-bar">
+      <div class="title">协议助手</div>
+      <div class="subtitle">XLS 处理 / 故障码填充 / PDF 对照 / MBP 生成 / 协议批处理</div>
+      <div class="spacer"></div>
+      <span class="tag cyan">v3.1</span>
+    </header>
+
+    <section class="main">
+      <div class="column">
+        <div class="column-head">
+          <h2>功能模块</h2>
+          <span class="muted">点击卡片进入对应模块</span>
+        </div>
+        <div class="column-body">
+          <div class="module-grid">
+            <a href="{{ url_for('module1') }}" class="module-card m1">
+              <div class="module-card-head">
+                <div class="module-card-icon">M1</div>
+                <div class="fl1">
+                  <div class="module-card-title">XLS 文件处理</div>
+                  <div class="module-card-no">module1</div>
+                </div>
+                <i class="fas fa-file-excel" style="color:var(--cyan);font-size:14px"></i>
+              </div>
+              <p class="module-card-desc">
+                数据清洗、空值延续、单位匹配（温度/湿度等）、故障标记，完整读写无截断
+              </p>
+              <div class="module-card-foot">
+                <span class="tag muted">.xls</span>
+                <span class="tag muted">≤10MB</span>
+              </div>
+            </a>
+
+            <a href="{{ url_for('module2') }}" class="module-card m2">
+              <div class="module-card-head">
+                <div class="module-card-icon">M2</div>
+                <div class="fl1">
+                  <div class="module-card-title">故障编码断续填充</div>
+                  <div class="module-card-no">module2</div>
+                </div>
+                <i class="fas fa-code" style="color:#6ee7b7;font-size:14px"></i>
+              </div>
+              <p class="module-card-desc">
+                10/16 进制转换、补全缺失编码、生成连续序列、填充预留项，全量数据预览
+              </p>
+              <div class="module-card-foot">
+                <span class="tag muted">.xlsx</span>
+                <span class="tag muted">≤10MB</span>
+              </div>
+            </a>
+
+            <a href="{{ url_for('module3') }}" class="module-card m3">
+              <div class="module-card-head">
+                <div class="module-card-icon">M3</div>
+                <div class="fl1">
+                  <div class="module-card-title">PDF 与 Excel 对照编辑器</div>
+                  <div class="module-card-no">module3</div>
+                </div>
+                <i class="fas fa-file-contract" style="color:#c4b5fd;font-size:14px"></i>
+              </div>
+              <p class="module-card-desc">
+                左右分屏对照 PDF 与 Excel，在线编辑表格，添加 / 删除行，快速完成点码表制作
+              </p>
+              <div class="module-card-foot">
+                <span class="tag muted">.pdf</span>
+                <span class="tag muted">.xls</span>
+              </div>
+            </a>
+
+            <a href="{{ url_for('module4') }}" class="module-card m4">
+              <div class="module-card-head">
+                <div class="module-card-icon">M4</div>
+                <div class="fl1">
+                  <div class="module-card-title">MBP 文件生成器</div>
+                  <div class="module-card-no">module4</div>
+                </div>
+                <i class="fas fa-cogs" style="color:#fdba74;font-size:14px"></i>
+              </div>
+              <p class="module-card-desc">
+                上传 Excel 文件，自动解析并生成 MBP 配置文件，支持 J2K2 规则匹配和多文件下载
+              </p>
+              <div class="module-card-foot">
+                <span class="tag muted">.xls</span>
+                <span class="tag muted">→ .mbp</span>
+              </div>
+            </a>
+
+            <a href="{{ url_for('module5') }}" class="module-card m5">
+              <div class="module-card-head">
+                <div class="module-card-icon">M5</div>
+                <div class="fl1">
+                  <div class="module-card-title">协议文件批量处理器</div>
+                  <div class="module-card-no">module5</div>
+                </div>
+                <i class="fas fa-file-import" style="color:#fcd34d;font-size:14px"></i>
+              </div>
+              <p class="module-card-desc">
+                批量处理协议文件、统一格式转换、清洗 NaN 值、生成标准化文件和详细处理报告
+              </p>
+              <div class="module-card-foot">
+                <span class="tag muted">.xls/.xlsx/.docx</span>
+              </div>
+            </a>
+          </div>
+
+          <div class="card mt-lg">
+            <div class="card-title">
+              <i class="fas fa-info-circle" style="color:var(--cyan)"></i>
+              <span>使用说明</span>
+            </div>
+            <div class="muted" style="font-size:12px;line-height:1.8">
+              · 文件大小限制 10 MB；上传 / 处理过程中请勿关闭页面<br>
+              · 模块 4 依赖 J2K2 规则配置（已内置），如需自定义请联系运维<br>
+              · 所有处理结果可在对应模块下载，不会自动保留到下次会话
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+</body>
+</html>

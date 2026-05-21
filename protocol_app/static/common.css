@@ -1,0 +1,538 @@
+/* 全局公共样式 - 无留白+占满宽度版 */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    font-family: "Microsoft YaHei", sans-serif;
+}
+
+/* 核心：body占满全屏，无默认留白 */
+body {
+    background-color: #f5f7fa;
+    width: 100vw;          /* 占满浏览器宽度 */
+    min-height: 100vh;     /* 占满浏览器高度 */
+    overflow-x: hidden;    /* 禁止横向滚动 */
+    padding: 0 !important; /* 清空默认内边距 */
+    margin: 0 !important;  /* 清空默认外边距 */
+}
+
+/* 主页面模块选择样式 - 无留白 */
+.module-container {
+    width: 100vw;          /* 占满宽度 */
+    height: 100vh;         /* 占满高度 */
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    padding: 20px;
+    margin: 0 !important;  /* 清空外边距 */
+    text-align: center;
+}
+
+.module-title {
+    font-size: 28px;
+    color: #333;
+    margin-bottom: 40px;
+}
+
+.module-card {
+    display: inline-block;
+    width: 300px;
+    height: 200px;
+    line-height: 200px;
+    background-color: #409eff;
+    color: white;
+    font-size: 20px;
+    border-radius: 10px;
+    margin: 0 20px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    text-decoration: none;
+}
+
+.module-card:hover {
+    background-color: #66b1ff;
+    transform: scale(1.05);
+}
+
+/* 模块通用容器 - 占满宽度，无留白 */
+.container {
+    width: 100vw !important;    /* 强制占满宽度 */
+    min-height: 100vh;          /* 占满高度 */
+    background-color: white;
+    padding: 20px 15px !important; /* 仅保留内边距，无横向留白 */
+    border-radius: 0 !important; /* 去掉圆角（可选，也可保留） */
+    box-shadow: none !important; /* 去掉阴影（避免边缘留白） */
+    margin: 0 !important;       /* 清空外边距 */
+}
+
+h1 {
+    color: #333;
+    margin-bottom: 30px;
+    font-size: 24px;
+    border-bottom: 2px solid #409eff;
+    padding-bottom: 10px;
+    width: 100%; /* 标题占满宽度 */
+}
+
+/* 上传区域样式 - 占满宽度 */
+.upload-area {
+    border: 2px dashed #ccc;
+    padding: 40px 20px;
+    text-align: center;
+    border-radius: 8px;
+    margin-bottom: 20px;
+    cursor: pointer;
+    transition: border-color 0.3s;
+    width: 100%; /* 占满宽度 */
+}
+
+.upload-area:hover {
+    border-color: #409eff;
+}
+
+.upload-area p {
+    color: #666;
+    margin-bottom: 10px;
+}
+
+.btn {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 16px;
+    margin: 5px;
+}
+
+.btn-primary {
+    background-color: #409eff;
+    color: white;
+}
+
+.btn-success {
+    background-color: #67c23a;
+    color: white;
+}
+
+.btn-danger {
+    background-color: #f56c6c;
+    color: white;
+}
+
+.btn:disabled {
+    background-color: #ccc;
+    cursor: not-allowed;
+}
+
+/* 提示信息样式 */
+.msg {
+    padding: 10px;
+    border-radius: 4px;
+    margin: 10px 0;
+    width: 100%; /* 占满宽度 */
+}
+
+.msg-success {
+    background-color: #f0f9ff;
+    color: #67c23a;
+}
+
+.msg-error {
+    background-color: #fef0f0;
+    color: #f56c6c;
+}
+
+/* 统计信息样式 */
+.info-area {
+    background-color: #f8f9fa;
+    padding: 15px;
+    border-radius: 4px;
+    margin: 20px 0;
+    width: 100%; /* 占满宽度 */
+}
+
+.info-area p {
+    margin: 5px 0;
+    color: #333;
+}
+
+/* 表格样式 - 占满宽度 */
+.table-container {
+    overflow-x: auto;
+    margin: 20px 0;
+    width: 100%; /* 占满宽度 */
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+th, td {
+    border: 1px solid #ccc;
+    padding: 8px;
+    text-align: center;
+}
+
+th {
+    background-color: #409eff;
+    color: white;
+}
+
+tr:nth-child(even) {
+    background-color: #f8f9fa;
+}
+
+/* 隐藏样式 */
+.hidden {
+    display: none;
+}
+
+/* 模块1专属样式 - 适配无留白 */
+.module-nav {
+    background-color: #409eff;
+    padding: 15px;
+    border-radius: 0; /* 去掉圆角 */
+    margin-bottom: 20px;
+    width: 100%; /* 占满宽度 */
+}
+
+.module-nav .nav-btn {
+    background-color: white;
+    color: #409eff;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 4px;
+    cursor: pointer;
+    margin-right: 10px;
+}
+
+.core-info-wrapper {
+    display: flex;
+    gap: 20px;
+    margin-bottom: 30px;
+    width: 100%; /* 占满宽度 */
+    padding: 0 5px; /* 微调内边距，无留白 */
+}
+
+.core-logic-backend, .core-logic-frontend {
+    flex: 1;
+    background-color: #f8f9fa;
+    padding: 20px;
+    border-radius: 8px;
+    border: 1px solid #e6e6e6;
+    width: 100%; /* 占满宽度 */
+}
+
+.core-info-title {
+    color: #409eff;
+    margin-bottom: 15px;
+    font-size: 18px;
+}
+
+.core-logic-list {
+    list-style: decimal;
+    padding-left: 20px;
+    line-height: 1.8;
+}
+
+.tab-header {
+    display: flex;
+    border-bottom: 1px solid #ccc;
+    margin-bottom: 10px;
+    width: 100%; /* 占满宽度 */
+}
+
+.tab-item {
+    padding: 10px 20px;
+    cursor: pointer;
+    border: 1px solid transparent;
+    border-bottom: none;
+    border-radius: 4px 4px 0 0;
+    margin-right: 5px;
+}
+
+.tab-item.active {
+    background-color: #409eff;
+    color: white;
+}
+
+.tab-content {
+    padding: 20px;
+    border: 1px solid #ccc;
+    border-radius: 0 4px 4px 4px;
+    min-height: 300px;
+    overflow-x: auto;
+    overflow-y: auto;
+    width: 100%; /* 占满宽度 */
+}
+
+.tab-panel {
+    display: none;
+    width: 100%; /* 占满宽度 */
+}
+
+.tab-panel.active {
+    display: block;
+}
+
+
+/* 模块1科技感主题（作用域隔离，避免影响其他模块） */
+.module1-page {
+    background: radial-gradient(circle at 20% 10%, rgba(74, 144, 226, 0.22), transparent 35%),
+                radial-gradient(circle at 80% 0%, rgba(128, 90, 213, 0.2), transparent 40%),
+                linear-gradient(135deg, #0b1220 0%, #0f1e35 45%, #132645 100%) !important;
+    color: #d9e6ff;
+    position: relative;
+    overflow-x: hidden;
+}
+
+.module1-page::before,
+.module1-page::after {
+    content: '';
+    position: fixed;
+    width: 320px;
+    height: 320px;
+    border-radius: 50%;
+    filter: blur(72px);
+    z-index: 0;
+    pointer-events: none;
+}
+
+.module1-page::before {
+    top: -100px;
+    left: -80px;
+    background: rgba(64, 158, 255, 0.25);
+}
+
+.module1-page::after {
+    bottom: -120px;
+    right: -80px;
+    background: rgba(103, 194, 58, 0.16);
+}
+
+.module1-page .container {
+    position: relative;
+    z-index: 1;
+    background: rgba(14, 26, 46, 0.72) !important;
+    border: 1px solid rgba(128, 173, 255, 0.26);
+    border-radius: 14px !important;
+    box-shadow: 0 20px 40px rgba(2, 8, 21, 0.45) !important;
+    backdrop-filter: blur(8px);
+}
+
+.module1-page h1 {
+    color: #ecf3ff;
+    border-bottom: 2px solid rgba(89, 181, 255, 0.65);
+    text-shadow: 0 0 18px rgba(90, 185, 255, 0.25);
+}
+
+.module1-page .module-nav {
+    background: linear-gradient(135deg, rgba(34, 83, 151, 0.95), rgba(35, 116, 226, 0.8));
+    border: 1px solid rgba(117, 175, 255, 0.4);
+    border-radius: 10px;
+    box-shadow: 0 8px 18px rgba(22, 66, 125, 0.45);
+}
+
+.module1-page .module-nav .nav-btn {
+    background: rgba(255, 255, 255, 0.92);
+    color: #1d4f9f;
+    font-weight: 600;
+    transition: all 0.25s ease;
+}
+
+.module1-page .module-nav .nav-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 0 14px rgba(136, 198, 255, 0.6);
+}
+
+.module1-page .upload-area {
+    border: 1.5px dashed rgba(127, 192, 255, 0.8);
+    background: rgba(13, 33, 58, 0.6);
+    border-radius: 12px;
+    transition: all 0.25s ease;
+}
+
+.module1-page .upload-area:hover,
+.module1-page .upload-area.is-dragover {
+    border-color: #63beff;
+    box-shadow: 0 0 0 2px rgba(81, 185, 255, 0.22), 0 0 24px rgba(43, 152, 229, 0.35);
+    background: rgba(17, 45, 78, 0.8);
+}
+
+.module1-page .upload-area p,
+.module1-page .module1-upload-tip {
+    color: #c2d7ff;
+}
+
+.module1-page .module1-upload-tip {
+    margin-top: 10px;
+}
+
+.module1-page .btn {
+    border-radius: 8px;
+    font-weight: 600;
+    transition: all 0.25s ease;
+}
+
+.module1-page .btn-primary {
+    background: linear-gradient(135deg, #2a8cff, #3db6ff);
+    border: 1px solid rgba(140, 216, 255, 0.6);
+    box-shadow: 0 8px 18px rgba(42, 140, 255, 0.35);
+}
+
+.module1-page .btn-primary:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 10px 24px rgba(72, 170, 255, 0.45);
+}
+
+.module1-page .btn-success {
+    background: linear-gradient(135deg, #16a56f, #2ac78a);
+    border: 1px solid rgba(128, 255, 214, 0.45);
+    box-shadow: 0 8px 18px rgba(30, 181, 123, 0.32);
+}
+
+.module1-page .btn-danger {
+    background: linear-gradient(135deg, #d5506a, #f56c6c);
+    border: 1px solid rgba(255, 178, 188, 0.5);
+}
+
+.module1-page .msg-success,
+.module1-page .msg-error,
+.module1-page .info-area,
+.module1-page .core-logic-backend,
+.module1-page .core-logic-frontend {
+    border: 1px solid rgba(112, 172, 255, 0.2);
+    box-shadow: 0 10px 22px rgba(7, 20, 38, 0.35);
+}
+
+.module1-page .msg-success {
+    background: rgba(23, 93, 149, 0.32);
+    color: #9ddbff;
+}
+
+.module1-page .msg-error {
+    background: rgba(157, 47, 83, 0.3);
+    color: #ffbfd0;
+}
+
+.module1-page .info-area,
+.module1-page .core-logic-backend,
+.module1-page .core-logic-frontend {
+    background: rgba(12, 28, 50, 0.82);
+    color: #d5e6ff;
+}
+
+.module1-page .core-info-title {
+    color: #78ccff;
+}
+
+.module1-page .tab-header {
+    border-bottom: 1px solid rgba(119, 182, 255, 0.35);
+}
+
+.module1-page .tab-item {
+    color: #b5d1ff;
+    border: 1px solid transparent;
+    background: rgba(17, 38, 66, 0.45);
+    transition: all 0.2s ease;
+}
+
+.module1-page .tab-item:hover {
+    color: #dff0ff;
+    border-color: rgba(116, 190, 255, 0.35);
+}
+
+.module1-page .tab-item.active {
+    background: linear-gradient(135deg, #2f8eff, #37b5ff);
+    color: #ffffff;
+    box-shadow: 0 -2px 14px rgba(56, 162, 255, 0.25);
+}
+
+.module1-page .tab-content {
+    background: rgba(10, 23, 42, 0.72);
+    border: 1px solid rgba(119, 182, 255, 0.3);
+    border-radius: 0 10px 10px 10px;
+}
+
+.module1-page .table-common {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+}
+
+.module1-page .table-common th,
+.module1-page .table-common td {
+    border: 1px solid rgba(98, 159, 223, 0.22);
+}
+
+.module1-page .table-common th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: linear-gradient(135deg, #245ca8, #2f8edf);
+    color: #f2f8ff;
+}
+
+.module1-page .table-common td {
+    background: rgba(12, 27, 46, 0.78);
+    color: #d4e8ff;
+}
+
+.module1-page .table-common tbody tr:nth-child(even) td {
+    background: rgba(17, 35, 60, 0.8);
+}
+
+.module1-page .table-common tbody tr:hover td {
+    background: rgba(43, 82, 130, 0.65);
+}
+
+.module1-page .tab-content::-webkit-scrollbar,
+.module1-page .preview-container::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+
+.module1-page .tab-content::-webkit-scrollbar-track,
+.module1-page .preview-container::-webkit-scrollbar-track {
+    background: rgba(7, 17, 31, 0.7);
+}
+
+.module1-page .tab-content::-webkit-scrollbar-thumb,
+.module1-page .preview-container::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, rgba(66, 157, 233, 0.92), rgba(42, 117, 184, 0.92));
+    border-radius: 8px;
+}
+
+.module1-page.fullscreen-data-mode {
+    padding: 0 !important;
+    background-color: #081325 !important;
+    overflow: hidden !important;
+    width: 100vw !important;
+    height: 100vh !important;
+}
+
+.module1-page.fullscreen-data-mode .container {
+    height: 100vh !important;
+    padding: 0 !important;
+    width: 100vw !important;
+    border-radius: 0 !important;
+    border: none !important;
+}
+
+.module1-page .fullscreen-data-switch {
+    display: none;
+}
+
+.module1-page.fullscreen-data-mode .fullscreen-data-switch {
+    display: block;
+}
+
+.module1-page .exit-fullscreen-btn {
+    display: none;
+}
+
+.module1-page.fullscreen-data-mode .exit-fullscreen-btn {
+    display: block;
+}

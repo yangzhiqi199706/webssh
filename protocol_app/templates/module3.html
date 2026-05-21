@@ -1,0 +1,469 @@
+{# protocol_app/templates/module3.html — PDF 与 Excel 对照编辑器 #}
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>模块 3 · PDF 与 Excel 对照编辑器 · 协议助手</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='webssh-theme.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='vendor/fontawesome/css/all.min.css') }}">
+  <meta name="protocol-prefix" content="{{ config.PROTOCOL_PREFIX }}">
+  <script>
+    window.PROTOCOL_PREFIX = (document.querySelector('meta[name="protocol-prefix"]') || {}).content || '';
+  </script>
+  <style>
+    /* 模块 3 特有：分屏布局，左 PDF 右编辑器 */
+    .split {
+      flex: 1;
+      min-height: 0;
+      display: grid;
+      grid-template-columns: 1fr 1.4fr;
+      gap: 12px;
+    }
+    @media (max-width: 1200px) {
+      .split { grid-template-columns: 1fr; grid-auto-rows: minmax(560px, 1fr); }
+    }
+    .pdf-viewer {
+      width: 100%;
+      height: 100%;
+      border: 0;
+      background: var(--bg);
+      display: block;
+    }
+    .pdf-empty-area {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      min-height: 360px;
+    }
+    .pdf-empty {
+      text-align: center;
+      padding: 32px;
+      width: 100%;
+      max-width: 360px;
+    }
+    .pdf-empty i {
+      font-size: 36px;
+      color: var(--cyan);
+      margin-bottom: 12px;
+    }
+    .pdf-info-bar {
+      display: none;
+      padding: 8px 14px;
+      background: rgba(52, 211, 153, .08);
+      border-top: 1px solid rgba(52, 211, 153, .25);
+      color: #6ee7b7;
+      font-size: 12px;
+    }
+    .pdf-info-bar.show { display: block; }
+
+    /* 表单网格：每行 6 列，可任意 span */
+    .grid-6 {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 10px 12px;
+    }
+    @media (max-width: 900px) {
+      .grid-6 { grid-template-columns: repeat(2, 1fr); }
+    }
+    .grid-6 .field.s2 { grid-column: span 2; }
+    .grid-6 .field.s3 { grid-column: span 3; }
+    .grid-6 .field.s6 { grid-column: span 6; }
+    .grid-6 .field-bottom {
+      display: flex;
+      align-items: flex-end;
+    }
+
+    .right-panel { overflow: auto; }
+    .right-section { padding: 14px; }
+    .right-section + .right-section { border-top: 1px solid var(--border); }
+    .right-section h3 {
+      margin: 0 0 12px;
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text-strong);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* 操作按钮在编辑表里的样式 */
+    .btn-del {
+      background: rgba(248, 113, 113, .12);
+      color: var(--red);
+      border: 1px solid rgba(248, 113, 113, .35);
+      border-radius: 6px;
+      padding: 3px 10px;
+      font-size: 11px;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .btn-del:hover { background: rgba(248, 113, 113, .2); }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="top-bar">
+      <div class="title">协议助手</div>
+      <span class="muted">/</span>
+      <span style="color:var(--text-strong);font-weight:600">模块 3 · PDF 与 Excel 对照编辑器</span>
+      <div class="spacer"></div>
+      <a class="btn" href="{{ url_for('index') }}">
+        <i class="fas fa-arrow-left"></i> 返回模块选择
+      </a>
+    </header>
+
+    <section class="main split-2" style="padding:12px">
+      <!-- 左：PDF 面板 -->
+      <div class="column">
+        <div class="column-head">
+          <h2><i class="fas fa-file-pdf" style="color:#fca5a5;margin-right:6px"></i>PDF 源文档</h2>
+          <span class="muted" id="pdfHint">未上传</span>
+        </div>
+        <div style="flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column" id="pdfPanel">
+          <div class="pdf-empty-area" id="pdfUpload">
+            <div class="upload-area pdf-empty">
+              <i class="fas fa-cloud-upload-alt"></i>
+              <p>拖拽 PDF 文件到此处，或点击上传</p>
+              <div class="upload-tip">仅支持 .pdf 格式</div>
+              <input type="file" id="pdfFile" accept=".pdf" style="display:none">
+              <div style="margin-top:14px">
+                <button class="btn primary" onclick="document.getElementById('pdfFile').click()">
+                  <i class="fas fa-folder-open"></i> 选择 PDF 文件
+                </button>
+              </div>
+            </div>
+          </div>
+          <div id="pdfViewerContainer" style="display:none;flex:1;min-height:0;background:var(--bg)">
+            <iframe id="pdfViewer" class="pdf-viewer"></iframe>
+          </div>
+          <div class="pdf-info-bar" id="pdfFileInfo"></div>
+        </div>
+      </div>
+
+      <!-- 右：编辑器 -->
+      <div class="column right-panel">
+        <div class="column-head">
+          <h2><i class="fas fa-table" style="color:var(--cyan);margin-right:6px"></i>点码表编辑器</h2>
+          <span class="muted">三相多功能表协议</span>
+        </div>
+
+        <div style="overflow:auto;flex:1;min-height:0">
+          <!-- 基础配置 -->
+          <div class="right-section">
+            <h3><i class="fas fa-cog" style="color:var(--cyan)"></i> 基础配置</h3>
+            <div class="grid-6">
+              <label class="field s2">
+                <span>设备类型</span>
+                <input type="number" id="deviceType" value="10" min="1">
+              </label>
+              <label class="field s2">
+                <span>指令类型</span>
+                <select id="cmdType" onchange="getProtoItems()">
+                  <option value="A1">A1 · 读参数</option>
+                  <option value="A2">A2 · 读电能</option>
+                </select>
+              </label>
+              <label class="field s2">
+                <span>功能码</span>
+                <select id="funcCode">
+                  <option value="0x03">0x03 · 遥测</option>
+                  <option value="0x02">0x02 · 遥信</option>
+                  <option value="0x10">0x10 · 遥调</option>
+                  <option value="0x05">0x05 · 遥控</option>
+                </select>
+              </label>
+              <label class="field s2">
+                <span>起始地址</span>
+                <input type="number" id="startAddr" value="0" min="0">
+              </label>
+              <label class="field s2">
+                <span>寄存器数量</span>
+                <input type="number" id="regNum" value="26" min="1">
+              </label>
+              <div class="field s2 field-bottom">
+                <button class="btn primary" style="width:100%" onclick="genCollectCmd()">
+                  <i class="fas fa-bolt"></i> 生成采集指令
+                </button>
+              </div>
+              <label class="field s6">
+                <span>采集指令（自动生成 / 手动修改）</span>
+                <input type="text" id="collectCmd" class="mono" placeholder="采集指令" readonly>
+              </label>
+            </div>
+          </div>
+
+          <!-- 参数添加 -->
+          <div class="right-section">
+            <h3><i class="fas fa-plus-circle" style="color:var(--green)"></i> 参数项添加</h3>
+            <div class="grid-6">
+              <label class="field s2">
+                <span>选择协议项</span>
+                <select id="paramNameSelect" onchange="fillParamInfo()">
+                  <option value="">-- 请选择 --</option>
+                </select>
+              </label>
+              <label class="field s2">
+                <span>参数索引</span>
+                <input type="number" id="paramIndex" value="1" min="1">
+              </label>
+              <label class="field">
+                <span>参数变比</span>
+                <input type="number" id="paramRatio" step="0.001" readonly>
+              </label>
+              <label class="field">
+                <span>参数单位</span>
+                <input type="text" id="paramUnit" readonly>
+              </label>
+              <label class="field">
+                <span>处理模型</span>
+                <input type="number" id="processModel" readonly>
+              </label>
+              <div class="field s6 field-bottom" style="justify-content:flex-end;flex-direction:row;gap:8px">
+                <button class="btn primary" onclick="addParamItem()">
+                  <i class="fas fa-plus"></i> 添加参数项
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 实时预览 -->
+          <div class="right-section">
+            <h3>
+              <i class="fas fa-eye" style="color:var(--amber)"></i> 配置预览
+              <span class="muted" style="font-weight:normal">生成结果与此一致</span>
+            </h3>
+            <div class="preview-container" style="max-height:380px">
+              <table class="table-common preview-table">
+                <thead>
+                  <tr>
+                    <th>参数索引</th>
+                    <th>参数名称</th>
+                    <th>参数变比</th>
+                    <th>参数单位</th>
+                    <th>处理模型</th>
+                    <th>采集指令</th>
+                    <th style="width:60px">操作</th>
+                  </tr>
+                </thead>
+                <tbody id="previewTbody">
+                  <tr><td colspan="7" style="text-align:center;color:var(--muted);padding:20px">尚未添加参数项</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="actions" style="justify-content:center;margin-top:16px">
+              <button class="btn success lg" onclick="genExcel()">
+                <i class="fas fa-file-excel"></i> 一键生成并下载 Excel
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script src="{{ url_for('static', filename='vendor/jquery/jquery.min.js') }}"></script>
+  <script src="{{ url_for('static', filename='common.js') }}"></script>
+  <script>
+    // 业务逻辑（保留所有 fetch URL / DOM ID / 函数名）
+    let paramList = [];
+    let protoItems = [];
+
+    $(function() {
+      getProtoItems();
+      initPDFUpload();
+    });
+
+    function initPDFUpload() {
+      const pdfFileInput = document.getElementById('pdfFile');
+      const pdfUpload = document.getElementById('pdfUpload');
+
+      pdfFileInput.addEventListener('change', function(e) {
+        const file = e.target.files[0];
+        if (file) uploadPDF(file);
+      });
+
+      pdfUpload.addEventListener('click', function(e) {
+        if (!e.target.closest('.btn')) pdfFileInput.click();
+      });
+      pdfUpload.addEventListener('dragover', function(e) {
+        e.preventDefault();
+        this.querySelector('.upload-area')?.classList.add('dragover');
+      });
+      pdfUpload.addEventListener('dragleave', function(e) {
+        e.preventDefault();
+        this.querySelector('.upload-area')?.classList.remove('dragover');
+      });
+      pdfUpload.addEventListener('drop', function(e) {
+        e.preventDefault();
+        this.querySelector('.upload-area')?.classList.remove('dragover');
+        const file = e.dataTransfer.files[0];
+        if (file && file.name.toLowerCase().endsWith('.pdf')) {
+          uploadPDF(file);
+        } else {
+          alert('请上传 PDF 文件！');
+        }
+      });
+    }
+
+    function uploadPDF(file) {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      $.ajax({
+        url: BACKEND_CONFIG.module3.uploadPdfUrl,
+        type: 'POST',
+        data: formData,
+        processData: false,
+        contentType: false,
+        success: function(res) {
+          if (res.status === 'success') {
+            document.getElementById('pdfUpload').style.display = 'none';
+            document.getElementById('pdfViewerContainer').style.display = 'block';
+            document.getElementById('pdfViewer').src = BACKEND_CONFIG.module3.uploadsBase + '/' + res.filename;
+            const info = document.getElementById('pdfFileInfo');
+            info.textContent = '已加载：' + res.filename;
+            info.classList.add('show');
+            document.getElementById('pdfHint').textContent = res.filename;
+          } else {
+            alert(res.msg);
+          }
+        },
+        error: function() { alert('上传失败！'); }
+      });
+    }
+
+    function getProtoItems() {
+      let cmdType = $("#cmdType").val();
+      $.ajax({
+        url: BACKEND_CONFIG.module3.getProtoItemsUrl,
+        type: "POST",
+        contentType: "application/json",
+        data: JSON.stringify({ cmd_type: cmdType }),
+        success: function(res) {
+          if (res.status === "success") {
+            protoItems = res.data;
+            $("#paramNameSelect").empty().append('<option value="">-- 请选择 --</option>');
+            protoItems.forEach(item => {
+              $("#paramNameSelect").append(`<option value="${item.name}">${item.name}</option>`);
+            });
+          }
+        }
+      });
+    }
+
+    function fillParamInfo() {
+      let paramName = $("#paramNameSelect").val();
+      let item = protoItems.find(i => i.name === paramName);
+      if (item) {
+        $("#paramRatio").val(item.ratio);
+        $("#paramUnit").val(item.unit);
+        $("#processModel").val(item.model);
+      }
+    }
+
+    function genCollectCmd() {
+      let funcCode = $("#funcCode").val();
+      let startAddr = $("#startAddr").val();
+      let regNum = $("#regNum").val();
+      $.ajax({
+        url: BACKEND_CONFIG.module3.genCollectCmdUrl,
+        type: "POST",
+        contentType: "application/json",
+        data: JSON.stringify({ func_code: funcCode, start_addr: startAddr, reg_num: regNum }),
+        success: function(res) {
+          if (res.status === "success") $("#collectCmd").val(res.collect_cmd);
+        }
+      });
+    }
+
+    function addParamItem() {
+      let deviceType = $("#deviceType").val();
+      let cmdType = $("#cmdType").val();
+      let cmdName = cmdType === "A1" ? "读参数" : "读电能";
+      let collectCmd = $("#collectCmd").val();
+      let paramIndex = $("#paramIndex").val();
+      let paramName = $("#paramNameSelect").val();
+      let paramRatio = $("#paramRatio").val();
+      let paramUnit = $("#paramUnit").val();
+      let processModel = $("#processModel").val();
+
+      if (!paramName || !collectCmd) {
+        alert("请先选择协议项并生成采集指令！");
+        return;
+      }
+      if (paramList.some(i => i.param_index === paramIndex)) {
+        alert("参数索引已存在，请修改！");
+        return;
+      }
+      let paramItem = {
+        device_type: deviceType,
+        cmd_type: cmdType,
+        cmd_name: cmdName,
+        collect_cmd: collectCmd,
+        process_type: 1,
+        param_index: paramIndex,
+        param_name: paramName,
+        param_ratio: paramRatio,
+        param_unit: paramUnit,
+        param_length: protoItems.find(i => i.name === paramName).length,
+        process_model: processModel,
+        data_type: 1
+      };
+      paramList.push(paramItem);
+      renderPreview();
+      $("#paramIndex").val(parseInt(paramIndex) + 1);
+    }
+
+    function renderPreview() {
+      let tbody = $("#previewTbody");
+      tbody.empty();
+      if (!paramList.length) {
+        tbody.append('<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:20px">尚未添加参数项</td></tr>');
+        return;
+      }
+      paramList.forEach((item, index) => {
+        let tr = `<tr>
+          <td>${item.param_index}</td>
+          <td>${item.param_name}</td>
+          <td>${item.param_ratio}</td>
+          <td>${item.param_unit}</td>
+          <td>${item.process_model}</td>
+          <td class="mono" style="font-size:11px;word-break:break-all">${item.collect_cmd}</td>
+          <td><button class="btn-del" onclick="delParamItem(${index})">删除</button></td>
+        </tr>`;
+        tbody.append(tr);
+      });
+    }
+
+    function delParamItem(index) {
+      paramList.splice(index, 1);
+      renderPreview();
+    }
+
+    function genExcel() {
+      if (paramList.length === 0) {
+        alert("请先添加参数项！");
+        return;
+      }
+      $.ajax({
+        url: BACKEND_CONFIG.module3.genExcelUrl,
+        type: "POST",
+        contentType: "application/json",
+        data: JSON.stringify({ data_list: paramList }),
+        xhrFields: { responseType: 'blob' },
+        success: function(res) {
+          let a = document.createElement('a');
+          let url = URL.createObjectURL(res);
+          a.href = url;
+          a.download = "三相多功能表协议点码表.xls";
+          a.click();
+          URL.revokeObjectURL(url);
+        },
+        error: function() { alert("生成失败"); }
+      });
+    }
+  </script>
+</body>
+</html>

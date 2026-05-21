@@ -1,0 +1,572 @@
+{# protocol_app/templates/module5.html — 协议文件批量处理器 #}
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>模块 5 · 协议文件批量处理器 · 协议助手</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='webssh-theme.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='vendor/fontawesome/css/all.min.css') }}">
+  <meta name="protocol-prefix" content="{{ config.PROTOCOL_PREFIX }}">
+  <script>
+    window.PROTOCOL_PREFIX = (document.querySelector('meta[name="protocol-prefix"]') || {}).content || '';
+  </script>
+  <script src="{{ url_for('static', filename='common.js') }}"></script>
+  <style>
+    /* 文件列表 */
+    .file-list {
+      max-height: 320px;
+      overflow: auto;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--panel-3);
+    }
+    .file-list:empty::after {
+      content: '暂无文件';
+      display: block;
+      text-align: center;
+      padding: 30px;
+      color: var(--muted-2);
+      font-size: 12px;
+    }
+    .file-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+      transition: background .15s;
+    }
+    .file-item:last-child { border-bottom: 0; }
+    .file-item:hover { background: rgba(34, 211, 238, .04); }
+    .file-item.selected { background: rgba(34, 211, 238, .08); }
+    .file-item input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      accent-color: var(--cyan);
+      flex-shrink: 0;
+      cursor: pointer;
+    }
+    .file-item .file-info { flex: 1; min-width: 0; }
+    .file-item .file-name {
+      font-weight: 600;
+      color: var(--text-strong);
+      font-size: 13px;
+      word-break: break-all;
+    }
+    .file-item .file-size { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+    .file-status {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-weight: 600;
+      flex-shrink: 0;
+    }
+    .status-pending { background: rgba(251, 191, 36, .14); color: #fcd34d; }
+    .status-success { background: rgba(52, 211, 153, .14); color: #6ee7b7; }
+    .status-error   { background: rgba(248, 113, 113, .14); color: #fca5a5; }
+
+    /* 进度条 */
+    .progress-bar {
+      height: 18px;
+      background: var(--panel-3);
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      overflow: hidden;
+      position: relative;
+    }
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--cyan-strong), var(--cyan));
+      transition: width .3s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--cyan-on);
+      font-weight: 700;
+      font-size: 11px;
+      width: 0%;
+    }
+    .progress-text {
+      text-align: center;
+      margin-top: 6px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    /* 日志 */
+    .log-container {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px 14px;
+      max-height: 280px;
+      overflow: auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 11px;
+    }
+    .log-container:empty::after {
+      content: '暂无日志';
+      display: block;
+      color: var(--muted-2);
+    }
+    .log-entry { padding: 3px 0; }
+    .log-time { color: var(--muted-2); margin-right: 6px; }
+    .log-message { color: var(--text-strong); }
+    .log-error { color: #fca5a5; }
+    .log-success { color: #6ee7b7; }
+
+    /* 结果区 */
+    .result-section { display: none; }
+    .result-section.active { display: block; }
+    .download-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .download-btn {
+      background: rgba(52, 211, 153, .12);
+      color: #6ee7b7;
+      border: 1px solid rgba(52, 211, 153, .35);
+      border-radius: 6px;
+      padding: 6px 12px;
+      font-size: 12px;
+      cursor: pointer;
+      font-family: inherit;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      max-width: 320px;
+    }
+    .download-btn:hover { background: rgba(52, 211, 153, .2); }
+    .download-btn span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* 路径输入框：等宽 */
+    .field input.path-input { font-family: ui-monospace, monospace; }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="top-bar">
+      <div class="title">协议助手</div>
+      <span class="muted">/</span>
+      <span style="color:var(--text-strong);font-weight:600">模块 5 · 协议文件批量处理器</span>
+      <div class="spacer"></div>
+      <button class="btn" onclick="window.location.href=BACKEND_CONFIG.indexUrl">
+        <i class="fas fa-arrow-left"></i> 返回模块选择
+      </button>
+    </header>
+
+    <section class="main">
+      <div class="column">
+        <div class="column-head">
+          <h2><i class="fas fa-file-import" style="color:#fcd34d;margin-right:6px"></i>协议文件批量处理器</h2>
+          <span class="muted">.xls / .xlsx / .docx · 统一格式 · 清洗 NaN</span>
+        </div>
+
+        <div class="column-body">
+          <!-- 文件来源 -->
+          <div class="card">
+            <div class="card-title">
+              <i class="fas fa-folder-open" style="color:var(--cyan)"></i>
+              <span>文件来源</span>
+            </div>
+
+            <div class="card-section">
+              <label class="field">
+                <span><strong>方式一：</strong>从文件夹扫描（仅适用于服务器本地路径）</span>
+                <input type="text" id="sourceFolder" class="path-input"
+                       placeholder="例如：/opt/data/xy"
+                       value="">
+              </label>
+              <div class="actions">
+                <button class="btn primary" onclick="initProcessor()">
+                  <i class="fas fa-search"></i> 扫描文件夹
+                </button>
+              </div>
+            </div>
+
+            <div style="border-top:1px solid var(--border);padding-top:14px;margin-top:14px">
+              <div class="muted" style="font-size:12px;margin-bottom:8px">
+                <strong style="color:var(--text-strong)">方式二：</strong>直接上传文件
+              </div>
+              <div class="upload-area" id="uploadArea">
+                <p><i class="fas fa-cloud-upload-alt" style="margin-right:6px;color:var(--cyan)"></i>点击或拖拽文件到此处</p>
+                <div class="upload-tip">支持格式：.xls / .xlsx / .docx，可多选</div>
+                <input type="file" id="fileUpload" multiple accept=".xls,.xlsx,.docx" style="display:none" onchange="handleFileUpload(this)">
+              </div>
+            </div>
+          </div>
+
+          <!-- 文件列表 -->
+          <div class="card" id="fileSection" style="display:none">
+            <div class="card-title">
+              <i class="fas fa-list" style="color:var(--cyan)"></i>
+              <span>文件列表</span>
+              <span class="muted" id="selectedCount" style="margin-left:auto">已选择 0 个</span>
+            </div>
+            <div class="actions" style="margin-top:0;margin-bottom:10px">
+              <button class="btn sm" onclick="selectAllFiles()">
+                <i class="fas fa-check-square"></i> 全选
+              </button>
+              <button class="btn sm" onclick="deselectAllFiles()">
+                <i class="far fa-square"></i> 取消全选
+              </button>
+            </div>
+            <div class="file-list" id="fileList"></div>
+          </div>
+
+          <!-- 批量处理 -->
+          <div class="card" id="processSection" style="display:none">
+            <div class="card-title">
+              <i class="fas fa-bolt" style="color:var(--amber)"></i>
+              <span>批量处理</span>
+            </div>
+            <div class="actions" style="margin-top:0">
+              <button class="btn success" onclick="startProcessing()">
+                <i class="fas fa-play"></i> 开始处理
+              </button>
+              <button class="btn" onclick="downloadReport()" id="reportBtn" style="display:none">
+                <i class="fas fa-file-alt"></i> 生成报告
+              </button>
+            </div>
+
+            <div id="progressContainer" style="display:none;margin-top:14px">
+              <div class="progress-bar">
+                <div class="progress-fill" id="progressFill">0%</div>
+              </div>
+              <div class="progress-text" id="progressText">准备中...</div>
+            </div>
+
+            <div style="margin-top:14px">
+              <div class="muted" style="font-size:12px;margin-bottom:6px">
+                <i class="fas fa-stream" style="margin-right:4px"></i>处理日志
+              </div>
+              <div class="log-container" id="logContainer"></div>
+            </div>
+          </div>
+
+          <!-- 处理结果 -->
+          <div class="card result-section" id="resultSection">
+            <div class="card-title">
+              <i class="fas fa-chart-bar" style="color:var(--green)"></i>
+              <span>处理结果</span>
+            </div>
+
+            <div class="stat-grid">
+              <div class="stat-item">
+                <div class="k">总文件数</div>
+                <div class="v cyan" id="totalFiles">0</div>
+              </div>
+              <div class="stat-item">
+                <div class="k">成功处理</div>
+                <div class="v green" id="successFiles">0</div>
+              </div>
+              <div class="stat-item">
+                <div class="k">处理失败</div>
+                <div class="v red" id="failedFiles">0</div>
+              </div>
+              <div class="stat-item">
+                <div class="k">清洗 NaN 值</div>
+                <div class="v amber" id="cleanedNan">0</div>
+              </div>
+            </div>
+
+            <div class="muted" style="font-size:12px;margin-top:14px;margin-bottom:6px">
+              <i class="fas fa-download" style="margin-right:4px"></i>下载处理后的文件
+            </div>
+            <div class="download-list" id="downloadList"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    // 业务逻辑（保留所有 fetch URL / DOM ID）
+    let selectedFiles = [];
+    let processingResults = [];
+    let uploadedFiles = [];
+
+    document.addEventListener('DOMContentLoaded', function() {
+      const uploadArea = document.getElementById('uploadArea');
+      if (!uploadArea) return;
+
+      uploadArea.addEventListener('click', function(e) {
+        if (e.target.id !== 'fileUpload') {
+          document.getElementById('fileUpload').click();
+        }
+      });
+      uploadArea.addEventListener('dragover', function(e) {
+        e.preventDefault(); e.stopPropagation();
+        uploadArea.classList.add('dragover');
+      });
+      uploadArea.addEventListener('dragleave', function(e) {
+        e.preventDefault(); e.stopPropagation();
+        uploadArea.classList.remove('dragover');
+      });
+      uploadArea.addEventListener('drop', function(e) {
+        e.preventDefault(); e.stopPropagation();
+        uploadArea.classList.remove('dragover');
+        const files = e.dataTransfer.files;
+        if (files.length > 0) {
+          handleFileUpload({ target: { files: files } });
+        }
+      });
+    });
+
+    function initProcessor() {
+      const sourceFolder = document.getElementById('sourceFolder').value;
+      if (!sourceFolder) { alert('请输入源文件夹路径'); return; }
+
+      fetch(BACKEND_CONFIG.module5.initUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source_folder: sourceFolder })
+      })
+        .then(r => r.json())
+        .then(data => {
+          if (data.status === 'success') {
+            uploadedFiles = []; // 清掉上次的上传记录
+            displayFiles(data.files);
+            document.getElementById('fileSection').style.display = 'block';
+            document.getElementById('processSection').style.display = 'block';
+            addLog('success', `扫描完成，发现 ${data.file_count} 个文件`);
+          } else {
+            addLog('error', '扫描失败：' + data.msg);
+          }
+        })
+        .catch(err => addLog('error', '请求失败：' + err.message));
+    }
+
+    function handleFileUpload(evt) {
+      const files = evt.target.files;
+      if (!files || files.length === 0) return;
+
+      uploadedFiles = [];
+      for (let i = 0; i < files.length; i++) {
+        uploadedFiles.push({ file: files[i], name: files[i].name, size: files[i].size });
+      }
+      displayUploadedFiles(uploadedFiles);
+      document.getElementById('fileSection').style.display = 'block';
+      document.getElementById('processSection').style.display = 'block';
+      addLog('info', `已选择 ${files.length} 个文件准备上传`);
+    }
+
+    function displayUploadedFiles(files) {
+      const fileList = document.getElementById('fileList');
+      fileList.innerHTML = '';
+      files.forEach((file, index) => {
+        const fileItem = document.createElement('div');
+        fileItem.className = 'file-item';
+        fileItem.innerHTML = `
+          <input type="checkbox" id="file_${index}" value="${index}" onchange="updateSelectedCount()">
+          <div class="file-info">
+            <div class="file-name">${file.name}</div>
+            <div class="file-size">大小：${formatFileSize(file.size)}</div>
+          </div>
+          <span class="file-status status-pending" id="status_${index}">待处理</span>
+        `;
+        fileList.appendChild(fileItem);
+      });
+    }
+
+    function displayFiles(files) {
+      const fileList = document.getElementById('fileList');
+      fileList.innerHTML = '';
+      files.forEach((file, index) => {
+        const fileItem = document.createElement('div');
+        fileItem.className = 'file-item';
+        fileItem.innerHTML = `
+          <input type="checkbox" id="file_${index}" value="${file.path}" onchange="updateSelectedCount()">
+          <div class="file-info">
+            <div class="file-name">${file.name}</div>
+            <div class="file-size">大小：${formatFileSize(file.size)}</div>
+          </div>
+          <span class="file-status status-pending" id="status_${index}">待处理</span>
+        `;
+        fileList.appendChild(fileItem);
+      });
+    }
+
+    function selectAllFiles() {
+      document.querySelectorAll('.file-list input[type="checkbox"]').forEach(c => c.checked = true);
+      updateSelectedCount();
+    }
+    function deselectAllFiles() {
+      document.querySelectorAll('.file-list input[type="checkbox"]').forEach(c => c.checked = false);
+      updateSelectedCount();
+    }
+    function updateSelectedCount() {
+      const n = document.querySelectorAll('.file-list input[type="checkbox"]:checked').length;
+      document.getElementById('selectedCount').textContent = `已选择 ${n} 个`;
+    }
+
+    function startProcessing() {
+      const checkboxes = document.querySelectorAll('.file-list input[type="checkbox"]:checked');
+      if (checkboxes.length === 0) { alert('请选择要处理的文件'); return; }
+
+      if (uploadedFiles.length > 0) {
+        processUploadedFiles(checkboxes);
+      } else {
+        const file_list = [];
+        checkboxes.forEach((checkbox) => {
+          const fileItem = checkbox.closest('.file-item');
+          const fileName = fileItem.querySelector('.file-name').textContent;
+          file_list.push({ name: fileName, path: checkbox.value });
+        });
+        processFolderFiles(file_list);
+      }
+    }
+
+    function processUploadedFiles(checkboxes) {
+      const formData = new FormData();
+      checkboxes.forEach((checkbox) => {
+        const idx = parseInt(checkbox.value, 10);
+        if (uploadedFiles[idx]) formData.append('files', uploadedFiles[idx].file);
+      });
+
+      document.getElementById('progressContainer').style.display = 'block';
+      updateProgress(10, '正在上传文件...');
+
+      fetch(BACKEND_CONFIG.module5.uploadUrl, { method: 'POST', body: formData })
+        .then(r => r.json())
+        .then(data => {
+          if (data.status === 'success') {
+            updateProgress(100, '文件上传完成！');
+            addLog('success', `成功上传 ${data.uploaded_count} 个文件`);
+            displayResults(data.summary);
+            document.getElementById('reportBtn').style.display = 'inline-flex';
+          } else {
+            addLog('error', '上传失败：' + data.msg);
+            updateProgress(0, '上传失败');
+          }
+        })
+        .catch(err => {
+          addLog('error', '请求失败：' + err.message);
+          updateProgress(0, '请求失败');
+        });
+    }
+
+    function processFolderFiles(file_list) {
+      document.getElementById('progressContainer').style.display = 'block';
+      updateProgress(0, '开始处理...');
+
+      fetch(BACKEND_CONFIG.module5.processUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file_list: file_list })
+      })
+        .then(r => r.json())
+        .then(data => {
+          if (data.status === 'success') {
+            displayResults(data.summary);
+            updateProgress(100, '处理完成！');
+            addLog('success', `批量处理完成：成功 ${data.summary.success} 个，失败 ${data.summary.failed} 个`);
+            document.getElementById('reportBtn').style.display = 'inline-flex';
+          } else {
+            addLog('error', '处理失败：' + data.msg);
+            updateProgress(0, '处理失败');
+          }
+        })
+        .catch(err => {
+          addLog('error', '请求失败：' + err.message);
+          updateProgress(0, '请求失败');
+        });
+    }
+
+    function displayResults(summary) {
+      document.getElementById('resultSection').classList.add('active');
+      document.getElementById('totalFiles').textContent = summary.total;
+      document.getElementById('successFiles').textContent = summary.success;
+      document.getElementById('failedFiles').textContent = summary.failed;
+
+      let totalCleaned = 0;
+      const downloadList = document.getElementById('downloadList');
+      downloadList.innerHTML = '';
+
+      summary.results.forEach((result) => {
+        const checkbox = document.querySelector(`input[value*="${result.original_name}"]`);
+        if (checkbox) {
+          const fileItem = checkbox.closest('.file-item');
+          const statusSpan = fileItem.querySelector('.file-status');
+          if (result.status === 'success') {
+            statusSpan.className = 'file-status status-success';
+            statusSpan.textContent = '成功';
+            totalCleaned += (result.cleaned_nan || 0);
+            const downloadBtn = document.createElement('button');
+            downloadBtn.className = 'download-btn';
+            downloadBtn.title = result.normalized_name;
+            downloadBtn.innerHTML = `<i class="fas fa-download"></i><span>${result.normalized_name}</span>`;
+            downloadBtn.onclick = () => downloadFile(result.normalized_name);
+            downloadList.appendChild(downloadBtn);
+          } else {
+            statusSpan.className = 'file-status status-error';
+            statusSpan.textContent = '失败';
+          }
+        }
+      });
+
+      document.getElementById('cleanedNan').textContent = totalCleaned;
+      processingResults = summary;
+    }
+
+    function downloadFile(filename) {
+      window.location.href = `${BACKEND_CONFIG.module5.downloadUrl}/${encodeURIComponent(filename)}`;
+    }
+
+    function downloadReport() {
+      fetch(BACKEND_CONFIG.module5.reportUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ summary: processingResults })
+      })
+        .then(r => { if (r.ok) return r.blob(); throw new Error('生成报告失败'); })
+        .then(blob => {
+          const url = window.URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = '协议文件处理报告.txt';
+          document.body.appendChild(a);
+          a.click();
+          window.URL.revokeObjectURL(url);
+          document.body.removeChild(a);
+          addLog('success', '报告生成成功');
+        })
+        .catch(err => addLog('error', err.message));
+    }
+
+    function updateProgress(percent, text) {
+      document.getElementById('progressFill').style.width = percent + '%';
+      document.getElementById('progressFill').textContent = percent + '%';
+      document.getElementById('progressText').textContent = text;
+    }
+
+    function addLog(type, message) {
+      const logContainer = document.getElementById('logContainer');
+      const logEntry = document.createElement('div');
+      logEntry.className = 'log-entry';
+      const time = new Date().toLocaleTimeString();
+      const logClass = type === 'error' ? 'log-error' : type === 'success' ? 'log-success' : '';
+      logEntry.innerHTML = `<span class="log-time">[${time}]</span><span class="log-message ${logClass}">${message}</span>`;
+      logContainer.appendChild(logEntry);
+      logContainer.scrollTop = logContainer.scrollHeight;
+    }
+
+    function formatFileSize(bytes) {
+      if (bytes === 0) return '0 Bytes';
+      const k = 1024;
+      const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+    }
+  </script>
+</body>
+</html>
