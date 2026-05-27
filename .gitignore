@@ -4,3 +4,20 @@ yarn-debug.log*
 yarn-error.log*
 .DS_Store
 /dist
+/.offline-downloads
+/.test-fixtures
+/logs
+/.offline-build
+
+# 运行时产物
+protocol_app/uploads/
+protocol_app/outputs/
+protocol_app/downloads/
+protocol_app/module4_uploads/
+protocol_app/module4_downloads/
+protocol_app/__pycache__/
+**/__pycache__/
+
+# 含真实凭据的本地配置（仅留 .example）
+config/sms-db.json
+config/sms-push.json

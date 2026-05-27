@@ -18,7 +18,17 @@
       "Bash(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PreferredAuthentications=password -o PubkeyAuthentication=no root@192.168.50.10 \"ldd /usr/bin/node; echo '---'; which node; node -v\")",
       "Bash(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PreferredAuthentications=password -o PubkeyAuthentication=no root@192.168.50.10 \"find /usr /lib64 /lib -name 'libnode.so*' -o -name 'libuv.so*' -o -name 'libssl.so*' -o -name 'libcrypto.so*' -o -name 'libbrotli*.so*' -o -name 'libnghttp2.so*' 2>/dev/null | sort\")",
       "Bash(curl -s \"http://192.168.50.10:3010/api/serial/ports?probe=1\")",
-      "Bash(node -e \"let d='';process.stdin.on\\('data',c=>d+=c\\).on\\('end',\\(\\)=>{const j=JSON.parse\\(d\\);j.ports.slice\\(0,8\\).forEach\\(p=>console.log\\(JSON.stringify\\(p\\)\\)\\);console.log\\('...'\\);console.log\\('probed:',j.probed,'total:',j.ports.length\\)}\\)\")"
+      "Bash(node -e \"let d='';process.stdin.on\\('data',c=>d+=c\\).on\\('end',\\(\\)=>{const j=JSON.parse\\(d\\);j.ports.slice\\(0,8\\).forEach\\(p=>console.log\\(JSON.stringify\\(p\\)\\)\\);console.log\\('...'\\);console.log\\('probed:',j.probed,'total:',j.ports.length\\)}\\)\")",
+      "Bash(WEBSSH_HOST=192.168.0.22 WEBSSH_PORT=22 WEBSSH_USER=root WEBSSH_DEPLOY_PASS='smt@2023' node scripts/deploy-upgrade.js)",
+      "Bash(node -e ' *)",
+      "Bash(WEBSSH_HOST=192.168.0.22 WEBSSH_PORT=22 WEBSSH_USER=root WEBSSH_DEPLOY_PASS='smt@2023' node scripts/build-offline-on-server.js)",
+      "Bash(rm -rf /tmp/webssh-verify)",
+      "Bash(mkdir /tmp/webssh-verify)",
+      "Bash(tar --force-local -xzf \"c:/Users/杨治琪/Desktop/脚本运行/界面操作系统命令/dist/webssh-offline-linux-x64-v1.0.0-20260510074234.tar.gz\" -C /tmp/webssh-verify --wildcards '*/app/index.html' '*/app/server.js')",
+      "Read(//tmp/**)",
+      "Bash(node -c server.js)",
+      "Bash(node --check server.js)",
+      "Bash(node --check serial/assets/js/remote-serial.js)"
     ]
   }
 }

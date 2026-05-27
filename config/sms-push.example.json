@@ -1,0 +1,14 @@
+{
+  "enabled": false,
+  "autoPushOnAlarm": false,
+  "gatewayHost": "192.168.0.50",
+  "gatewayPort": 8791,
+  "pushPath": "/cgi-bin/NoticePush",
+  "resultsPath": "/cgi-bin/NoticeResults",
+  "simStatusPath": "/cgi-bin/SystemStatusSnapshot",
+  "recipientIds": [],
+  "type": "SMS",
+  "encoding": "UTF-8",
+  "httpTimeoutMs": 8000,
+  "autoQueryResultIntervalSec": 30
+}

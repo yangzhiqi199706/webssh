@@ -14,6 +14,7 @@
     monMetaBox: $('monMetaBox'),
     monList: $('monList'),
     monListEmpty: $('monListEmpty'),
+    btnClearAlarmList: $('btnClearAlarmList'),
     cancelDot: $('cancelDot'),
     cancelState: $('cancelState'),
     cancelList: $('cancelList'),
@@ -28,6 +29,11 @@
   var lastCancelClientId = 0;
   var renderedClientIds = new Set();
   var renderedCancelIds = new Set();
+  // 已被解除的告警 id（行级 id，对应 dcim-alarmlist.id）。
+  // 解除事件一到，这些 id 不能再出现在"新告警"列表里：
+  //   1) 如果"新告警"列表里已经渲染过同 id 的行，删掉它
+  //   2) 之后任何渲染流程要画该 id 的新告警也直接跳过
+  var cancelledRowIds = new Set();
 
   function openMonModal() {
     if (!el.monModal) return;
@@ -227,11 +233,18 @@
     for (var i = items.length - 1; i >= 0; i--) {
       var it = items[i];
       if (opts.seenSet.has(it.clientId)) continue;
-      opts.seenSet.add(it.clientId);
       var row = it.row || {};
+      var rowId = pick(row, 'id');
+      // 新告警分支：如果该 id 已经被解除过，直接跳过，不渲染
+      if (!opts.cancelled && rowId != null && cancelledRowIds.has(String(rowId))) {
+        opts.seenSet.add(it.clientId);
+        continue;
+      }
+      opts.seenSet.add(it.clientId);
       var div = document.createElement('div');
       div.className = 'alarm-row new' + (opts.cancelled ? ' cancelled' : '');
       div.dataset.clientId = it.clientId;
+      if (rowId != null) div.dataset.rowId = String(rowId);
       var text = formatValue(pick(row, 'TextMessage'));
       if (!text) {
         // TextMessage 为 null 时用其它字段拼个描述，方便用户一眼识别
@@ -288,6 +301,31 @@
   }
 
   function renderCancelItems(items) {
+    // 1) 把每条解除项的行级 id 加入 cancelledRowIds
+    // 2) 从"新告警"DOM 里删掉同 id 的行（如果之前已渲染过）
+    if (items && items.length) {
+      for (var k = 0; k < items.length; k++) {
+        var rid = items[k] && items[k].row ? pick(items[k].row, 'id') : null;
+        if (rid == null) continue;
+        var key = String(rid);
+        cancelledRowIds.add(key);
+        if (el.monList) {
+          var dup = el.monList.querySelector('.alarm-row[data-row-id="' + key.replace(/"/g, '\\"') + '"]');
+          if (dup && dup.parentNode) dup.parentNode.removeChild(dup);
+        }
+      }
+      // 删完同 id 行后，如果"新告警"区只剩 header，再补一个 empty 占位
+      if (el.monList && !el.monList.querySelector('.alarm-row')) {
+        if (!el.monList.querySelector('#monListEmpty')) {
+          var emptyDiv = document.createElement('div');
+          emptyDiv.id = 'monListEmpty';
+          emptyDiv.style.cssText = 'padding:14px;color:#64748b;font-size:12px;text-align:center';
+          emptyDiv.textContent = '暂无新告警';
+          el.monList.appendChild(emptyDiv);
+          el.monListEmpty = emptyDiv;
+        }
+      }
+    }
     renderItems({
       items: items,
       listEl: el.cancelList,
@@ -372,6 +410,7 @@
     } catch (_e) {}
     renderedClientIds = new Set();
     renderedCancelIds = new Set();
+    cancelledRowIds = new Set();
     el.monList.innerHTML =
       '<div class="alarm-head"><span>ID</span><span>等级</span><span>告警内容</span><span style="text-align:right">创建时间</span></div>' +
       '<div id="monListEmpty" style="padding:14px;color:#64748b;font-size:12px;text-align:center">暂无新告警</div>';
@@ -384,8 +423,21 @@
     }
   }
 
+  async function clearAlarmList() {
+    if (!confirm('清空"新告警提示"列表？（只清前端显示和后端缓冲，不影响"告警解除"和数据库）')) return;
+    try {
+      await fetch('/api/sms/monitor/clear?scope=alarms', { method: 'POST' });
+    } catch (_e) {}
+    renderedClientIds = new Set();
+    el.monList.innerHTML =
+      '<div class="alarm-head"><span>ID</span><span>等级</span><span>告警内容</span><span style="text-align:right">创建时间</span></div>' +
+      '<div id="monListEmpty" style="padding:14px;color:#64748b;font-size:12px;text-align:center">暂无新告警</div>';
+    el.monListEmpty = $('monListEmpty');
+  }
+
   el.btnMonSave.addEventListener('click', saveConfig);
   el.btnMonClear.addEventListener('click', clearList);
+  el.btnClearAlarmList && el.btnClearAlarmList.addEventListener('click', clearAlarmList);
 
   loadConfig();
   pollRecent();

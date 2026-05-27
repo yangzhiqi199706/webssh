@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Web SSH · 登录</title>
+  <script>
+    // 与主页一致的主题预设：避免登录页深色而主页浅色（或反过来）造成的闪烁
+    (function () {
+      try {
+        var raw = localStorage.getItem('webssh.settings.v1');
+        var t = 'dark';
+        if (raw) {
+          var obj = JSON.parse(raw);
+          if (obj && obj.theme === 'light') t = 'light';
+        }
+        document.documentElement.dataset.theme = t;
+      } catch (_) {}
+    })();
+  </script>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #020617;
+      --panel: #0f172a;
+      --border: #1f2937;
+      --text: #e5e7eb;
+      --muted: #94a3b8;
+      --cyan: #22d3ee;
+      --shadow: 0 24px 80px rgba(2, 6, 23, .6);
+    }
+    :root[data-theme="light"] {
+      color-scheme: light;
+      --bg: #f1f5f9;
+      --panel: #ffffff;
+      --border: #e2e8f0;
+      --text: #0f172a;
+      --muted: #64748b;
+      --cyan: #0891b2;
+      --shadow: 0 12px 48px rgba(15, 23, 42, .12);
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .card {
+      width: min(420px, 100%);
+      background: var(--panel);
+      border: 1px solid #334155;
+      border-radius: 20px;
+      box-shadow: var(--shadow);
+      padding: 28px 28px 24px;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 22px;
+    }
+    .brand-mark {
+      width: 44px; height: 44px;
+      border-radius: 12px;
+      background: linear-gradient(135deg, rgba(34, 211, 238, .25), rgba(34, 211, 238, .08));
+      border: 1px solid rgba(34, 211, 238, .35);
+      color: #67e8f9;
+      display: grid; place-items: center;
+      font-weight: 800; letter-spacing: .04em;
+    }
+    .title { font-size: 17px; font-weight: 600; }
+    .subtitle { font-size: 12px; color: var(--muted); margin-top: 2px; }
+    form { display: grid; gap: 14px; }
+    .field { display: grid; gap: 7px; font-size: 13px; }
+    .field label { color: var(--muted); }
+    .field input {
+      border-radius: 12px;
+      border: 1px solid #334155;
+      background: #020617;
+      color: var(--text);
+      padding: 11px 12px;
+      outline: none;
+      font: inherit;
+    }
+    .field input:focus { border-color: rgba(34, 211, 238, .6); box-shadow: 0 0 0 3px rgba(34, 211, 238, .12); }
+    .hint { font-size: 12px; color: var(--muted); }
+    .btn {
+      border-radius: 12px;
+      border: 1px solid rgba(34, 211, 238, .45);
+      background: rgba(34, 211, 238, .12);
+      color: #cffafe;
+      padding: 12px 14px;
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+      transition: .18s ease;
+    }
+    .btn:hover { background: rgba(34, 211, 238, .22); }
+    .btn:disabled { opacity: .55; cursor: not-allowed; }
+    .err {
+      display: none;
+      font-size: 12px;
+      padding: 8px 10px;
+      border-radius: 10px;
+      background: rgba(248, 113, 113, .12);
+      border: 1px solid rgba(248, 113, 113, .35);
+      color: #fca5a5;
+    }
+    .err.show { display: block; }
+    /* 浅色主题覆盖 */
+    :root[data-theme="light"] .card { border-color: #e2e8f0; }
+    :root[data-theme="light"] .field input { background: #ffffff; border-color: #cbd5e1; }
+    :root[data-theme="light"] .field input:focus { border-color: rgba(8,145,178,.6); box-shadow: 0 0 0 3px rgba(8,145,178,.12); }
+    :root[data-theme="light"] .brand-mark { background: linear-gradient(135deg, rgba(8,145,178,.18), rgba(8,145,178,.06)); border-color: rgba(8,145,178,.35); color: #155e75; }
+    :root[data-theme="light"] .btn { border-color: rgba(8,145,178,.45); background: rgba(8,145,178,.12); color: #155e75; }
+    :root[data-theme="light"] .btn:hover { background: rgba(8,145,178,.22); }
+    :root[data-theme="light"] .err { background: rgba(220,38,38,.08); border-color: rgba(220,38,38,.32); color: #b91c1c; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="brand">
+      <div class="brand-mark">SSH</div>
+      <div>
+        <div class="title">Web SSH 登录</div>
+        <div class="subtitle">请输入用户名和密码</div>
+      </div>
+    </div>
+    <form id="loginForm" autocomplete="off">
+      <div class="field">
+        <label for="user">用户名</label>
+        <input id="user" type="text" value="admin" required />
+      </div>
+      <div class="field">
+        <label for="password">密码</label>
+        <input id="password" type="password" required autofocus />
+      </div>
+      <div class="field">
+        <label for="timeoutHours">本次登录超时时间（小时）</label>
+        <input id="timeoutHours" type="number" min="1" max="720" step="1" value="12" required />
+      </div>
+      <div class="err" id="err"></div>
+      <button class="btn" type="submit" id="submitBtn">登 录</button>
+    </form>
+  </div>
+
+  <script>
+    const form = document.getElementById('loginForm');
+    const errBox = document.getElementById('err');
+    const btn = document.getElementById('submitBtn');
+
+    function showErr(msg) {
+      errBox.textContent = msg || '登录失败';
+      errBox.classList.add('show');
+    }
+    function hideErr() {
+      errBox.classList.remove('show');
+    }
+
+    form.addEventListener('submit', async function (e) {
+      e.preventDefault();
+      hideErr();
+      btn.disabled = true;
+      btn.textContent = '登录中…';
+      const user = document.getElementById('user').value.trim();
+      const password = document.getElementById('password').value;
+      const timeoutHours = Number(document.getElementById('timeoutHours').value) || 12;
+      try {
+        const resp = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user: user, password: password, timeoutHours: timeoutHours }),
+        });
+        const data = await resp.json().catch(function () { return {}; });
+        if (!resp.ok || !data.ok) {
+          showErr(data.message || '用户名或密码错误');
+          btn.disabled = false;
+          btn.textContent = '登 录';
+          return;
+        }
+        // 后端已设置 HttpOnly cookie，浏览器自动带上；这里只把超时信息存到 localStorage，
+        // 主页用它做"到期前自动跳转"提示，不参与安全校验。
+        // expireAt 基于客户端本地时间计算，避免服务器/客户端时差导致主页加载时
+        // 误判为已过期立即跳回登录（典型现象：登录闪一下又回到登录页）。
+        try {
+          const hours = Number(data.timeoutHours) || timeoutHours || 12;
+          localStorage.setItem('webssh.auth', JSON.stringify({
+            expireAt: Date.now() + hours * 3600 * 1000,
+            timeoutHours: hours,
+          }));
+        } catch (_) {}
+        location.replace('/');
+      } catch (err) {
+        showErr('网络错误：' + err.message);
+        btn.disabled = false;
+        btn.textContent = '登 录';
+      }
+    });
+  </script>
+</body>
+</html>

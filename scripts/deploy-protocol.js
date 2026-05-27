@@ -141,6 +141,7 @@ function buildPackage() {
     fs.mkdirSync(path.join(releaseDir, 'main-sync'));
     fs.copyFileSync(path.join(ROOT, 'server.js'), path.join(releaseDir, 'main-sync', 'server.js'));
     fs.copyFileSync(path.join(ROOT, 'index.html'), path.join(releaseDir, 'main-sync', 'index.html'));
+    fs.copyFileSync(path.join(ROOT, 'login.html'), path.join(releaseDir, 'main-sync', 'login.html'));
     fs.copyFileSync(path.join(ROOT, 'package.json'), path.join(releaseDir, 'main-sync', 'package.json'));
     fs.copyFileSync(path.join(ROOT, 'package-lock.json'), path.join(releaseDir, 'main-sync', 'package-lock.json'));
     // http-proxy 整个模块（连同它的依赖）
@@ -328,6 +329,7 @@ async function main() {
       await exec(conn, `cp -a ${INSTALL_DIR}/app/index.html ${INSTALL_DIR}/app/index.html.bak-${stamp}`);
       await exec(conn, `cp -f ${mainSync}/server.js ${INSTALL_DIR}/app/server.js`);
       await exec(conn, `cp -f ${mainSync}/index.html ${INSTALL_DIR}/app/index.html`);
+      await exec(conn, `cp -f ${mainSync}/login.html ${INSTALL_DIR}/app/login.html`);
       await exec(conn, `cp -f ${mainSync}/package.json ${INSTALL_DIR}/app/package.json`);
       await exec(conn, `cp -f ${mainSync}/package-lock.json ${INSTALL_DIR}/app/package-lock.json`);
       // 拷 http-proxy + 它的依赖到 app/node_modules
