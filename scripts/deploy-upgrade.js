@@ -38,6 +38,7 @@ if (!PASSWORD) {
 const PAYLOAD_ENTRIES = [
   'server.js',
   'index.html',
+  'login.html',
   'package.json',
   'package-lock.json',
   'serial',

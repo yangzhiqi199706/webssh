@@ -5,6 +5,20 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Web SSH</title>
   <link rel="stylesheet" href="./node_modules/codemirror/lib/codemirror.css" />
+  <script>
+    // 在样式表加载前根据 localStorage 提前写入 data-theme，避免深色 → 浅色切换的闪烁
+    (function () {
+      try {
+        var raw = localStorage.getItem('webssh.settings.v1');
+        var t = 'dark';
+        if (raw) {
+          var obj = JSON.parse(raw);
+          if (obj && obj.theme === 'light') t = 'light';
+        }
+        document.documentElement.dataset.theme = t;
+      } catch (_) {}
+    })();
+  </script>
   <style>
     :root {
       color-scheme: dark;
@@ -12,22 +26,73 @@
       --panel: #0f172a;
       --panel-2: #111827;
       --border: #1f2937;
+      --border-strong: #334155;
+      --border-stronger: #475569;
       --text: #e5e7eb;
+      --text-strong: #e2e8f0;
+      --text-soft: #cbd5e1;
       --muted: #94a3b8;
       --cyan: #22d3ee;
       --cyan-2: rgba(34, 211, 238, .14);
+      --cyan-soft: #cffafe;
+      --cyan-soft-2: #67e8f9;
       --green: #34d399;
+      --green-soft: #86efac;
       --amber: #fbbf24;
+      --amber-soft: #fcd34d;
+      --input-bg: #020617;
+      --input-bg-2: #0b1220;
+      --btn-primary: #06b6d4;
+      --btn-primary-hover: #22d3ee;
+      --btn-primary-text: #082f49;
+      --btn-disabled-bg: #0e7490;
+      --topbar-bg: rgba(2, 6, 23, .9);
+      --footer-bg: rgba(2, 6, 23, .95);
+      --menu-bar-bg: rgba(2, 6, 23, .95);
+      --bg-glow: radial-gradient(1200px 600px at 20% 0%, rgba(34, 211, 238, .08), transparent 45%);
       --shadow: 0 24px 80px rgba(2, 6, 23, .6);
       --term-font-size: 13px;
       --term-line-height: 1.7;
       --content-pad: 16px;
     }
+    /* 浅色主题：覆盖关键 token；硬编码深色处会通过下面 [data-theme="light"] 选择器再次覆盖 */
+    :root[data-theme="light"] {
+      color-scheme: light;
+      --bg: #f1f5f9;
+      --panel: #ffffff;
+      --panel-2: #f8fafc;
+      --border: #e2e8f0;
+      --border-strong: #cbd5e1;
+      --border-stronger: #94a3b8;
+      --text: #0f172a;
+      --text-strong: #111827;
+      --text-soft: #334155;
+      --muted: #64748b;
+      --cyan: #0891b2;
+      --cyan-2: rgba(8, 145, 178, .12);
+      --cyan-soft: #155e75;
+      --cyan-soft-2: #0e7490;
+      --green: #059669;
+      --green-soft: #047857;
+      --amber: #d97706;
+      --amber-soft: #b45309;
+      --input-bg: #ffffff;
+      --input-bg-2: #f8fafc;
+      --btn-primary: #0891b2;
+      --btn-primary-hover: #0e7490;
+      --btn-primary-text: #ffffff;
+      --btn-disabled-bg: #cbd5e1;
+      --topbar-bg: rgba(255, 255, 255, .92);
+      --footer-bg: rgba(255, 255, 255, .92);
+      --menu-bar-bg: rgba(255, 255, 255, .96);
+      --bg-glow: radial-gradient(1200px 600px at 20% 0%, rgba(8, 145, 178, .08), transparent 45%);
+      --shadow: 0 12px 48px rgba(15, 23, 42, .12);
+    }
     * { box-sizing: border-box; }
     html, body { height: 100%; }
     body {
       margin: 0;
-      background: radial-gradient(1200px 600px at 20% 0%, rgba(34, 211, 238, .08), transparent 45%), var(--bg);
+      background: var(--bg-glow), var(--bg);
       color: var(--text);
       font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
@@ -142,6 +207,22 @@
     .btn:hover { border-color: #475569; background: #111827; }
     .btn.primary { background: #06b6d4; color: #082f49; border-color: transparent; font-weight: 700; }
     .btn.primary:hover { background: #22d3ee; }
+    /* 禁用态：让用户一眼看出来按钮不可点，并通过 title 提示原因 */
+    .btn:disabled,
+    .btn[disabled] {
+      opacity: .55;
+      cursor: not-allowed;
+      filter: grayscale(.25);
+    }
+    .btn.primary:disabled,
+    .btn.primary[disabled] {
+      background: #0e7490;
+      color: #cbd5e1;
+    }
+    .btn:disabled:hover,
+    .btn[disabled]:hover { border-color: #334155; background: #0b1220; }
+    .btn.primary:disabled:hover,
+    .btn.primary[disabled]:hover { background: #0e7490; }
     #openSettings { display: inline-flex; align-items: center; gap: 8px; }
     .top-dot { width: 8px; height: 8px; border-radius: 50%; background: #64748b; flex-shrink: 0; }
     .top-dot.on { background: var(--green); box-shadow: 0 0 0 3px rgba(52, 211, 153, .18); }
@@ -570,6 +651,77 @@
       border: 0;
       display: block;
     }
+
+    /* ===== 浅色主题集中覆盖：把硬编码的深色值在 light 模式下重写一遍 ===== */
+    :root[data-theme="light"] .menu-bar { background: var(--menu-bar-bg); }
+    :root[data-theme="light"] .menu-item:hover { background: var(--panel-2); border-color: var(--border-strong); color: var(--text); }
+    :root[data-theme="light"] .menu-item.active { background: var(--cyan-2); border-color: rgba(8,145,178,.35); color: var(--cyan-soft); }
+    :root[data-theme="light"] .menu-icon { background: rgba(15,23,42,.06); color: var(--text-soft); }
+    :root[data-theme="light"] .menu-item.active .menu-icon { background: rgba(8,145,178,.18); color: var(--cyan-soft); }
+    :root[data-theme="light"] .topbar { background: var(--topbar-bg); border-bottom: 1px solid var(--border); }
+    :root[data-theme="light"] .footer { background: var(--footer-bg); border-top: 1px solid var(--border); }
+    :root[data-theme="light"] .badge { background: var(--cyan-2); color: var(--cyan-soft); }
+    :root[data-theme="light"] .btn { border-color: var(--border-strong); background: var(--input-bg); color: var(--text); }
+    :root[data-theme="light"] .btn:hover { border-color: var(--border-stronger); background: var(--panel-2); }
+    :root[data-theme="light"] .btn.primary { background: var(--btn-primary); color: var(--btn-primary-text); border-color: transparent; }
+    :root[data-theme="light"] .btn.primary:hover { background: var(--btn-primary-hover); }
+    :root[data-theme="light"] .btn[disabled], :root[data-theme="light"] .btn.primary[disabled] { background: var(--btn-disabled-bg); color: #ffffff; border-color: transparent; }
+    :root[data-theme="light"] .btn[disabled]:hover { background: var(--btn-disabled-bg); border-color: transparent; }
+    :root[data-theme="light"] .btn.primary[disabled]:hover { background: var(--btn-disabled-bg); }
+    :root[data-theme="light"] .top-dot { background: var(--muted); }
+    :root[data-theme="light"] .section-title { color: var(--text-strong); }
+    :root[data-theme="light"] .host-item, :root[data-theme="light"] .session-item { background: var(--panel); border-color: var(--border); }
+    :root[data-theme="light"] .host-item:hover, :root[data-theme="light"] .session-item:hover { background: var(--panel-2); border-color: var(--border-strong); }
+    :root[data-theme="light"] .host-item.active { background: var(--cyan-2); border-color: rgba(8,145,178,.35); }
+    :root[data-theme="light"] .host-status { color: var(--text-soft); background: var(--panel-2); }
+    :root[data-theme="light"] .host-status.current { background: var(--cyan-2); color: var(--cyan-soft); }
+    :root[data-theme="light"] .host-status.offline { background: rgba(217,119,6,.14); color: var(--amber-soft); }
+    :root[data-theme="light"] .tab { color: var(--muted); }
+    :root[data-theme="light"] .tab.active { background: var(--panel-2); color: var(--text-strong); }
+    :root[data-theme="light"] .terminal-card, :root[data-theme="light"] .card { background: var(--panel); border-color: var(--border); }
+    :root[data-theme="light"] .terminal { background: var(--panel-2); color: var(--text-soft); }
+    :root[data-theme="light"] .line.system { color: var(--green-soft); }
+    :root[data-theme="light"] .line.command { color: var(--muted); }
+    :root[data-theme="light"] .line.output, :root[data-theme="light"] .prompt-line, :root[data-theme="light"] .prompt { color: var(--text-soft); }
+    :root[data-theme="light"] .cmd-prefix { color: var(--muted); }
+    :root[data-theme="light"] .cmd-input { border-color: var(--border-strong); background: var(--input-bg); color: var(--text); }
+    :root[data-theme="light"] .inputbar { background: var(--panel-2); }
+    :root[data-theme="light"] .side-tab { border-color: var(--border-strong); background: var(--input-bg); color: var(--text-soft); }
+    :root[data-theme="light"] .side-tab.active { background: var(--cyan-2); border-color: rgba(8,145,178,.35); color: var(--cyan-soft); }
+    :root[data-theme="light"] .shortcut { background: var(--input-bg); border-color: var(--border-strong); color: var(--text-soft); }
+    :root[data-theme="light"] .shortcut:hover { border-color: var(--border-stronger); background: var(--panel-2); }
+    :root[data-theme="light"] .shortcut.exec { color: var(--cyan-soft); border-color: rgba(8,145,178,.45); }
+    :root[data-theme="light"] .shortcut-group-header { color: var(--text-strong); }
+    :root[data-theme="light"] .shortcut-group-header .chev,
+    :root[data-theme="light"] .shortcut-group-count { color: var(--muted); }
+    :root[data-theme="light"] .file-row { background: var(--panel-2); border-color: var(--border); }
+    :root[data-theme="light"] .file-row:hover { border-color: var(--border-strong); background: var(--panel); }
+    :root[data-theme="light"] .file-kind.dir { background: var(--cyan-2); color: var(--cyan-soft); }
+    :root[data-theme="light"] .file-kind.file { background: rgba(15,23,42,.06); color: var(--text-soft); }
+    :root[data-theme="light"] .file-kind.link { background: rgba(217,119,6,.14); color: var(--amber-soft); }
+    :root[data-theme="light"] .editor-modal, :root[data-theme="light"] .modal { background: var(--panel); border-color: var(--border-strong); }
+    :root[data-theme="light"] .field input, :root[data-theme="light"] .field select { background: var(--input-bg); border-color: var(--border-strong); color: var(--text); }
+    :root[data-theme="light"] .file-status { color: var(--cyan-soft); }
+    :root[data-theme="light"] .settings-tabs { background: var(--panel-2); }
+    :root[data-theme="light"] .settings-tab:hover { background: var(--panel); color: var(--text); }
+    :root[data-theme="light"] .settings-tab.active { background: var(--cyan-2); color: var(--cyan-soft); }
+    :root[data-theme="light"] .settings-section-title { color: var(--text-strong); }
+    :root[data-theme="light"] .settings-card { background: var(--panel); border-color: var(--border); }
+    :root[data-theme="light"] .settings-placeholder { background: var(--panel-2); border-color: var(--border); }
+    :root[data-theme="light"] .settings-placeholder h4,
+    :root[data-theme="light"] .about-grid .v { color: var(--text-strong); }
+    :root[data-theme="light"] .settings-placeholder .soon { color: var(--amber-soft); background: rgba(217,119,6,.14); }
+    :root[data-theme="light"] .serial-view { background: var(--panel-2); }
+    :root[data-theme="light"] .main { background: var(--panel); }
+    /* 覆盖内联 style 写死的深色块（设置面板里两处） */
+    :root[data-theme="light"] [style*="background:#0b1220"],
+    :root[data-theme="light"] [style*="background: #0b1220"] { background: var(--panel-2) !important; color: var(--text-soft) !important; }
+    :root[data-theme="light"] [style*="color:#e2e8f0"],
+    :root[data-theme="light"] [style*="color: #e2e8f0"] { color: var(--text-strong) !important; }
+    :root[data-theme="light"] [style*="color:#cbd5e1"],
+    :root[data-theme="light"] [style*="color: #cbd5e1"] { color: var(--text-soft) !important; }
+    :root[data-theme="light"] [style*="border:1px solid #1f2937"],
+    :root[data-theme="light"] [style*="border: 1px solid #1f2937"] { border-color: var(--border) !important; }
   </style>
 </head>
 <body>
@@ -591,6 +743,7 @@
           <span id="drTopState" class="top-sub"></span>
         </button>
         <button class="btn" id="openSettings" title="设置">设置</button>
+        <button class="btn" id="logoutBtn" title="退出登录">退出</button>
       </div>
     </header>
 
@@ -628,7 +781,7 @@
               <div class="terminal-head">
                 <div>
                   <div class="head-title">终端</div>
-                  <div class="head-sub" id="terminalSub">prod-01 · 192.168.1.10:22</div>
+                  <div class="head-sub" id="terminalSub">未选择主机</div>
                 </div>
                 <div class="actions">
                   <button class="btn tiny" id="clearBtn">清屏</button>
@@ -670,7 +823,7 @@
     </div>
 
     <footer class="footer">
-      <div id="footerHost">当前会话：prod-01</div>
+      <div id="footerHost">当前会话：未选择主机</div>
       <div>SSH 终端与文件管理共用同一条连接</div>
     </footer>
   </div>
@@ -716,7 +869,9 @@
         </div>
         <label class="field" id="passwordField"><span>Password</span><input id="mPassword" type="password" placeholder="密码登录时填写" /></label>
         <label class="field" id="keyField"><span>Private Key Path</span><input id="mKeyPath" placeholder="例如 C:\\keys\\id_rsa" /></label>
+        <label class="field"><span>连接时长（小时，超时自动断开）</span><input id="mConnectionHours" type="number" min="0" max="720" step="1" value="4" /></label>
         <div style="display:flex;justify-content:flex-end;gap:10px;padding-top:4px">
+          <button class="btn" id="rememberModal" type="button" title="本次连接成功后，将该主机持久化到本地，下次直接出现在主机列表里">记住连接</button>
           <button class="btn primary" id="saveModal" type="button">保存连接</button>
         </div>
       </div>
@@ -742,12 +897,21 @@
             <div class="settings-card">
               <div class="grid2">
                 <label class="field">
+                  <span>主题</span>
+                  <select id="optTheme">
+                    <option value="dark">深色</option>
+                    <option value="light">浅色</option>
+                  </select>
+                </label>
+                <label class="field">
                   <span>左侧菜单栏显示</span>
                   <select id="optMenuMode">
                     <option value="full">图标 + 文字</option>
                     <option value="icon">仅图标</option>
                   </select>
                 </label>
+              </div>
+              <div class="grid2" style="margin-top:10px">
                 <label class="field">
                   <span>侧边栏（主机列表）</span>
                   <select id="optSidebarCollapsed">
@@ -755,8 +919,6 @@
                     <option value="1">收起</option>
                   </select>
                 </label>
-              </div>
-              <div class="grid2" style="margin-top:10px">
                 <label class="field">
                   <span>界面密度</span>
                   <select id="optDensity">
@@ -768,8 +930,8 @@
               </div>
             </div>
             <div class="settings-placeholder" style="margin-top:14px">
-              <h4>规划中 <span class="soon">Soon</span></h4>
-              <ul><li>深色 / 浅色主题切换</li></ul>
+              <h4>提示</h4>
+              <ul><li>主题切换不影响串口/短信猫/协议助手等子页（这些子页有自己的样式）</li></ul>
             </div>
           </section>
 
@@ -1031,7 +1193,7 @@
                 <pre id="updateLog" style="font-size:12px;color:#94a3b8;padding:8px 10px;background:#0b1220;border:1px solid #1f2937;border-radius:10px;min-height:60px;max-height:240px;overflow:auto;white-space:pre-wrap;word-break:break-all;margin:0">无</pre>
               </div>
               <div style="display:flex;justify-content:flex-end;gap:10px;padding-top:10px;flex-wrap:wrap">
-                <button class="btn primary" id="updateApplyBtn" type="button" disabled>上传并覆盖更新</button>
+                <button class="btn primary" id="updateApplyBtn" type="button" disabled title="请先在主界面连接一台 SSH 主机">上传并覆盖更新</button>
               </div>
             </div>
             <div class="settings-placeholder" style="margin-top:14px">
@@ -1074,10 +1236,46 @@
   <script src="./node_modules/codemirror/mode/shell/shell.js"></script>
   <script src="./node_modules/codemirror/mode/python/python.js"></script>
   <script>
+    // ===== 登录会话守护 =====
+    // cookie 由 /login 页面写入，后端只看 cookie 是否在内存白名单里。
+    // localStorage 里同时存了 expireAt，用来在前端做到期跳转 + 倒计时提示，
+    // 不依赖它做安全校验（被改也只是提前跳走，无法越权）。
+    (function setupAuthGuard() {
+      let authInfo = null;
+      try { authInfo = JSON.parse(localStorage.getItem('webssh.auth') || 'null'); } catch (_) {}
+      function gotoLogin() {
+        try { localStorage.removeItem('webssh.auth'); } catch (_) {}
+        // cookie 是 HttpOnly，前端清不掉，只能靠 /api/auth/logout 让服务端清
+        location.replace('/login');
+      }
+      // 启动时复核一次 token 是否仍有效（这是唯一的权威判断，cookie 过期由后端控制）
+      fetch('/api/auth/check', { credentials: 'same-origin' })
+        .then(function (r) { return r.json(); })
+        .then(function (data) { if (!data || !data.ok) gotoLogin(); })
+        .catch(function () {});
+      // 到期自动跳回登录：只用本地 expireAt 做"将来某时刻自动跳转"的定时器，
+      // 不在加载时立刻判定 remain<=0 就跳。否则一旦 localStorage 里残留旧版（服务器时间）
+      // 的 expireAt、或服务器/客户端时差较大，就会出现"登录闪一下又回登录页"。
+      if (authInfo && authInfo.expireAt) {
+        const remain = Number(authInfo.expireAt) - Date.now();
+        if (remain > 0) setTimeout(gotoLogin, Math.min(remain, 2147483000));
+      }
+      // 暴露给 UI 用
+      window.__websshAuth = {
+        info: authInfo,
+        logout: function () {
+          fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' })
+            .catch(function () {})
+            .finally(gotoLogin);
+        },
+      };
+    })();
+
     // ===== 用户偏好设置（localStorage 持久化） =====
     const SETTINGS_KEY = 'webssh.settings.v1';
     const settingsDefaults = {
       // 外观
+      theme: 'dark',             // dark / light
       menuMode: 'full',          // full=图标+文字, icon=仅图标
       sidebarCollapsed: false,
       density: 'normal',         // compact / normal / loose
@@ -1134,6 +1332,9 @@
 
     function applySettings() {
       const root = document.documentElement;
+      // 主题：dark / light，写到 <html data-theme>，CSS 用 :root[data-theme="light"] 覆盖深色变量
+      const theme = userSettings.theme === 'light' ? 'light' : 'dark';
+      root.dataset.theme = theme;
       // 终端字号、行高
       root.style.setProperty('--term-font-size', userSettings.terminalFontSize + 'px');
       root.style.setProperty('--term-line-height', String(userSettings.terminalLineHeight));
@@ -1146,16 +1347,114 @@
       document.body.classList.toggle('sidebar-collapsed', !!userSettings.sidebarCollapsed);
     }
 
-    const hosts = [
-      { id: 'prod-01', name: 'prod-01', host: '192.168.1.10', port: '22', user: 'root', auth: 'Key', password: '', keyPath: '', status: '当前', active: true },
-      { id: 'dev-02', name: 'dev-02', host: '192.168.1.21', port: '22', user: 'ubuntu', auth: 'Password', password: '', keyPath: '', status: '空闲', active: false },
-      { id: 'test-03', name: 'test-03', host: '10.0.0.8', port: '22', user: 'admin', auth: 'Key', password: '', keyPath: '', status: '断开', active: false },
-    ];
+    // 主机列表初始为空，靠"新建连接 / 记住连接"动态扩充
+    const hosts = [];
+    // 占位主机：当 hosts 为空时给 state.currentHost 一个不会让 UI 崩的兜底对象
+    // 这条不会被推入 hosts 数组、也不会渲染到列表里，仅供 state 引用
+    const PLACEHOLDER_HOST = {
+      id: '__placeholder__',
+      name: '未选择主机',
+      host: '',
+      port: '22',
+      user: 'root',
+      auth: 'Password',
+      password: '',
+      keyPath: '',
+      status: '未连接',
+      active: false,
+    };
 
-    const sessions = [
-      { name: 'prod-01 / shell', time: '2m 前', last: 'docker ps' },
-      { name: 'dev-02 / shell', time: '15m 前', last: 'top' },
-    ];
+    // ===== "记住连接" 持久化主机列表 =====
+    // 写入时机：用户点了"记住连接" → 连接成功事件触发后写入；连接失败/关闭则丢弃。
+    // 用 host:port:user 做唯一键，重复"记住"会覆盖密码与密钥路径。
+    const SAVED_HOSTS_KEY = 'webssh.savedHosts.v1';
+    const LAST_ACTIVE_KEY = 'webssh.lastActiveHost.v1'; // 上次活动主机 key，用于刷新后恢复
+    function savedHostKey(c) {
+      return [c.host || '', c.port || '', c.user || ''].join('|').toLowerCase();
+    }
+    function loadSavedHosts() {
+      try {
+        const raw = localStorage.getItem(SAVED_HOSTS_KEY);
+        if (!raw) return [];
+        const arr = JSON.parse(raw);
+        return Array.isArray(arr) ? arr : [];
+      } catch { return []; }
+    }
+    function persistSavedHosts(list) {
+      try { localStorage.setItem(SAVED_HOSTS_KEY, JSON.stringify(list)); } catch {}
+    }
+    function persistLastActive(key) {
+      try { localStorage.setItem(LAST_ACTIVE_KEY, key || ''); } catch {}
+    }
+    function loadLastActive() {
+      try { return localStorage.getItem(LAST_ACTIVE_KEY) || ''; } catch { return ''; }
+    }
+    function upsertSavedHost(conn) {
+      const list = loadSavedHosts();
+      const key = savedHostKey(conn);
+      const item = {
+        id: 'saved-' + key.replace(/\|/g, '-').replace(/[^a-z0-9._-]+/gi, '_'),
+        name: (conn.user || 'user') + '@' + (conn.host || ''),
+        host: conn.host || '',
+        port: String(conn.port || '22'),
+        user: conn.user || '',
+        auth: conn.auth || 'Password',
+        password: conn.password || '',
+        keyPath: conn.keyPath || '',
+        connectionHours: Number(conn.connectionHours) || 4,
+        savedAt: Date.now(),
+      };
+      const idx = list.findIndex((h) => savedHostKey(h) === key);
+      if (idx >= 0) list[idx] = Object.assign({}, list[idx], item);
+      else list.push(item);
+      persistSavedHosts(list);
+      return item;
+    }
+    function hydrateSavedHostsIntoMain() {
+      const saved = loadSavedHosts();
+      if (!saved.length) return;
+      const exist = new Set(hosts.map((h) => savedHostKey(h)));
+      saved.forEach((s) => {
+        const key = savedHostKey(s);
+        if (exist.has(key)) return;
+        hosts.push({
+          id: s.id,
+          name: s.name || (s.user + '@' + s.host),
+          host: s.host,
+          port: String(s.port || '22'),
+          user: s.user,
+          auth: s.auth || 'Password',
+          password: s.password || '',
+          keyPath: s.keyPath || '',
+          connectionHours: Number(s.connectionHours) || 4,
+          status: '空闲',
+          active: false,
+          saved: true,
+        });
+        exist.add(key);
+      });
+    }
+    hydrateSavedHostsIntoMain();
+
+    // 刷新后恢复"上次活动的主机"为默认 currentHost；找不到就用占位主机
+    function pickInitialHost() {
+      if (!hosts.length) return PLACEHOLDER_HOST;
+      const lastKey = loadLastActive();
+      if (lastKey) {
+        const found = hosts.find((h) => savedHostKey(h) === lastKey);
+        if (found) {
+          hosts.forEach((h) => { h.active = (h === found); });
+          // 不强标"当前"——connectWs 成功后会再标一次
+          if (found.status !== '断开') found.status = '当前';
+          return found;
+        }
+      }
+      hosts[0].active = true;
+      return hosts[0];
+    }
+    const initialHost = pickInitialHost();
+
+    const sessions = [];
 
     // 快捷指令分组：查看类一键执行；dcim 操作需二次确认；清理类风险高，需强确认
     const shortcutGroups = [
@@ -1201,15 +1500,16 @@
     const shortcuts = shortcutGroups.flatMap((g) => g.items);
 
     const state = {
-      currentHost: hosts[0],
+      currentHost: initialHost,
       status: '未连接',
-      connection: cloneConnection(hosts[0]),
+      connection: cloneConnection(initialHost),
       lines: [{ kind: 'system', text: '正在等待 SSH 连接...' }],
       input: '',
       cursor: 0,
       history: [],
       historyIndex: -1,
       modalOpen: false,
+      pendingRemember: false,   // 用户点了"记住连接"按钮时为 true，连接成功后写入持久化并复位
       ws: null,
       connected: false,
       sidePanel: 'shortcuts',
@@ -1243,6 +1543,8 @@
     };
 
     let codeEditor = null;
+    // SFTP 初始化在途守卫：防止重复发起 sftp:init，并在更新页 / 文件管理之间共享状态
+    let sftpInitInflight = false;
 
     const commandMap = {
       'ls -lah': [
@@ -1314,6 +1616,7 @@
       updateApplyBtn: document.getElementById('updateApplyBtn'),
       closeModal: document.getElementById('closeModal'),
       saveModal: document.getElementById('saveModal'),
+      rememberModal: document.getElementById('rememberModal'),
       clearBtn: document.getElementById('clearBtn'),
       copyBtn: document.getElementById('copyBtn'),
       reconnectBtn: document.getElementById('reconnectBtn'),
@@ -1322,6 +1625,7 @@
       mAuth: document.getElementById('mAuth'),
       mPassword: document.getElementById('mPassword'),
       mKeyPath: document.getElementById('mKeyPath'),
+      mConnectionHours: document.getElementById('mConnectionHours'),
       mHost: document.getElementById('mHost'),
       mPort: document.getElementById('mPort'),
       mUser: document.getElementById('mUser'),
@@ -1359,6 +1663,7 @@
         auth: host.auth || 'Key',
         password: host.password || '',
         keyPath: host.keyPath || '',
+        connectionHours: Number(host.connectionHours) || 4,
       };
     }
 
@@ -1559,6 +1864,18 @@
     }
 
     function renderHosts() {
+      if (!hosts.length) {
+        el.hostList.innerHTML = `
+          <div class="host-meta" style="padding:14px 12px;line-height:1.6">
+            还没有主机，点击右上角
+            <span style="color:#67e8f9">「新建连接」</span>
+            填写并连接，成功后再点
+            <span style="color:#67e8f9">「记住连接」</span>
+            可保存到此列表
+          </div>
+        `;
+        return;
+      }
       el.hostList.innerHTML = hosts.map((host) => `
         <button class="host-item ${host.active ? 'active' : ''}" data-host="${host.id}">
           <div class="host-row">
@@ -1573,6 +1890,12 @@
     }
 
     function renderSessions() {
+      if (!sessions.length) {
+        el.sessionList.innerHTML = `
+          <div class="host-meta" style="padding:10px 12px;line-height:1.6">暂无会话历史</div>
+        `;
+        return;
+      }
       el.sessionList.innerHTML = sessions.map((session) => `
         <div class="session-item">
           <div class="host-row">
@@ -1832,13 +2155,39 @@
       state.currentHost.status = status;
     }
 
+    function makeHostFromConnection(conn) {
+      const key = savedHostKey(conn);
+      return {
+        id: 'host-' + key.replace(/\|/g, '-').replace(/[^a-z0-9._-]+/gi, '_') + '-' + Date.now().toString(36),
+        name: (conn.user || 'user') + '@' + (conn.host || ''),
+        host: conn.host || '',
+        port: String(conn.port || '22'),
+        user: conn.user || '',
+        auth: conn.auth || 'Password',
+        password: conn.password || '',
+        keyPath: conn.keyPath || '',
+        status: '当前',
+        active: true,
+      };
+    }
+
     function applyConnectionToCurrentHost() {
+      // 占位主机：创建一条真实主机条目加入 hosts，并把 currentHost 切过去
+      if (state.currentHost === PLACEHOLDER_HOST || state.currentHost.id === '__placeholder__') {
+        const newHost = makeHostFromConnection(state.connection);
+        newHost.connectionHours = Number(state.connection.connectionHours) || 4;
+        hosts.forEach((h) => { h.active = false; });
+        hosts.push(newHost);
+        state.currentHost = newHost;
+        return;
+      }
       state.currentHost.host = state.connection.host;
       state.currentHost.port = state.connection.port;
       state.currentHost.user = state.connection.user;
       state.currentHost.auth = state.connection.auth;
       state.currentHost.password = state.connection.password || '';
       state.currentHost.keyPath = state.connection.keyPath || '';
+      state.currentHost.connectionHours = Number(state.connection.connectionHours) || 4;
       const activeHost = hosts.find((host) => host.id === state.currentHost.id);
       if (activeHost) {
         activeHost.host = state.connection.host;
@@ -1847,6 +2196,7 @@
         activeHost.auth = state.connection.auth;
         activeHost.password = state.connection.password || '';
         activeHost.keyPath = state.connection.keyPath || '';
+        activeHost.connectionHours = Number(state.connection.connectionHours) || 4;
       }
     }
 
@@ -1916,6 +2266,8 @@
       state.currentHost = host;
       state.connection = cloneConnection(host);
       state.status = host.status === '断开' ? '未连接' : '已连接';
+      // 记住"上次活动主机"，刷新后恢复
+      persistLastActive(savedHostKey(host));
       state.lines.push({ kind: 'system', text: `已切换到 ${host.name}` });
       state.lines.push({ kind: 'output', text: `Connecting to ${host.host} ...` });
       state.input = '';
@@ -1958,6 +2310,7 @@
         el.mAuth.value = state.connection.auth;
         el.mPassword.value = state.connection.password || '';
         el.mKeyPath.value = state.connection.keyPath || '';
+        if (el.mConnectionHours) el.mConnectionHours.value = state.connection.connectionHours || 4;
         syncAuthFields();
       }
     }
@@ -1990,6 +2343,13 @@
       document.querySelectorAll('.settings-section').forEach((node) => {
         node.classList.toggle('active', node.dataset.pane === id);
       });
+      // 切到「更新」分页时主动兜底：已连接但 SFTP 没就绪就触发一次 init
+      if (id === 'update') {
+        if (state.connected && !state.sftpReady) {
+          initSftp(state.fileCwd);
+        }
+        refreshUpdatePane();
+      }
     }
 
     function openSettings(tab) {
@@ -2006,6 +2366,7 @@
 
     function syncSettingsForm() {
       const set = (id, val) => { const n = document.getElementById(id); if (n) n.value = String(val); };
+      set('optTheme', userSettings.theme);
       set('optMenuMode', userSettings.menuMode);
       set('optSidebarCollapsed', userSettings.sidebarCollapsed ? '1' : '0');
       set('optDensity', userSettings.density);
@@ -2026,6 +2387,7 @@
         const n = document.getElementById(id);
         if (n) n.addEventListener(type, () => handler(n.value));
       };
+      on('optTheme', 'change', (v) => saveSettings({ theme: v === 'light' ? 'light' : 'dark' }));
       on('optMenuMode', 'change', (v) => saveSettings({ menuMode: v }));
       on('optSidebarCollapsed', 'change', (v) => saveSettings({ sidebarCollapsed: v === '1' }));
       on('optDensity', 'change', (v) => saveSettings({ density: v }));
@@ -2211,6 +2573,24 @@
       if (el.updateApplyBtn) {
         const ok = !!(state.connected && state.sftpReady) && !!updateSelectedFile && !updateBusy;
         el.updateApplyBtn.disabled = !ok;
+        // 在 disabled 时给一个原因 title，避免再出现「点了没反应」的迷惑
+        let reason = '';
+        if (updateBusy) {
+          reason = '正在上传/解压中，请稍候…';
+        } else if (!state.connected) {
+          reason = '请先在主界面连接一台 SSH 主机';
+        } else if (!state.sftpReady) {
+          reason = '已连接，正在初始化 SFTP，请稍候（通常 1-2 秒）';
+        } else if (!updateSelectedFile) {
+          reason = '请先选择 .tar.gz / .tgz 包';
+        }
+        if (reason) {
+          el.updateApplyBtn.title = reason;
+          el.updateApplyBtn.setAttribute('aria-disabled', 'true');
+        } else {
+          el.updateApplyBtn.title = '上传到目标路径并覆盖远端 src';
+          el.updateApplyBtn.removeAttribute('aria-disabled');
+        }
       }
     }
 
@@ -2324,6 +2704,11 @@
 
     function initSftp(path = state.fileCwd) {
       if (!state.connected) return;
+      // 已就绪就别再发了
+      if (state.sftpReady) return;
+      // 在途请求去重，避免「更新页」「文件管理」「连接回调」三处都触发
+      if (sftpInitInflight) return;
+      sftpInitInflight = true;
       state.pendingFilePath = path;
       const requestId = nextFileRequestId();
       sendWs({ type: 'sftp:init', payload: { requestId } });
@@ -2678,6 +3063,18 @@
         return;
       }
 
+      // 没有有效主机时不发起连接（占位主机 / 空 host）
+      if (!state.connection.host) {
+        state.ws = null;
+        state.connected = false;
+        state.status = '未连接';
+        renderMeta();
+        renderTerminal();
+        renderSidePanel();
+        bindDynamicEvents();
+        return;
+      }
+
       try {
         state.connected = false;
         state.sftpReady = false;
@@ -2703,6 +3100,7 @@
               auth: state.connection.auth,
               password: state.connection.password || '',
               keyPath: state.connection.keyPath || '',
+              connectionHours: Number(state.connection.connectionHours) || 0,
             },
           });
         });
@@ -2724,7 +3122,23 @@
               state.status = '已连接';
               state.connected = true;
               setCurrentHostStatus('当前');
-              if (state.sidePanel === 'files' && !state.sftpReady) {
+              // 连接成功，如果用户点的是"记住连接"，把当前连接信息写入持久化
+              if (state.pendingRemember) {
+                state.pendingRemember = false;
+                try {
+                  const saved = upsertSavedHost(state.connection);
+                  // 记录"上次活动主机"，刷新后恢复
+                  persistLastActive(savedHostKey(saved));
+                  state.lines.push({ kind: 'system', text: `已记住连接 ${saved.name}` });
+                  renderHosts();
+                  renderTabs();
+                } catch (err) {
+                  state.lines.push({ kind: 'system', text: `记住连接失败：${err.message}` });
+                }
+              }
+              // 不论侧边栏在哪个面板，连接一成功就发起 SFTP 初始化
+              // 否则用户从「设置 → 更新」直接进来时，按钮永远是 disabled
+              if (!state.sftpReady) {
                 initSftp(state.fileCwd);
               }
             }
@@ -2732,6 +3146,7 @@
               state.status = '未连接';
               state.connected = false;
               state.sftpReady = false;
+              sftpInitInflight = false;
             }
             renderMeta();
             renderTerminal();
@@ -2753,7 +3168,30 @@
             state.status = '未连接';
             state.connected = false;
             setCurrentHostStatus('断开');
-            state.lines.push({ kind: 'system', text: `连接错误：${msg.payload?.message || '未知错误'}` });
+            const errMsg = msg.payload?.message || '未知错误';
+            state.lines.push({ kind: 'system', text: `连接错误：${errMsg}` });
+            if (state.pendingRemember) {
+              state.pendingRemember = false;
+              state.lines.push({ kind: 'system', text: '连接失败，未保存到主机列表' });
+            }
+            // 连接时长到期：清掉密码（包括 localStorage 里"记住"的那条），
+            // 强制用户在新建连接弹窗里重新输入密码
+            if (msg.payload?.code === 'lifetime_expired') {
+              state.connection.password = '';
+              if (state.currentHost) state.currentHost.password = '';
+              const activeHost = hosts.find((h) => h.id === state.currentHost?.id);
+              if (activeHost) activeHost.password = '';
+              try {
+                const list = loadSavedHosts();
+                const key = savedHostKey(state.connection);
+                const idx = list.findIndex((h) => savedHostKey(h) === key);
+                if (idx >= 0) {
+                  list[idx].password = '';
+                  persistSavedHosts(list);
+                }
+              } catch (_) {}
+              setModal(true);
+            }
             renderMeta();
             renderTerminal();
             renderHosts();
@@ -2764,11 +3202,15 @@
 
           if (msg.type === 'sftp:ready') {
             state.sftpReady = true;
+            sftpInitInflight = false;
             state.fileError = '';
             renderSidePanel();
             bindDynamicEvents();
             refreshUpdatePane();
-            loadFileList(state.pendingFilePath || state.fileCwd || '/');
+            // 仅在侧边栏停留在「文件管理」时才主动拉目录；否则等用户切过去再拉
+            if (state.sidePanel === 'files') {
+              loadFileList(state.pendingFilePath || state.fileCwd || '/');
+            }
             return;
           }
 
@@ -2848,6 +3290,12 @@
           }
 
           if (msg.type === 'sftp:error') {
+            // init 失败也要清掉在途守卫，否则后续永远发不出 sftp:init
+            if (msg.payload?.action === 'init') {
+              sftpInitInflight = false;
+              state.sftpReady = false;
+              refreshUpdatePane();
+            }
             state.fileLoading = false;
             state.uploadPending = false;
             state.downloadPending = false;
@@ -2874,7 +3322,13 @@
         ws.addEventListener('close', () => {
           state.connected = false;
           state.sftpReady = false;
+          sftpInitInflight = false;
           if (state.status === '已连接') state.status = '未连接';
+          if (state.pendingRemember) {
+            // 还没收到 connected 就掉线 → 视为失败，丢弃记住请求
+            state.pendingRemember = false;
+            state.lines.push({ kind: 'system', text: '连接已断开，未保存到主机列表' });
+          }
           renderMeta();
           renderSidePanel();
           bindDynamicEvents();
@@ -2885,8 +3339,13 @@
           state.status = '未连接';
           state.connected = false;
           state.sftpReady = false;
+          sftpInitInflight = false;
           setCurrentHostStatus('断开');
           state.lines.push({ kind: 'system', text: 'WebSocket 连接失败' });
+          if (state.pendingRemember) {
+            state.pendingRemember = false;
+            state.lines.push({ kind: 'system', text: '连接失败，未保存到主机列表' });
+          }
           renderMeta();
           renderTerminal();
           renderHosts();
@@ -2949,7 +3408,10 @@
     });
     el.closeModal?.addEventListener('click', () => setModal(false));
     el.mAuth?.addEventListener('change', syncAuthFields);
-    el.saveModal?.addEventListener('click', () => {
+    function applyModalAndConnect(opts) {
+      let hours = Number(el.mConnectionHours && el.mConnectionHours.value);
+      if (!Number.isFinite(hours) || hours < 0) hours = 4;
+      if (hours > 720) hours = 720;
       state.connection = {
         host: el.mHost.value.trim() || state.connection.host,
         port: el.mPort.value.trim() || state.connection.port,
@@ -2957,15 +3419,30 @@
         auth: el.mAuth.value || state.connection.auth,
         password: el.mPassword.value || '',
         keyPath: el.mKeyPath.value || '',
+        connectionHours: hours,
       };
       applyConnectionToCurrentHost();
       setCurrentHostStatus('当前');
       state.status = '已连接';
-      state.lines.push({ kind: 'system', text: `已保存连接 ${state.connection.host}:${state.connection.port}` });
+      state.pendingRemember = !!(opts && opts.remember);
+      const tip = opts && opts.remember
+        ? `尝试连接并记住 ${state.connection.host}:${state.connection.port}（${hours}h 后断开）`
+        : `已保存连接 ${state.connection.host}:${state.connection.port}（${hours}h 后断开）`;
+      state.lines.push({ kind: 'system', text: tip });
       setModal(false);
       resetFileState(false);
       renderAll();
       connectWs(true);
+    }
+    el.saveModal?.addEventListener('click', () => applyModalAndConnect({ remember: false }));
+    el.rememberModal?.addEventListener('click', () => {
+      const host = el.mHost.value.trim();
+      const user = el.mUser.value.trim();
+      if (!host || !user) {
+        alert('请先填写 Host 和 User，连接成功后才会被记住');
+        return;
+      }
+      applyModalAndConnect({ remember: true });
     });
     el.modalMask.onclick = (event) => {
       if (event.target === el.modalMask) setModal(false);
@@ -3206,6 +3683,13 @@
     connectWs(true);
     pollDockerRestartTop();
     el.cmdInput.focus();
+    // 退出登录按钮
+    const logoutBtn = document.getElementById('logoutBtn');
+    if (logoutBtn && window.__websshAuth) {
+      logoutBtn.addEventListener('click', function () {
+        if (confirm('确认退出登录？')) window.__websshAuth.logout();
+      });
+    }
   </script>
 </body>
 </html>

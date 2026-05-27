@@ -244,14 +244,15 @@
           </div>
         </div>
         <div class="column-body">
-          <div class="card" id="monitorCard">
+          <div class="card" id="monitorCard" style="flex:1;min-height:0">
             <div class="card-title">
               <span class="dot" id="monDot"></span>
               <span>新告警提示</span>
               <span class="muted" id="monState" style="margin-left:auto;font-weight:normal">加载中…</span>
+              <button class="btn" id="btnClearAlarmList" type="button" style="padding:4px 8px;font-size:11px">清空</button>
             </div>
             <div style="font-size:12px;color:#94a3b8;margin-bottom:6px">最近告警（按 id 增序；点击行打开完整字段弹窗）</div>
-            <div id="monList" style="flex:1;min-height:160px;max-height:40vh;overflow:auto;border:1px solid var(--border);border-radius:10px;background:#0b1020">
+            <div id="monList" style="flex:1;min-height:0;overflow:auto;border:1px solid var(--border);border-radius:10px;background:#0b1020">
               <div class="alarm-head">
                 <span>ID</span><span>等级</span><span>告警内容</span><span style="text-align:right">创建时间</span>
               </div>
@@ -259,14 +260,14 @@
             </div>
           </div>
 
-          <div class="card" id="cancelCard">
+          <div class="card" id="cancelCard" style="flex:1;min-height:0">
             <div class="card-title">
               <span class="dot" id="cancelDot"></span>
               <span>告警解除</span>
               <span class="muted" id="cancelState" style="margin-left:auto;font-weight:normal">按 CancelTime 增量</span>
             </div>
             <div style="font-size:12px;color:#94a3b8;margin-bottom:6px">点击行打开完整字段弹窗</div>
-            <div id="cancelList" style="flex:1;min-height:120px;max-height:30vh;overflow:auto;border:1px solid var(--border);border-radius:10px;background:#0b1020">
+            <div id="cancelList" style="flex:1;min-height:0;overflow:auto;border:1px solid var(--border);border-radius:10px;background:#0b1020">
               <div class="alarm-head cancel-head">
                 <span>ID</span><span>等级</span><span>告警内容</span><span style="text-align:right">解除时间</span>
               </div>
@@ -279,13 +280,257 @@
       <div class="column" id="colSms">
         <div class="column-head">
           <h2>短信猫推送区</h2>
-          <span class="muted">规划中</span>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <span class="dot" id="pushDot"></span>
+            <span class="muted" id="pushState" style="font-size:12px">加载中…</span>
+            <button class="btn" id="btnOpenScheduledModal" type="button" style="padding:6px 10px;font-size:12px">定时短信</button>
+            <button class="btn" id="btnOpenRecipientsModal" type="button" style="padding:6px 10px;font-size:12px">收件人</button>
+            <button class="btn" id="btnOpenPushModal" type="button" style="padding:6px 10px;font-size:12px">推送设置</button>
+            <button class="btn" id="btnOpenSendModal" type="button" style="padding:6px 10px;font-size:12px">手动发送</button>
+            <button class="btn" id="btnQuerySim" type="button" style="padding:6px 10px;font-size:12px">SIM 卡状态</button>
+          </div>
         </div>
         <div class="column-body">
-          <div class="placeholder">短信猫推送子模块（下一步）</div>
+          <div class="card">
+            <div class="card-title">
+              <span class="dot" id="simDot"></span>
+              <span>SIM 卡 / 网关</span>
+              <span class="muted" id="simHint" style="margin-left:auto;font-weight:normal">尚未查询</span>
+            </div>
+            <div id="simBox" class="status-box">点击右上角"SIM 卡状态"获取设备信息。</div>
+          </div>
+
+          <div class="card" style="flex:1;min-height:0;display:flex;flex-direction:column">
+            <div class="card-title">
+              <span class="dot on"></span>
+              <span>发送历史</span>
+              <span class="muted" id="historyHint" style="margin-left:auto;font-weight:normal">最近 100 条</span>
+              <button class="btn" id="btnRefreshResults" type="button" style="padding:4px 8px;font-size:11px">查询结果</button>
+              <button class="btn" id="btnClearHistory" type="button" style="padding:4px 8px;font-size:11px">清空</button>
+            </div>
+            <div id="historyList" style="flex:1;min-height:140px;max-height:50vh;overflow:auto;border:1px solid var(--border);border-radius:10px;background:#0b1020">
+              <div class="alarm-head" style="grid-template-columns:48px 64px minmax(0,1fr) 120px 120px">
+                <span>来源</span><span>类型</span><span>内容</span><span>状态</span><span style="text-align:right">下发时间</span>
+              </div>
+              <div id="historyEmpty" style="padding:14px;color:#64748b;font-size:12px;text-align:center">暂无发送记录</div>
+            </div>
+          </div>
         </div>
       </div>
     </section>
+  </div>
+
+  <!-- 收件人弹窗：只读查看 dcim-person，推送收件人由告警的 NotifyModeID 自动决定 -->
+  <div class="modal-mask" id="recipientsModal" aria-hidden="true">
+    <div class="modal" style="width:min(720px,100%)">
+      <div class="modal-head">
+        <h3>收件人（只读）</h3>
+        <button class="btn" id="btnCloseRecipientsModal" type="button">关闭</button>
+      </div>
+      <div class="modal-body" style="max-height:80vh;overflow:auto">
+        <div style="font-size:12px;color:#94a3b8;line-height:1.6">
+          推送收件人由 <code style="color:#67e8f9">告警.NotifyModeID</code> →
+          <code style="color:#67e8f9">dcim-alarmnotifymode</code> →
+          <code style="color:#67e8f9">dcim-person</code> 联表自动解析，<b>不在此处勾选</b>。
+          下表是 <code style="color:#67e8f9">dcim-person</code> 表当前快照，仅供查看。
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;font-size:12px">
+          <input id="personFilter" type="text" placeholder="搜索姓名 / 手机号 / GroupId" style="flex:1;font:inherit;font-size:13px;border-radius:8px;border:1px solid #334155;background:#020617;color:var(--text);padding:8px 10px;outline:none" />
+          <button class="btn" id="btnReloadPersons" type="button" style="padding:6px 10px;font-size:11px">重新加载</button>
+        </div>
+        <div id="personsList" style="border:1px solid var(--border);border-radius:10px;background:#0b1020;max-height:50vh;overflow:auto">
+          <div class="alarm-head" style="grid-template-columns:60px 1fr 160px 140px">
+            <span>id</span><span>姓名</span><span>手机号</span><span>GroupId</span>
+          </div>
+          <div id="personsEmpty" style="padding:14px;color:#64748b;font-size:12px;text-align:center">点击右上角"重新加载"</div>
+        </div>
+        <div style="border-top:1px dashed #1e293b;padding-top:10px;margin-top:6px">
+          <div style="font-size:12px;color:#94a3b8;margin-bottom:6px">
+            <b>NotifyModeID 解析预览：</b>输入一个 mode id 看它会解析到哪些人（不会真的发送）
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;font-size:12px">
+            <input id="modePreviewId" type="number" min="1" placeholder="mode id" style="width:120px;font:inherit;font-size:13px;border-radius:8px;border:1px solid #334155;background:#020617;color:var(--text);padding:8px 10px;outline:none" />
+            <button class="btn" id="btnPreviewMode" type="button" style="padding:6px 10px;font-size:11px">预览</button>
+          </div>
+          <div class="status-box" id="modePreviewBox" style="margin-top:8px;display:none"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 推送设置弹窗 -->
+  <div class="modal-mask" id="pushModal" aria-hidden="true">
+    <div class="modal" style="width:min(640px,100%)">
+      <div class="modal-head">
+        <h3>推送设置</h3>
+        <button class="btn" id="btnClosePushModal" type="button">关闭</button>
+      </div>
+      <div class="modal-body" style="max-height:80vh;overflow:auto">
+        <div class="form-grid">
+          <label class="field">
+            <span>推送总开关</span>
+            <select id="pushEnabled">
+              <option value="1">开启</option>
+              <option value="0">关闭</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>新告警自动推送</span>
+            <select id="pushAutoOnAlarm">
+              <option value="1">开启</option>
+              <option value="0">关闭</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>告警解除自动推送</span>
+            <select id="pushAutoOnCancel">
+              <option value="1">开启</option>
+              <option value="0">关闭</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>网关 IP</span>
+            <input id="pushHost" type="text" placeholder="192.168.50.199" />
+          </label>
+          <label class="field">
+            <span>网关端口</span>
+            <input id="pushPort" type="number" min="1" max="65535" placeholder="8791" />
+          </label>
+          <label class="field">
+            <span>推送路径</span>
+            <input id="pushPath" type="text" placeholder="/cgi-bin/NoticePush" />
+          </label>
+          <label class="field">
+            <span>结果查询路径</span>
+            <input id="resultsPath" type="text" placeholder="/cgi-bin/NoticeResults" />
+          </label>
+          <label class="field">
+            <span>SIM 状态路径</span>
+            <input id="simPath" type="text" placeholder="/cgi-bin/SimStatus" />
+          </label>
+          <label class="field">
+            <span>请求超时（毫秒）</span>
+            <input id="pushTimeout" type="number" min="1000" max="60000" step="500" />
+          </label>
+          <label class="field">
+            <span>结果轮询间隔（秒，5-600）</span>
+            <input id="pushQueryInterval" type="number" min="5" max="600" />
+          </label>
+          <label class="field">
+            <span>编码</span>
+            <select id="pushEncoding">
+              <option value="UTF-8">UTF-8</option>
+              <option value="ANSI">ANSI</option>
+            </select>
+          </label>
+        </div>
+        <div style="font-size:11px;color:#64748b;margin-top:-4px">
+          推送类型（SMS / Call / All）由告警的 NotifyModeID 经 dcim-alarmnotifymode 自动决定，无需在此设置默认值。
+        </div>
+        <div class="actions">
+          <button class="btn primary" id="btnPushSave" type="button">保存</button>
+          <span class="muted" id="pushSaveHint" style="margin-left:auto;align-self:center"></span>
+        </div>
+        <div class="status-box" id="pushMetaBox">等待…</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 定时短信弹窗：dcim-alarmparam 单例配置只读展示 + 立即触发 -->
+  <div class="modal-mask" id="scheduledModal" aria-hidden="true">
+    <div class="modal" style="width:min(820px,100%)">
+      <div class="modal-head">
+        <h3>定时短信</h3>
+        <button class="btn" id="btnCloseScheduledModal" type="button">关闭</button>
+      </div>
+      <div class="modal-body" style="max-height:80vh;overflow:auto">
+        <div style="font-size:12px;color:#94a3b8;line-height:1.6">
+          配置在旧系统的 <code style="color:#67e8f9">系统参数 → 短信/语音/邮件设置</code> 页面填写，
+          落库到 <code style="color:#67e8f9">dcim-alarmparam</code> 单例。本面板只读展示当前配置，
+          每分钟轮询：当前小时命中 SmsTime 且距上次发送超过 50 分钟时自动下发。
+        </div>
+        <div class="status-box" id="scheduledParamBox">加载中…</div>
+        <div style="font-size:12px;color:#cbd5e1;margin:6px 0 -2px">消息预览（实际下次发送的内容）</div>
+        <div class="status-box" id="scheduledPreviewBox">加载中…</div>
+        <div style="font-size:12px;color:#cbd5e1;margin:6px 0 -2px">判定明细</div>
+        <div id="scheduledGuards" style="display:flex;flex-direction:column;gap:4px"></div>
+        <div class="status-box" id="scheduledNextBox">下次预计：加载中…</div>
+        <div class="status-box" id="scheduledStateBox">调度状态加载中…</div>
+        <div class="actions">
+          <button class="btn primary" id="btnReloadScheduled" type="button">刷新</button>
+          <button class="btn danger" id="btnTriggerScheduled" type="button">立即触发一次</button>
+          <span class="muted" id="scheduledHint" style="margin-left:auto;align-self:center"></span>
+        </div>
+        <div id="scheduledResult" class="status-box" style="display:none"></div>
+        <div style="font-size:12px;color:#cbd5e1;margin:8px 0 -2px;display:flex;align-items:center;gap:8px">
+          <span>最近调度记录</span>
+          <span class="muted" id="scheduledRecentHint" style="font-size:11px">最多 50 条</span>
+        </div>
+        <div id="scheduledRecentList" style="border:1px solid var(--border);border-radius:10px;background:#0b1020;max-height:35vh;overflow:auto">
+          <div class="alarm-head" style="grid-template-columns:140px 60px 60px minmax(0,1fr)">
+            <span>时间</span><span>类型</span><span>结果</span><span>说明</span>
+          </div>
+          <div id="scheduledRecentEmpty" style="padding:14px;color:#64748b;font-size:12px;text-align:center">暂无记录</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 手动发送弹窗 -->
+  <div class="modal-mask" id="sendModal" aria-hidden="true">
+    <div class="modal">
+      <div class="modal-head">
+        <h3>手动发送</h3>
+        <button class="btn" id="btnCloseSendModal" type="button">关闭</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-grid">
+          <label class="field">
+            <span>类型</span>
+            <select id="sendType">
+              <option value="">默认（沿用配置）</option>
+              <option value="SMS">SMS</option>
+              <option value="Call">Call</option>
+              <option value="All">All</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>编码</span>
+            <select id="sendEncoding">
+              <option value="">默认（沿用配置）</option>
+              <option value="UTF-8">UTF-8</option>
+              <option value="ANSI">ANSI</option>
+            </select>
+          </label>
+          <label class="field span-2">
+            <span>收件人（留空则使用默认配置；多个号码用逗号 / 空格 / 换行分隔）</span>
+            <textarea id="sendTo" rows="2" style="font:inherit;font-size:13px;border-radius:8px;border:1px solid #334155;background:#020617;color:var(--text);padding:8px 10px;outline:none;resize:vertical" placeholder="13800138000, 13900139000"></textarea>
+          </label>
+          <label class="field span-2">
+            <span>内容</span>
+            <textarea id="sendText" rows="4" style="font:inherit;font-size:13px;border-radius:8px;border:1px solid #334155;background:#020617;color:var(--text);padding:8px 10px;outline:none;resize:vertical" placeholder="测试消息"></textarea>
+          </label>
+        </div>
+        <div class="actions">
+          <button class="btn primary" id="btnSendNow" type="button">发送</button>
+          <span class="muted" id="sendHint" style="margin-left:auto;align-self:center"></span>
+        </div>
+        <div class="status-box" id="sendResult" style="display:none"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 发送历史详情弹窗 -->
+  <div class="modal-mask" id="historyDetailModal" aria-hidden="true">
+    <div class="modal">
+      <div class="modal-head">
+        <h3 id="historyDetailTitle">发送详情</h3>
+        <button class="btn" id="btnCloseHistoryDetail" type="button">关闭</button>
+      </div>
+      <div class="modal-body" style="max-height:70vh;overflow:auto">
+        <div id="historyDetailBody"></div>
+      </div>
+    </div>
   </div>
 
   <!-- 数据连接弹窗 -->
@@ -316,6 +561,10 @@
           <label class="field span-2">
             <span>密码</span>
             <input id="dbPassword" type="password" placeholder="连接成功后会落盘，用于开机自启" autocomplete="new-password" />
+          </label>
+          <label class="field span-2" style="flex-direction:row;align-items:center;gap:8px">
+            <input id="dbRememberPassword" type="checkbox" checked style="width:14px;height:14px;cursor:pointer;accent-color:#22d3ee" />
+            <span style="margin:0;font-weight:normal;color:#cbd5e1;cursor:pointer">记住密码（勾选后落盘并开启开机自启；不勾选则只本次会话有效，断电/重启后需重新连接）</span>
           </label>
         </div>
         <div class="actions">
@@ -380,5 +629,7 @@
 
   <script src="./assets/js/sms-db.js"></script>
   <script src="./assets/js/sms-monitor.js"></script>
+  <script src="./assets/js/sms-push.js"></script>
+  <script src="./assets/js/sms-scheduled.js"></script>
 </body>
 </html>

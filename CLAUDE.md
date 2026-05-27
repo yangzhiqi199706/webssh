@@ -70,28 +70,25 @@ protocol_app/                 # 协议助手 Flask 子站（2026-05-21 新增）
   uploads/ outputs/ downloads/ module4_uploads/ module4_downloads/  # 运行时产物，部署时不打包
 
 scripts/                      # 部署 / 安装 / 打包脚本
-  build-offline-tar.sh        # 打 webssh 主壳离线包（在 Linux 构建机执行）
-  install.sh                  # webssh 主壳一次性安装
+  install.sh                  # webssh 主壳一次性安装（被 deploy-fresh.js 调用）
+  install-protocol.sh         # 协议助手一次性安装（被 deploy-protocol.js 调用）
+  install-all.sh              # ★ 全栈一键安装（主壳 + 协议助手 + 双 runtime，被全栈离线包使用）
+  uninstall-all.sh            # ★ 全栈一键卸载（双服务联动停止 + 清目录，支持 --purge / --keep-backups）
   start.sh / stop.sh / status.sh / uninstall.sh
 
   deploy-fresh.js             # 全新机器首次部署 webssh 主壳（默认 host: 192.168.0.22）
   deploy-upgrade.js           # 增量部署 webssh 主壳（★ 默认 host 是 192.168.50.10，用时必须显式覆盖！）
-  build-offline-on-server.js  # 在远端 Linux 服务器就地打包
-
-  install-protocol.sh         # ★ 协议助手一次性安装脚本（解压 Python + pip 离线 + systemd unit）
   deploy-protocol.js          # ★ 协议助手一键部署：本地打包 → SSH 推送 → install → 同步主壳代码 → 双服务探活
-  check-target.js             # 目标机环境探测（一次性工具，确认 Python / glibc / 服务状态）
+  build-fullstack-on-server.js # ★ 在服务器上组装全栈离线包并拉回本地 dist/（推荐打包方式）
 
-  打包命令.txt
-  pack-8081-src.bat
+  pack-8081-src.bat           # Windows 辅助：打包 8081 src 配合主壳"在线更新"使用
 
 systemd/                      # systemd unit 模板
   webssh.service.template
   webssh-protocol.service.template  # ★ 协议助手 unit（含 PartOf=webssh.service 联动）
 
 dist/                         # 已打好的离线包 tar.gz + sha256
-  webssh-offline-linux-x64-v1.0.0-*.tar.gz   # 主壳包
-  webssh-protocol-*.tar.gz                    # ★ 协议助手扩展包
+  webssh-fullstack-offline-linux-x64-v*.tar.gz  # ★ 全栈包（主壳 + 协议助手 + 双 runtime，~95 MB）
 
 .offline-downloads/           # 协议助手离线素材（66 MB，不进 git，但部署脚本依赖它）
   cpython-3.11.10+20241016-x86_64-unknown-linux-gnu-install_only.tar.gz   # 29 MB
@@ -491,7 +488,6 @@ $env:PROTOCOL_HOST   = "127.0.0.1"
   systemd/webssh-protocol.service.template
   scripts/install-protocol.sh
   scripts/deploy-protocol.js
-  scripts/check-target.js                       # 一次性环境探测工具
   .offline-downloads/cpython-3.11.10+*.tar.gz   # 不进 git
   .offline-downloads/wheels/*.whl               # 22 个，不进 git
 
@@ -511,4 +507,76 @@ $env:PROTOCOL_HOST   = "127.0.0.1"
   - `protocol-samples/三相多功能表协议/` — M3 PDF+Excel 对照样本
   - `protocol-samples/HMU-UPS/` — .docx 协议样本
 - 清理空的 `.offline-build/` 临时目录
+
+------------------------------------------------------------
+
+## 八、2026-05-22 全栈打包与清理
+
+### 8.1 新增「全栈一键离线包」
+原来主壳和协议助手分两包部署（webssh-offline + webssh-protocol），现在出一个
+自包含 95 MB tar.gz，目标机一条命令装好双服务：
+
+```bash
+tar -xzf webssh-fullstack-offline-linux-x64-v*.tar.gz
+cd webssh-fullstack-offline-linux-x64-v*/
+./install-all.sh
+```
+
+包内结构：
+```
+app/                       # webssh 主壳 + node_modules
+runtime/node/              # Node 12.22.12
+protocol/app/              # Flask 子站（含 module4_config）
+protocol/runtime/python/   # CPython 3.11.10
+protocol/runtime/site-packages/  # flask/pandas/numpy/...
+systemd/*.template         # 双 service unit 模板
+install-all.sh             # 一键安装（双服务联装 + 三重探活）
+uninstall-all.sh           # 一键卸载（双服务停止 + 清目录，--purge / --keep-backups）
+INSTALL.md
+```
+
+打包流程（一行命令）：
+```powershell
+$env:WEBSSH_DEPLOY_PASS = 'REDACTED_DEPLOY_PASS'
+node scripts/build-fullstack-on-server.js
+```
+脚本做的事：在 192.168.0.22 服务器上 stage `/opt/webssh/{app,protocol,runtime}/`
+现成的运行态目录 + 上传本地最新的 install-all.sh / uninstall-all.sh / systemd 模板，
+打 tar + sha256，scp 拉回 `dist/`。整个过程约 90 秒，产物 95 MB。
+
+### 8.2 脚本/文档清理
+删除的过时素材：
+- `scripts/build-offline-tar.sh`（被 build-fullstack-on-server.js 取代）
+- `scripts/build-offline-on-server.js`（只打主壳，被全栈版取代）
+- `scripts/check-target.js`（一次性环境探测工具，使命已完成）
+- `scripts/打包命令.txt`（对应被删的 build-offline-tar.sh）
+- `服务器手动打包流程.txt`（手动流程已脚本化）
+- `目标服务器安装命令清单.txt`（默认 host 还是旧的 192.168.50.10）
+- `部署与卸载步骤.txt`（指向 5/10 旧 tar，已被「安装与卸载手册.md」取代）
+- `dist/webssh-offline-linux-x64-*-20260510*.tar.gz`（5/10 旧主壳包 ×2）
+- `dist/webssh-offline-linux-x64-*-20260522035440.tar.gz`（被全栈包取代）
+- `dist/webssh-protocol-2026052114*.tar.gz`（5/21 协议助手中间产物 ×2）
+- `dist/webssh-fullstack-*-20260522040459.tar.gz`（早期全栈包，缺 uninstall-all.sh，已被新版替换）
+
+新增的素材：
+- `scripts/uninstall-all.sh`（双服务联动卸载，安装时会被自动复制到 `/opt/webssh/uninstall-all.sh` 方便日后调用）
+- `安装与卸载手册.md`（部署运维同事看的独立手册，10 章覆盖安装/升级/卸载/排障）
+
+保留的 dist 产物：
+- `webssh-fullstack-offline-linux-x64-v1.0.0-20260522042433.tar.gz` 95 MB
+- `.sha256: 65301995f0ef5bcef0033c3631f55b5d1a826bfb13a6dfb421a7c474cab4ae27`
+
+### 8.3 部署方式取舍
+现有三条部署路径，按场景选：
+
+| 场景 | 用什么 |
+| -- | -- |
+| 新机器初装 / 完整迁移 | 全栈包 + `install-all.sh`（推荐，自包含）|
+| 完整卸载 / 重装前清场 | `/opt/webssh/uninstall-all.sh`（安装后自动放在那里）|
+| 已部署机日常增量主壳代码 | `deploy-upgrade.js`（增量 scp + 重启） |
+| 已部署机日常更新协议助手 | `deploy-protocol.js`（含主壳代码同步） |
+| 需要本地组装全新全栈包 | `build-fullstack-on-server.js`（从服务器现态打包）|
+
+> 给运维同事的完整手册见仓库根的 [`安装与卸载手册.md`](安装与卸载手册.md)，
+> 包含端口冲突 / SELinux / 防火墙 / 历史备份管理等实操要点。
 
