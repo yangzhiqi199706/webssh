@@ -21,3 +21,4 @@ protocol_app/__pycache__/
 # 含真实凭据的本地配置（仅留 .example）
 config/sms-db.json
 config/sms-push.json
+config/ha.json

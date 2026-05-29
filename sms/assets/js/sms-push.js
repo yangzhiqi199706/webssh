@@ -5,6 +5,8 @@
   var el = {
     pushDot: $('pushDot'),
     pushState: $('pushState'),
+    brandSelect: $('brandSelect'),
+    simCard: $('simCard'),
     btnOpenPushModal: $('btnOpenPushModal'),
     btnOpenSendModal: $('btnOpenSendModal'),
     btnQuerySim: $('btnQuerySim'),
@@ -138,27 +140,62 @@
       + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
   }
 
+  function renderBrandSelect(s) {
+    if (!el.brandSelect || !s || !Array.isArray(s.brands)) return;
+    // 把当前后端的 brands 列表反映到 <select>，避免每次轮询都重建造成丢焦
+    var sel = el.brandSelect;
+    var want = s.brand || '';
+    var existKeys = Array.from(sel.options).map(function (o) { return o.value; });
+    var newKeys = s.brands.map(function (b) { return b.key; });
+    var same = existKeys.length === newKeys.length && existKeys.every(function (k, i) { return k === newKeys[i]; });
+    if (!same) {
+      sel.innerHTML = s.brands.map(function (b) {
+        return '<option value="' + b.key + '">' + b.name + '</option>';
+      }).join('');
+    }
+    if (sel.value !== want) sel.value = want;
+  }
+
+  // 根据当前激活品牌的 capabilities 显隐 SIM 卡相关 UI
+  function applyCapabilities(s) {
+    var caps = (s && s.capabilities) || {};
+    var simOk = !!caps.sim;
+    if (el.simCard) el.simCard.style.display = simOk ? '' : 'none';
+    if (el.btnQuerySim) el.btnQuerySim.style.display = simOk ? '' : 'none';
+    // 推送设置弹窗里的"SIM 状态路径"那一项也跟着 cap 走
+    if (el.simPath) {
+      var fld = el.simPath.closest && el.simPath.closest('.field');
+      if (fld) fld.style.display = simOk ? '' : 'none';
+    }
+  }
+
   function renderState(s) {
+    renderBrandSelect(s);
+    applyCapabilities(s);
     el.pushDot.classList.remove('on', 'off', 'err');
+    var brandTag = s.brandName ? '[' + s.brandName + '] ' : '';
     if (!s.enabled) {
       el.pushDot.classList.add('off');
-      el.pushState.textContent = '已关闭';
+      el.pushState.textContent = brandTag + '已关闭';
     } else if (s.lastError) {
       el.pushDot.classList.add('err');
-      el.pushState.textContent = '异常：' + s.lastError;
+      el.pushState.textContent = brandTag + '异常：' + s.lastError;
     } else {
       el.pushDot.classList.add('on');
       var modeTags = [];
       if (s.autoPushOnAlarm) modeTags.push('新告警自动');
       if (s.autoPushOnCancel) modeTags.push('解除自动');
       var modeText = modeTags.length ? modeTags.join('+') : '手动';
-      el.pushState.textContent = '运行中 · ' + s.gatewayHost + ':' + s.gatewayPort + ' · ' + modeText;
+      el.pushState.textContent = brandTag + '运行中 · ' + s.gatewayHost + ':' + s.gatewayPort + ' · ' + modeText;
     }
 
     if (el.pushMetaBox) {
       var lines = [];
+      lines.push('品牌：' + (s.brandName || s.brand || '-'));
       lines.push('网关：' + s.gatewayHost + ':' + s.gatewayPort);
-      lines.push('推送：' + s.pushPath + '  ·  结果：' + s.resultsPath + '  ·  SIM：' + s.simStatusPath);
+      var pathLine = '推送：' + s.pushPath + '  ·  结果：' + s.resultsPath;
+      if (s.capabilities && s.capabilities.sim) pathLine += '  ·  SIM：' + s.simStatusPath;
+      lines.push(pathLine);
       lines.push('收件人解析：' + (s.recipientResolver || 'NotifyModeID -> alarmnotifymode -> person'));
       lines.push('累计：成功 ' + s.totalSent + '  ·  失败 ' + s.totalFailed + '  ·  历史 ' + s.historyCount);
       lines.push('数据库：' + (s.dbConnected ? '已连接' : '未连接'));
@@ -168,9 +205,14 @@
     el.historyHint.textContent = '历史 ' + s.historyCount + ' 条';
   }
 
+  // 注意：cfgLoaded 现在按品牌作用域。品牌切换时会重置，让表单重新回填。
+  // currentBrand 保存上次回填时所属的品牌，loadConfig 检测到变化即触发刷新。
+  var currentBrand = '';
   function fillConfigOnce(s) {
-    if (cfgLoaded) return;
+    var brand = s && s.brand || '';
+    if (cfgLoaded && brand === currentBrand) return;
     cfgLoaded = true;
+    currentBrand = brand;
     el.pushEnabled.value = s.enabled ? '1' : '0';
     el.pushAutoOnAlarm.value = s.autoPushOnAlarm ? '1' : '0';
     if (el.pushAutoOnCancel) el.pushAutoOnCancel.value = s.autoPushOnCancel ? '1' : '0';
@@ -341,8 +383,10 @@
       div.className = 'alarm-row';
       div.style.gridTemplateColumns = '48px 64px minmax(0,1fr) 120px 120px';
       var sourceTag;
-      if (it.source === 'auto-cancel') sourceTag = '<span class="alarm-level lv-2">解除</span>';
-      else if (it.source === 'auto') sourceTag = '<span class="alarm-level lv-3">自动</span>';
+      var src = String(it.source || '');
+      if (src.indexOf('scheduled') === 0) sourceTag = '<span class="alarm-level lv-3">定时</span>';
+      else if (src === 'auto-cancel') sourceTag = '<span class="alarm-level lv-2">解除</span>';
+      else if (src === 'auto') sourceTag = '<span class="alarm-level lv-3">自动</span>';
       else sourceTag = '<span class="alarm-level lv-1">手动</span>';
       var typeTag = '<span class="alarm-level lv-1">' + esc(it.type || '-') + '</span>';
       var statusTag = '<span class="alarm-level ' + statusClass(it.status) + '">' + esc(it.status || '-') + '</span>';
@@ -366,9 +410,15 @@
     var pairs = [
       ['id', item.id],
       ['ids', (item.ids || []).join(', ')],
-      ['来源', item.source === 'auto-cancel' ? '自动（告警解除触发）'
-        : item.source === 'auto' ? '自动（新告警触发）'
-        : '手动'],
+      ['来源', (function () {
+        var s = String(item.source || '');
+        if (s === 'scheduled-tick') return '定时（整点自动触发）';
+        if (s === 'scheduled-manual') return '定时（手动触发）';
+        if (s.indexOf('scheduled') === 0) return '定时（' + s.slice('scheduled-'.length) + '）';
+        if (s === 'auto-cancel') return '自动（告警解除触发）';
+        if (s === 'auto') return '自动（新告警触发）';
+        return '手动';
+      })()],
       ['状态', item.status],
       ['错误', item.error],
       ['类型', item.type],
@@ -563,6 +613,32 @@
   el.btnRefreshResults && el.btnRefreshResults.addEventListener('click', refreshResults);
   el.btnClearHistory && el.btnClearHistory.addEventListener('click', clearHistory);
   el.btnQuerySim && el.btnQuerySim.addEventListener('click', querySim);
+
+  // 品牌切换：调后端 /api/sms/push/brand，成功后重置回填门禁让 fillConfigOnce 重读新品牌的参数
+  el.brandSelect && el.brandSelect.addEventListener('change', async function () {
+    var want = el.brandSelect.value;
+    if (!want) return;
+    try {
+      var resp = await fetch('/api/sms/push/brand', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ brand: want }),
+      });
+      var data = await resp.json();
+      if (!resp.ok || !data.ok) {
+        alert('切换失败：' + ((data && data.message) || ('HTTP ' + resp.status)));
+        return;
+      }
+      // 让 fillConfigOnce 重新回填
+      cfgLoaded = false;
+      currentBrand = '';
+      if (data.state) renderState(data.state);
+      // 拉一次完整 config，重置表单
+      loadConfig();
+    } catch (err) {
+      alert('请求失败：' + err.message);
+    }
+  });
 
   loadConfig();
   loadHistory();

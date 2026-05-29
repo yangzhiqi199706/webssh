@@ -34,7 +34,7 @@ if (!PASSWORD) {
 }
 
 // 需要同步到远端 /opt/webssh/app/ 的条目（相对项目根路径）
-// 完整部署：包含 server.js、package*.json、完整 node_modules、index.html、serial/、sms/
+// 完整部署：包含 server.js、package*.json、完整 node_modules、index.html、serial/、sms/、ha/
 const PAYLOAD_ENTRIES = [
   'server.js',
   'index.html',
@@ -43,6 +43,7 @@ const PAYLOAD_ENTRIES = [
   'package-lock.json',
   'serial',
   'sms',
+  'ha',
   'node_modules',
 ];
 
@@ -172,6 +173,15 @@ async function main() {
     }
 
     await exec(conn, `rm -f ${remoteTar}`);
+
+    // 备份轮换：仅保留最近 KEEP_BACKUPS 个 app.bak-*（按文件名/时间戳倒排），其余删除
+    const KEEP_BACKUPS = Number(process.env.WEBSSH_KEEP_BACKUPS || 5);
+    const pruneCmd = `ls -d ${INSTALL_DIR}/app.bak-* 2>/dev/null | sort -r | tail -n +${KEEP_BACKUPS + 1} | xargs -r rm -rf`;
+    const before = await exec(conn, `ls -d ${INSTALL_DIR}/app.bak-* 2>/dev/null | wc -l`, { allowNonZero: true });
+    await exec(conn, pruneCmd, { allowNonZero: true });
+    const after = await exec(conn, `ls -d ${INSTALL_DIR}/app.bak-* 2>/dev/null | wc -l`, { allowNonZero: true });
+    log(`备份轮换：${before.stdout.trim()} → ${after.stdout.trim()}（保留最近 ${KEEP_BACKUPS} 个，可用 WEBSSH_KEEP_BACKUPS 覆盖）`);
+
     log('✅ 升级完成，服务运行正常');
     log(`浏览器访问：http://${HOST}:${HTTP_PORT}`);
     log(`如需手动回滚：rm -rf ${INSTALL_DIR}/app && mv ${backupDir} ${INSTALL_DIR}/app && systemctl restart ${SERVICE}`);

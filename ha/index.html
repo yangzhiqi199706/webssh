@@ -1,0 +1,699 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>双机热备 · Web SSH</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #020617;
+      --panel: #0f172a;
+      --panel-2: #111827;
+      --border: #1f2937;
+      --text: #e5e7eb;
+      --muted: #94a3b8;
+      --cyan: #22d3ee;
+      --green: #34d399;
+      --amber: #fbbf24;
+      --red: #f87171;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 13px;
+    }
+    #app { display: flex; flex-direction: column; height: 100vh; }
+    .top-bar {
+      height: 44px; flex-shrink: 0;
+      display: flex; align-items: center; gap: 10px;
+      padding: 0 14px;
+      background: #0f172a;
+      border-bottom: 1px solid var(--border);
+    }
+    .top-bar .title { font-weight: 700; color: var(--cyan); letter-spacing: .06em; }
+    .top-bar .subtitle { color: var(--muted); font-size: 12px; }
+    .top-bar .spacer { flex: 1; }
+    .btn {
+      border: 1px solid #334155;
+      background: #0b1220;
+      color: var(--text);
+      border-radius: 8px;
+      padding: 7px 12px;
+      font-size: 12px;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .btn:hover { border-color: #475569; background: #111827; }
+    .btn.primary { background: #06b6d4; color: #082f49; border-color: transparent; font-weight: 700; }
+    .btn.primary:hover { background: #22d3ee; }
+    .btn.danger { background: #7f1d1d; color: #fecaca; border-color: transparent; }
+    .btn.danger:hover { background: #991b1b; }
+    .btn:disabled { opacity: .5; cursor: not-allowed; }
+
+    .switch {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 4px 10px; border: 1px solid #334155; border-radius: 999px;
+      background: #0b1220; cursor: pointer; user-select: none;
+      font-size: 12px;
+    }
+    .switch .led { width: 8px; height: 8px; border-radius: 50%; background: #64748b; }
+    .switch.on { border-color: rgba(52,211,153,.4); background: rgba(52,211,153,.08); }
+    .switch.on .led { background: var(--green); box-shadow: 0 0 0 3px rgba(52,211,153,.18); }
+
+    .role-tag {
+      padding: 4px 10px; border-radius: 999px; border: 1px solid #334155;
+      background: #0b1220; font-size: 12px;
+    }
+    .role-tag.primary { color: #67e8f9; border-color: rgba(34,211,238,.4); background: rgba(34,211,238,.08); }
+    .role-tag.standby { color: #fcd34d; border-color: rgba(251,191,36,.35); background: rgba(251,191,36,.08); }
+
+    .main { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 10px; }
+    .column {
+      display: flex; flex-direction: column; min-height: 0; min-width: 0;
+      background: rgba(15, 23, 42, .92);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      overflow: hidden;
+    }
+    .column-head {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(2, 6, 23, .4);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .column-head h2 { margin: 0; font-size: 14px; font-weight: 700; color: #e2e8f0; }
+    .column-head .muted { color: var(--muted); font-size: 12px; }
+    .column-body { flex: 1; min-height: 0; overflow: auto; padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+
+    .card {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: rgba(2, 6, 23, .5);
+      padding: 14px;
+    }
+    .card-title {
+      font-size: 13px; font-weight: 700; color: #e2e8f0;
+      margin: 0 0 10px; display: flex; align-items: center; gap: 8px;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #64748b; }
+    .dot.on { background: var(--green); box-shadow: 0 0 0 3px rgba(52, 211, 153, .18); }
+    .dot.off { background: #64748b; }
+    .dot.warn { background: var(--amber); box-shadow: 0 0 0 3px rgba(251,191,36,.18); }
+    .dot.err { background: var(--red); box-shadow: 0 0 0 3px rgba(248,113,113,.18); }
+
+    .kv-list { display: flex; flex-direction: column; }
+    .kv-row {
+      display: grid; grid-template-columns: 110px 1fr auto;
+      gap: 10px; padding: 8px 0;
+      border-bottom: 1px dashed #1e293b;
+      font-size: 13px; align-items: center;
+    }
+    /* 状态总览的并排三卡（本机 / 对端 / 最近心跳）：等宽 grid，宽度收窄时自动堆叠 */
+    .state-row {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+    @media (max-width: 1100px) {
+      .state-row { grid-template-columns: 1fr; }
+    }
+    /* 三卡并排时单卡较窄，把 kv-row 的标签列收窄一点，避免值被挤压 */
+    .state-row .kv-row {
+      grid-template-columns: 80px 1fr auto;
+      gap: 6px;
+      font-size: 12px;
+      padding: 6px 0;
+    }
+    .kv-row:last-child { border-bottom: 0; }
+    .kv-row .k { color: var(--muted); }
+    .kv-row .v { color: #e2e8f0; word-break: break-all; }
+    .kv-row .v.mono { font-family: ui-monospace, monospace; font-size: 12px; color: #cbd5e1; }
+    .pill {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 2px 8px; border-radius: 999px; font-size: 11px;
+      border: 1px solid #334155; background: #0b1220; color: #cbd5e1;
+    }
+    .pill.ok { color: #a7f3d0; border-color: rgba(52,211,153,.4); background: rgba(52,211,153,.08); }
+    .pill.warn { color: #fcd34d; border-color: rgba(251,191,36,.35); background: rgba(251,191,36,.08); }
+    .pill.err { color: #fca5a5; border-color: rgba(248,113,113,.4); background: rgba(248,113,113,.08); }
+
+    /* 实时消息窗口 */
+    .msg-list {
+      flex: 1; min-height: 200px;
+      overflow: auto;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: #0b1020;
+      padding: 8px 10px;
+      font-family: ui-monospace, monospace;
+      font-size: 12px;
+      line-height: 1.7;
+    }
+    .msg-item { padding: 2px 0; word-break: break-all; }
+    .msg-item .ts { color: #64748b; margin-right: 8px; }
+    .msg-item.lvl-info { color: #a7f3d0; }
+    .msg-item.lvl-warn { color: #fcd34d; }
+    .msg-item.lvl-error { color: #fca5a5; }
+    .msg-item .lvl-tag {
+      display: inline-block; min-width: 42px;
+      padding: 0 6px; margin-right: 8px; border-radius: 4px;
+      text-align: center; font-size: 10px; font-weight: 700;
+      background: rgba(148,163,184,.14); color: #cbd5e1;
+    }
+    .msg-item.lvl-info .lvl-tag { background: rgba(34,211,238,.16); color: #67e8f9; }
+    .msg-item.lvl-warn .lvl-tag { background: rgba(251,191,36,.16); color: #fcd34d; }
+    .msg-item.lvl-error .lvl-tag { background: rgba(248,113,113,.18); color: #fca5a5; }
+
+    .heartbeat-bar {
+      display: flex; align-items: center; gap: 10px;
+      padding: 6px 10px; border-radius: 8px;
+      background: rgba(2,6,23,.6); border: 1px solid var(--border);
+      font-size: 12px; color: var(--muted);
+    }
+    .heartbeat-bar .blink { width: 6px; height: 6px; border-radius: 50%; background: #64748b; }
+    .heartbeat-bar.alive .blink { background: var(--green); animation: pulse 1.5s infinite; }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%      { opacity: .35; }
+    }
+
+    /* 弹窗 */
+    .modal-mask {
+      position: fixed; inset: 0;
+      background: rgba(2, 6, 23, .72);
+      display: none; align-items: flex-start; justify-content: center;
+      padding: 24px 20px; z-index: 80;
+      overflow: auto;
+    }
+    .modal-mask.open { display: flex; }
+    .modal {
+      width: min(720px, 100%);
+      border: 1px solid #334155;
+      border-radius: 16px;
+      background: #0f172a;
+      box-shadow: 0 24px 80px rgba(2,6,23,.6);
+      overflow: hidden;
+      display: flex; flex-direction: column;
+    }
+    .modal-head {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .modal-head h3 { margin: 0; font-size: 14px; font-weight: 700; color: #e2e8f0; }
+    .modal-body { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+
+    .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; }
+    .field { display: flex; flex-direction: column; gap: 5px; font-size: 12px; }
+    .field.span-2 { grid-column: span 2; }
+    .field span { color: var(--muted); }
+    .field input, .field select {
+      font: inherit; font-size: 13px;
+      border-radius: 8px;
+      border: 1px solid #334155;
+      background: #020617;
+      color: var(--text);
+      padding: 8px 10px;
+      outline: none;
+    }
+    .field input:focus, .field select:focus {
+      border-color: rgba(34, 211, 238, .6);
+      box-shadow: 0 0 0 3px rgba(34, 211, 238, .12);
+    }
+    .field input:disabled { opacity: .6; background: #0b1220; }
+
+    .section-title {
+      font-size: 12px; font-weight: 700; color: #67e8f9;
+      letter-spacing: .04em; margin: 6px 0 0;
+      padding-bottom: 6px; border-bottom: 1px dashed #1e293b;
+    }
+    .actions { display: flex; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
+    .status-box {
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: #0b1220;
+      font-size: 12px;
+      line-height: 1.7;
+      color: #cbd5e1;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .status-box .err { color: #fecaca; }
+
+    .role-radio { display: inline-flex; gap: 14px; align-items: center; padding: 4px 0; }
+    .role-radio label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+    .role-radio input { width: 14px; height: 14px; accent-color: #22d3ee; cursor: pointer; }
+    .toolbar-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .hint { font-size: 11px; color: var(--muted); }
+__HA_PLACEHOLDER_BODY__
+  </style>
+</head>
+<body>
+  <div id="app">
+    <header class="top-bar">
+      <div class="title">双机热备</div>
+      <div class="subtitle">主备服务器心跳监测与告警</div>
+      <div class="spacer"></div>
+      <div class="heartbeat-bar" id="heartbeatBar" title="后端心跳脉搏">
+        <span class="blink"></span>
+        <span id="heartbeatHint">未连接</span>
+      </div>
+      <div class="switch" id="enableSwitch" title="主备功能总开关"><span class="led"></span><span id="enableLabel">未启用</span></div>
+      <div class="role-tag" id="roleTag">未知</div>
+      <div class="role-tag" id="takenOverBadge" style="display:none;color:#fca5a5;border-color:rgba(248,113,113,.5);background:rgba(248,113,113,.12);font-weight:700">接管中</div>
+      <div class="role-tag" id="yieldedBadge" style="display:none;color:#fcd34d;border-color:rgba(251,191,36,.5);background:rgba(251,191,36,.12);font-weight:700" title="备机已接管，本机 dcim 已停止">已让位</div>
+      <button class="btn" id="btnSyncDb" type="button" title="主机 → 备机 数据库同步" disabled>数据库同步</button>
+      <button class="btn primary" id="btnOpenConfig" type="button">连接信息</button>
+    </header>
+
+    <section class="main">
+      <div class="column" id="colState">
+        <div class="column-head">
+          <h2>状态总览</h2>
+          <div class="muted">每 3 秒互测心跳</div>
+        </div>
+        <div class="column-body">
+          <div class="state-row">
+            <div class="card">
+              <div class="card-title"><span class="dot" id="selfDot"></span><span>本机</span></div>
+              <div class="kv-list" id="selfKv"></div>
+            </div>
+            <div class="card">
+              <div class="card-title"><span class="dot" id="peerDot"></span><span>对端</span></div>
+              <div class="kv-list" id="peerKv"></div>
+            </div>
+            <div class="card">
+              <div class="card-title"><span class="dot" id="hbDot"></span><span>最近心跳</span></div>
+              <div class="kv-list" id="hbKv"></div>
+            </div>
+          </div>
+          <div class="card" id="failoverCard" style="display:none">
+            <div class="card-title">
+              <span class="dot" id="failoverDot"></span>
+              <span>故障接管（缓冲监测）</span>
+              <button class="btn" id="btnFailoverInfo" type="button" title="查看故障接管说明" style="margin-left:6px;padding:2px 8px;font-size:11px;border-radius:999px">?</button>
+              <span class="muted" id="failoverStateHint" style="margin-left:auto;font-weight:normal"></span>
+            </div>
+            <div id="takenOverBanner" style="display:none;border:1px solid rgba(248,113,113,.5);background:rgba(248,113,113,.1);border-radius:10px;padding:10px 12px;margin-bottom:10px;color:#fecaca;font-size:13px;line-height:1.7">
+              <b style="color:#fca5a5">⚠ 已接管</b><br>
+              <span id="takenOverInfo"></span><br>
+              <span style="color:#94a3b8;font-size:12px">请确认主机当前状态后，点「重置接管状态」让备机让位、status 改回 -1、停止 dcim 采集。</span>
+            </div>
+            <div class="form-grid" style="margin-bottom:8px">
+              <label class="field">
+                <span>启用缓冲</span>
+                <select id="failoverEnabled">
+                  <option value="0">关闭</option>
+                  <option value="1">启用</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>缓冲时长</span>
+                <select id="failoverBufferPreset">
+                  <option value="10">10 秒</option>
+                  <option value="30">30 秒</option>
+                  <option value="60">60 秒</option>
+                  <option value="120">120 秒</option>
+                  <option value="custom">自定义</option>
+                </select>
+              </label>
+              <label class="field span-2" id="failoverBufferCustomWrap" style="display:none">
+                <span>自定义缓冲秒数（5-3600）</span>
+                <input id="failoverBufferSec" type="number" min="5" max="3600" />
+              </label>
+              <label class="field">
+                <span>失联判定</span>
+                <select id="failoverJudgeMode">
+                  <option value="any">任一端口不通就算（推荐）</option>
+                  <option value="both">两个端口都不通才算</option>
+                  <option value="ip-only">仅 IP 不通才算</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>连续失败次数</span>
+                <input id="failoverConsecutiveFails" type="number" min="1" max="20" />
+              </label>
+              <label class="field">
+                <span>主机回归后自动让位</span>
+                <select id="failoverAutoYield">
+                  <option value="1">启用（推荐）</option>
+                  <option value="0">关闭</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>自动让位连续次数（每次 3s）</span>
+                <input id="failoverAutoYieldConsecutive" type="number" min="1" max="60" title="接管态下连续 N 次心跳探测到主机端口通就触发自动让位。默认 5 次=15 秒，比主机 dcim.service 自启时间（约 20 秒）短，能避免数据撕裂" />
+              </label>
+              <label class="field span-2">
+                <span>冷却时长（秒，0-3600，让位/重置后该时间内不再触发接管）</span>
+                <input id="failoverCooldownSec" type="number" min="0" max="3600" title="reset 完成后的冷却期。期间即使主机再次失联也不会触发接管。设为 0 表示无冷却（不推荐，可能反复重启 dcim）" />
+              </label>
+            </div>
+            <div class="kv-list" id="failoverKv"></div>
+            <div class="actions" style="margin-top:6px">
+              <button class="btn primary" id="btnFailoverSave" type="button">保存配置</button>
+              <button class="btn" id="btnFailoverTest" type="button">测试接管命令</button>
+              <button class="btn danger" id="btnFailoverReset" type="button" style="display:none">重置接管状态</button>
+              <span class="hint" id="failoverSaveHint" style="margin-left:auto;align-self:center"></span>
+            </div>
+          </div>
+          <div class="card" id="syncCard" style="display:none">
+            <div class="card-title">
+              <span class="dot" id="syncDot"></span>
+              <span>数据库同步</span>
+              <button class="btn" id="btnSyncInfo" type="button" title="查看同步注意事项" style="margin-left:6px;padding:2px 8px;font-size:11px;border-radius:999px">?</button>
+              <span class="muted" id="syncRunHint" style="margin-left:auto;font-weight:normal"></span>
+            </div>
+            <div class="kv-list" id="syncKv"></div>
+            <div id="syncStepsBox" style="margin-top:8px;border:1px solid var(--border);border-radius:8px;background:#0b1020;padding:6px 10px;max-height:160px;overflow:auto;font-family:ui-monospace,monospace;font-size:11px;line-height:1.7;color:#cbd5e1"></div>
+          </div>
+          <div class="card" id="scheduleCard" style="display:none">
+            <div class="card-title">
+              <span class="dot" id="scheduleDot"></span>
+              <span>定时同步</span>
+              <button class="btn" id="btnScheduleInfo" type="button" title="查看 cron 语法说明" style="margin-left:6px;padding:2px 8px;font-size:11px;border-radius:999px">?</button>
+              <span class="muted" id="scheduleStateHint" style="margin-left:auto;font-weight:normal"></span>
+            </div>
+            <div class="form-grid" style="margin-bottom:8px">
+              <label class="field">
+                <span>启用</span>
+                <select id="scheduleEnabled">
+                  <option value="0">关闭</option>
+                  <option value="1">启用</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>调度规则</span>
+                <select id="schedulePreset">
+                  <option value="daily-2am">每天 02:00</option>
+                  <option value="daily-3am">每天 03:00</option>
+                  <option value="weekly-sun-3am">每周日 03:00</option>
+                  <option value="custom">自定义 cron</option>
+                </select>
+              </label>
+              <label class="field span-2" id="scheduleCronWrap" style="display:none">
+                <span>自定义 cron（5 字段：分 时 日 月 周）</span>
+                <input id="scheduleCron" type="text" placeholder="例如：0 3 * * *" />
+              </label>
+              <label class="field span-2 toolbar-row" style="display:flex;flex-direction:row;gap:14px;flex-wrap:wrap">
+                <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;color:#cbd5e1">
+                  <input id="scheduleSkipPeerDown" type="checkbox" style="width:14px;height:14px;accent-color:#22d3ee;cursor:pointer" />
+                  备机不可达时跳过
+                </label>
+                <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;color:#cbd5e1">
+                  <input id="scheduleApplyMinusOne" type="checkbox" style="width:14px;height:14px;accent-color:#22d3ee;cursor:pointer" />
+                  同步后做 status=-1 假删除
+                </label>
+              </label>
+            </div>
+            <div class="kv-list" id="scheduleKv"></div>
+            <div class="actions" style="margin-top:6px">
+              <button class="btn primary" id="btnScheduleSave" type="button">保存配置</button>
+              <button class="btn" id="btnScheduleNow" type="button">立即执行一次</button>
+              <span class="hint" id="scheduleSaveHint" style="margin-left:auto;align-self:center"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="column" id="colMsg">
+        <div class="column-head">
+          <h2>实时消息</h2>
+          <div class="toolbar-row">
+            <button class="btn" id="btnPauseScroll" type="button" style="padding:5px 10px">暂停滚动</button>
+            <button class="btn" id="btnClearMsg" type="button" style="padding:5px 10px">清空</button>
+          </div>
+        </div>
+        <div class="column-body" style="padding:10px">
+          <div class="msg-list" id="msgList"></div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- 故障接管说明弹窗 -->
+  <div class="modal-mask" id="failoverInfoModal" aria-hidden="true">
+    <div class="modal" style="width:min(640px,100%)">
+      <div class="modal-head">
+        <h3>故障接管功能说明</h3>
+        <button class="btn" id="btnCloseFailoverInfo" type="button">关闭</button>
+      </div>
+      <div class="modal-body" style="max-height:80vh;overflow:auto">
+        <div style="display:flex;flex-direction:column;gap:14px;font-size:13px;line-height:1.7;color:#cbd5e1">
+          <div>
+            <b style="color:#67e8f9">触发条件</b>：本机角色 <b>备机</b> + 主备总开关启用 + 缓冲启用。
+          </div>
+          <div>
+            <b style="color:#67e8f9">监测过程</b>：
+            <ol style="margin:6px 0 0 20px;padding:0;line-height:1.9">
+              <li>每 3 秒探测主机 SSH/DB 端口</li>
+              <li>按「失联判定」规则连续失败达到「连续失败次数」 → 进入倒计时</li>
+              <li>倒计时期间主机心跳恢复 → 立即重置回监测态</li>
+              <li>倒计时归零 → 触发接管动作</li>
+            </ol>
+          </div>
+          <div>
+            <b style="color:#fcd34d">接管动作（5 步）</b>：
+            <ol style="margin:6px 0 0 20px;padding:0;line-height:1.9">
+              <li><b>SSH 二次握手主机</b>（脑裂防护）：再尝试 SSH 一次主机；如果意外能握手成功，说明只是网络分区，<b style="color:#a7f3d0">取消接管</b></li>
+              <li>检查本机 dcim 容器存在</li>
+              <li><code style="color:#67e8f9">DELETE FROM dcim-alarmlist</code>（清空告警表，避免基于陈旧告警重复推送/误处理）</li>
+              <li><code style="color:#67e8f9">UPDATE dcim-device SET status=1</code></li>
+              <li><code style="color:#67e8f9">docker exec dcim systemctl restart dcim</code></li>
+            </ol>
+          </div>
+          <div>
+            <b style="color:#a7f3d0">已接管后</b>：
+            <ul style="margin:6px 0 0 20px;padding:0;line-height:1.9">
+              <li>持续监测主机端口，但<b style="color:#fcd34d">不再重启 dcim</b>（首次成功后业务已在备机跑）</li>
+              <li>主机被动逻辑触发：主机 5s 内自动 <code style="color:#67e8f9">docker exec dcim systemctl stop dcim</code> 让位</li>
+              <li>主机端「数据库同步」按钮被锁定，避免数据撕裂</li>
+              <li>UI 顶部出现「接管中」红色徽章</li>
+            </ul>
+          </div>
+          <div style="border:1px solid rgba(167,243,208,.35);border-radius:10px;background:rgba(167,243,208,.06);padding:10px 12px">
+            <b style="color:#a7f3d0">★ 自动让位（核心防撕裂机制）</b>：
+            <div style="margin-top:6px">主机重启时，OS/SSH（约 20s）比 dcim.service 自启（约 40s）<b>早 20 秒上线</b>。备机在已接管态下，连续 N 次心跳（默认 5 次 = 15 秒）探到主机 SSH 或 DB 端口任一通，就<b>立刻自动让位</b>：</div>
+            <ol style="margin:6px 0 0 20px;padding:0;line-height:1.9">
+              <li><code style="color:#67e8f9">UPDATE dcim-device SET status=-1</code></li>
+              <li><code style="color:#67e8f9">docker exec dcim systemctl stop dcim</code></li>
+              <li>主机 5s 内 peer watch 感知 → <code style="color:#67e8f9">systemctl start dcim</code> 接回业务</li>
+            </ol>
+            <div style="margin-top:6px;color:#94a3b8">
+              <b>时序保证 0 撕裂</b>：备机让位完成（T+15s）&lt; 主机 dcim 自启（T+40s），中间还有 ~20 秒安全窗口。<br>
+              让位后进入<b>冷却期</b>（默认 60 秒，可在表单里调整），期间不再触发任何接管/让位，避免主机时通时断震荡。
+            </div>
+          </div>
+          <div>
+            <b style="color:#67e8f9">手动「重置接管状态」</b>（运维主动让位，业务回切到主机）：
+            <ol style="margin:6px 0 0 20px;padding:0;line-height:1.9">
+              <li>动作与「自动让位」完全一致：<code style="color:#67e8f9">UPDATE status=-1</code> + <code style="color:#67e8f9">stop dcim</code></li>
+              <li>主机 5s 内自动 <code style="color:#67e8f9">start dcim</code> 接回</li>
+              <li>同样进入冷却期（按表单配置的秒数，默认 60s）</li>
+            </ol>
+          </div>
+          <div style="border:1px solid rgba(248,113,113,.4);border-radius:10px;background:rgba(248,113,113,.08);padding:10px 12px;color:#fecaca">
+            <b style="color:#fca5a5">⚠ 重要</b>：建议在配置完成后先点<b>「测试接管命令」</b>做一次 dry-run，确认 docker / mysql 权限正常，避免真正失联时才发现命令跑不通。
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- cron 语法说明弹窗 -->
+  <div class="modal-mask" id="cronInfoModal" aria-hidden="true">
+    <div class="modal" style="width:min(560px,100%)">
+      <div class="modal-head">
+        <h3>cron 语法说明（5 字段）</h3>
+        <button class="btn" id="btnCloseCronInfo" type="button">关闭</button>
+      </div>
+      <div class="modal-body" style="max-height:80vh;overflow:auto">
+        <div style="display:flex;flex-direction:column;gap:10px;font-size:13px;line-height:1.7;color:#cbd5e1">
+          <div style="font-family:ui-monospace,monospace;font-size:12px;color:#67e8f9;background:#0b1020;border:1px solid var(--border);border-radius:8px;padding:8px 12px">
+            *&nbsp;&nbsp;*&nbsp;&nbsp;*&nbsp;&nbsp;*&nbsp;&nbsp;*<br>
+            分&nbsp;时&nbsp;日&nbsp;月&nbsp;周（0-6 周日=0）
+          </div>
+          <div>支持的语法：</div>
+          <ul style="margin:0;padding-left:20px;line-height:1.9">
+            <li><code style="color:#67e8f9">*</code> &nbsp;&nbsp; 该字段任意值</li>
+            <li><code style="color:#67e8f9">5</code> &nbsp;&nbsp; 精确到 5</li>
+            <li><code style="color:#67e8f9">1,3,5</code> &nbsp;&nbsp; 列表</li>
+            <li><code style="color:#67e8f9">9-17</code> &nbsp;&nbsp; 范围</li>
+            <li><code style="color:#67e8f9">*/15</code> &nbsp;&nbsp; 步长（每 15 单位一次）</li>
+          </ul>
+          <div>常用例子：</div>
+          <ul style="margin:0;padding-left:20px;line-height:1.9;font-family:ui-monospace,monospace;font-size:12px">
+            <li><code style="color:#a7f3d0">0 3 * * *</code> &nbsp; 每天 03:00</li>
+            <li><code style="color:#a7f3d0">0 */6 * * *</code> &nbsp; 每 6 小时一次（00/06/12/18 整点）</li>
+            <li><code style="color:#a7f3d0">0 2 * * 0</code> &nbsp; 每周日 02:00</li>
+            <li><code style="color:#a7f3d0">30 1 1 * *</code> &nbsp; 每月 1 号 01:30</li>
+            <li><code style="color:#a7f3d0">*/5 * * * *</code> &nbsp; 每 5 分钟一次（仅测试用，业务不要开）</li>
+          </ul>
+          <div style="font-size:11px;color:#94a3b8;border-top:1px dashed #1e293b;padding-top:8px">
+            注意：调度精度为分钟级，不支持秒。本面板配置不支持 <code>@reboot</code> / <code>@daily</code> 等扩展语法。
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 数据库同步注意事项弹窗 -->
+  <div class="modal-mask" id="syncInfoModal" aria-hidden="true">
+    <div class="modal" style="width:min(640px,100%)">
+      <div class="modal-head">
+        <h3>数据库同步注意事项</h3>
+        <button class="btn" id="btnCloseSyncInfo" type="button">关闭</button>
+      </div>
+      <div class="modal-body" style="max-height:80vh;overflow:auto">
+        <div style="display:flex;flex-direction:column;gap:14px">
+          <div style="border:1px solid rgba(248,113,113,.4);border-radius:10px;background:rgba(248,113,113,.08);padding:12px 14px">
+            <div style="display:flex;align-items:flex-start;gap:8px">
+              <span style="color:#fca5a5;font-weight:700;font-size:13px;min-width:1.4em">1.</span>
+              <div style="flex:1;line-height:1.7;color:#fecaca;font-size:13px">
+                <b style="color:#fca5a5">收尾检查（重要）</b>：当项目完成到双机热备阶段时，请检查数据库
+                <code style="color:#67e8f9;background:rgba(34,211,238,.08);padding:1px 5px;border-radius:4px">dcim-device</code>
+                表中的
+                <code style="color:#67e8f9;background:rgba(34,211,238,.08);padding:1px 5px;border-radius:4px">status</code>
+                字段是否全部为
+                <code style="color:#a7f3d0;background:rgba(52,211,153,.1);padding:1px 5px;border-radius:4px">1</code>，
+                <b>一定要删除 status 为 -1 的条目</b>，不然会出现数据混乱的问题。
+              </div>
+            </div>
+          </div>
+
+          <div style="border:1px solid rgba(34,211,238,.35);border-radius:10px;background:rgba(34,211,238,.06);padding:12px 14px">
+            <div style="display:flex;align-items:flex-start;gap:8px">
+              <span style="color:#67e8f9;font-weight:700;font-size:13px;min-width:1.4em">2.</span>
+              <div style="flex:1;line-height:1.7;color:#cbd5e1;font-size:13px">
+                <b style="color:#67e8f9">备机现象解释</b>：数据库同步后备机的「设备管理」为空是正常情况。这里做了
+                <b style="color:#fcd34d">假删除</b>（status=-1），目的是
+                <b>防止备机自动重启后与主机争抢数据</b>。
+              </div>
+            </div>
+          </div>
+
+          <div style="font-size:11px;color:#64748b;line-height:1.6;border-top:1px dashed #1e293b;padding-top:8px">
+            参考：同步流程会先把主库数据完整覆盖到备机，再把
+            <code style="color:#94a3b8">dcim-device.status</code>
+            统一改成 -1。备机当前的 dcim 库备份在
+            <code style="color:#94a3b8">/opt/webssh/logs/ha-sync-bak-&lt;时间戳&gt;.sql.gz</code>。
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 连接信息弹窗 -->
+  <div class="modal-mask" id="configModal" aria-hidden="true">
+    <div class="modal" style="width:min(820px,100%)">
+      <div class="modal-head">
+        <h3>连接信息</h3>
+        <button class="btn" id="btnCloseConfig" type="button">关闭</button>
+      </div>
+      <div class="modal-body" style="max-height:80vh;overflow:auto">
+        <div class="form-grid">
+          <label class="field">
+            <span>主备功能开关</span>
+            <select id="cfgEnabled">
+              <option value="1">开启</option>
+              <option value="0">关闭</option>
+            </select>
+          </label>
+          <div class="field">
+            <span>当前服务器为</span>
+            <div class="role-radio">
+              <label><input type="radio" name="cfgSelfRole" value="primary" checked /> 主机</label>
+              <label><input type="radio" name="cfgSelfRole" value="standby" /> 备机</label>
+            </div>
+          </div>
+        </div>
+
+        <div class="section-title">主服务器 SSH 连接</div>
+        <div class="form-grid">
+          <label class="field"><span>IP</span><input id="cfgPriSshHost" type="text" placeholder="192.168.0.22" /></label>
+          <label class="field"><span>端口</span><input id="cfgPriSshPort" type="number" min="1" max="65535" placeholder="22" /></label>
+          <label class="field"><span>账号</span><input id="cfgPriSshUser" type="text" placeholder="root" /></label>
+          <label class="field"><span>密码</span><input id="cfgPriSshPwd" type="password" autocomplete="new-password" placeholder="留空保持原值" /></label>
+          <div class="field span-2 toolbar-row">
+            <button class="btn" id="btnTestPriSsh" type="button">测试连接</button>
+            <span class="hint" id="hintPriSsh">未测试</span>
+          </div>
+        </div>
+
+        <div class="section-title">主服务器数据库连接</div>
+        <div class="form-grid">
+          <label class="field"><span>主机 IP</span><input id="cfgPriDbHost" type="text" placeholder="192.168.0.22" /></label>
+          <label class="field"><span>端口</span><input id="cfgPriDbPort" type="number" min="1" max="65535" placeholder="3306" /></label>
+          <label class="field"><span>数据库名</span><input id="cfgPriDbName" type="text" /></label>
+          <label class="field"><span>用户名</span><input id="cfgPriDbUser" type="text" /></label>
+          <label class="field span-2"><span>密码</span><input id="cfgPriDbPwd" type="password" autocomplete="new-password" placeholder="留空保持原值" /></label>
+          <div class="field span-2 toolbar-row">
+            <button class="btn" id="btnTestPriDb" type="button">测试连接</button>
+            <span class="hint" id="hintPriDb">未测试</span>
+          </div>
+        </div>
+        <div class="section-title">备服务器 SSH 连接</div>
+        <div class="form-grid">
+          <label class="field"><span>IP</span><input id="cfgStbSshHost" type="text" placeholder="192.168.0.50" /></label>
+          <label class="field"><span>端口</span><input id="cfgStbSshPort" type="number" min="1" max="65535" placeholder="22" /></label>
+          <label class="field"><span>账号</span><input id="cfgStbSshUser" type="text" placeholder="root" /></label>
+          <label class="field"><span>密码</span><input id="cfgStbSshPwd" type="password" autocomplete="new-password" placeholder="留空保持原值" /></label>
+          <div class="field span-2 toolbar-row">
+            <button class="btn" id="btnTestStbSsh" type="button">测试连接</button>
+            <span class="hint" id="hintStbSsh">未测试</span>
+          </div>
+        </div>
+
+        <div class="section-title">备服务器数据库连接</div>
+        <div class="form-grid">
+          <label class="field"><span>主机 IP</span><input id="cfgStbDbHost" type="text" placeholder="192.168.0.50" /></label>
+          <label class="field"><span>端口</span><input id="cfgStbDbPort" type="number" min="1" max="65535" placeholder="3306" /></label>
+          <label class="field"><span>数据库名</span><input id="cfgStbDbName" type="text" /></label>
+          <label class="field"><span>用户名</span><input id="cfgStbDbUser" type="text" /></label>
+          <label class="field span-2"><span>密码</span><input id="cfgStbDbPwd" type="password" autocomplete="new-password" placeholder="留空保持原值" /></label>
+          <div class="field span-2 toolbar-row">
+            <button class="btn" id="btnTestStbDb" type="button">测试连接</button>
+            <span class="hint" id="hintStbDb">未测试</span>
+          </div>
+        </div>
+
+        <div class="hint" style="margin-top:6px">
+          密码字段：留空表示保持原值；首次保存或要修改时再填。提交后立即生效，重启心跳与连接。
+        </div>
+        <div class="actions">
+          <button class="btn primary" id="btnCfgSave" type="button">保存并应用</button>
+          <button class="btn" id="btnCfgReload" type="button">重新加载</button>
+          <button class="btn danger" id="btnCfgRestart" type="button">手动重置 SSH/DB</button>
+          <span class="hint" id="cfgSaveHint" style="margin-left:auto;align-self:center"></span>
+        </div>
+        <div class="status-box" id="cfgStatusBox">等待加载…</div>
+
+        <div class="section-title">MySQL 连接保护调优（max_connect_errors）</div>
+        <div class="hint" style="margin-bottom:6px;line-height:1.7">
+          MySQL 默认 <code style="color:#67e8f9">max_connect_errors=100</code>，遇到网络抖动 / 重启等连续失败时会拉黑源 IP。
+          调优会把两端容器内 <code style="color:#67e8f9">/etc/my.cnf</code> 改成 <code style="color:#67e8f9">100000</code> 并重启 mysqld（dcim 业务断 1-3s）。
+        </div>
+        <div class="kv-list" id="tuneKv" style="margin-bottom:6px"></div>
+        <div class="actions">
+          <button class="btn primary" id="btnTuneBoth" type="button">一键调优（主+备）</button>
+          <button class="btn" id="btnTunePrimary" type="button">仅主机</button>
+          <button class="btn" id="btnTuneStandby" type="button">仅备机</button>
+          <button class="btn" id="btnTuneRefresh" type="button">刷新当前值</button>
+          <span class="hint" id="tuneHint" style="margin-left:auto;align-self:center"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="./assets/js/ha-ws.js"></script>
+  <script src="./assets/js/ha-monitor.js"></script>
+  <script src="./assets/js/ha-sync.js"></script>
+  <script src="./assets/js/ha-failover.js"></script>
+  <script src="./assets/js/ha-config.js"></script>
+</body>
+</html>

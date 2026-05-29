@@ -12,6 +12,7 @@ const server = http.createServer(app);
 const wss = new WebSocket.Server({ noServer: true });
 const wssSerial = new WebSocket.Server({ noServer: true });
 const wssTcp = new WebSocket.Server({ noServer: true });
+const wssHa = new WebSocket.Server({ noServer: true });
 
 // 统一的 upgrade 分发：按路径把连接交给对应的 WebSocket.Server
 server.on('upgrade', function (request, socket, head) {
@@ -27,6 +28,10 @@ server.on('upgrade', function (request, socket, head) {
   } else if (pathname === '/ws/tcp') {
     wssTcp.handleUpgrade(request, socket, head, function (ws) {
       wssTcp.emit('connection', ws, request);
+    });
+  } else if (pathname === '/ws/ha') {
+    wssHa.handleUpgrade(request, socket, head, function (ws) {
+      wssHa.emit('connection', ws, request);
     });
   } else {
     socket.destroy();
@@ -1835,6 +1840,2012 @@ wssTcp.on('connection', function (ws) {
   };
 })();
 
+// ===== 双机热备：SSH 长连接 + DB 池 + 3s 心跳 + WebSocket /ws/ha =====
+(function setupHa() {
+  const path = require('path');
+  let mysql;
+  try { mysql = require('mysql2/promise'); } catch (_e) { mysql = null; }
+
+  const CONFIG_PATH = process.env.HA_CONFIG || path.join(__dirname, 'config', 'ha.json');
+  const LOG_PATH = process.env.HA_LOG || path.join(__dirname, 'logs', 'ha.log');
+
+  const defaults = {
+    enabled: false,
+    selfRole: 'primary', // primary | standby
+    primary: {
+      ssh: { host: '192.168.0.22', port: 22, user: 'root', password: '' },
+      db:  { host: '192.168.0.22', port: 3306, database: '', user: '', password: '' },
+    },
+    standby: {
+      ssh: { host: '192.168.0.50', port: 22, user: 'root', password: '' },
+      db:  { host: '192.168.0.50', port: 3306, database: '', user: '', password: '' },
+    },
+    // 定时同步：仅 primary 角色 + 主备总开关启用时才会真的跑
+    syncSchedule: {
+      enabled: false,
+      preset: 'daily-3am',                // daily-2am | daily-3am | weekly-sun-3am | custom
+      cron: '0 3 * * *',                  // preset=custom 时使用
+      skipIfPeerDown: true,                // 备机不可达时跳过本次
+      applyStatusMinusOne: true,           // 同步后做 status=-1 假删除（与手动同步一致）
+      lastRunAt: '',                       // 上次执行时间
+      lastRunResult: '',                   // success | fail | skipped-peer-down | skipped-mutex
+      lastRunError: '',
+    },
+    // 故障接管：仅 standby 角色 + 主备总开关启用时才会真的跑
+    failover: {
+      enabled: false,                      // 缓冲监测是否启用
+      bufferSec: 30,                       // 缓冲时长（秒）
+      bufferPreset: '30',                  // 10 | 30 | 60 | 120 | custom
+      judgeMode: 'any',                    // any（任一端口不通就算）| both | ip-only
+      consecutiveFails: 2,                 // 连续 N 次心跳失败才确认失联
+      // 自动让位（已接管态下检测到主机回归 → 自动 reset 让业务回主机）
+      autoYieldOnPeerRecover: true,        // 是否启用自动让位
+      autoYieldConsecutive: 5,             // 接管态下连续 N 次心跳全通才触发自动让位（默认 5×3s=15s）
+      cooldownSec: 60,                     // reset 后的冷却时长（秒）：期间不触发新一轮接管/让位，防震荡
+      // 运行期状态
+      takenOver: false,                    // 是否已接管（接管后置 true，运维重置才回 false）
+      takenOverAt: '',                     // 接管成功时刻
+      takenOverError: '',                  // 接管失败原因（最近一次）
+      lastFailCount: 0,                    // 当前连续失败次数（监测中实时更新）
+    },
+    // 主机让位状态：仅 primary 角色被动维护，发现备机已接管时自动停 dcim
+    yielded: {
+      yieldedToStandby: false,             // 当前是否已让位给备机
+      yieldedAt: '',
+    },
+  };
+
+  function deepMerge(target, src) {
+    const out = Object.assign({}, target);
+    for (const k of Object.keys(src || {})) {
+      if (src[k] && typeof src[k] === 'object' && !Array.isArray(src[k])) {
+        out[k] = deepMerge(target[k] || {}, src[k]);
+      } else {
+        out[k] = src[k];
+      }
+    }
+    return out;
+  }
+
+  let cfg = JSON.parse(JSON.stringify(defaults));
+
+  // 状态机
+  let pool = null;
+  let dbConnected = false;
+  let dbLastError = '';
+  let dbLastConnectedAt = '';
+  let dbAutoRetryTimer = null;
+  let dbAutoRetryCount = 0;
+
+  let sshClient = null;          // ssh2 Client 单例
+  let sshStatus = 'idle';        // idle | connecting | connected | broken
+  let sshLastError = '';
+  let sshReconnectTimer = null;
+  let sshReconnectDelay = 1000;  // 初始 1s，封顶 5s
+
+  let heartbeatTimer = null;
+  let heartbeatProbing = false;
+  let lastHeartbeat = { ipOk: false, dbPortOk: false, ts: 0 };
+  let lastBroadcastIpOk = null;
+  let lastBroadcastDbOk = null;
+
+  // ---------- 数据库同步任务状态 ----------
+  // 仅当 selfRole=primary 时允许触发；任何时刻只允许 1 个同步任务在跑
+  let syncRunning = false;
+  let syncStep = '';            // 当前阶段，便于前端展示进度
+  let syncStartedAt = '';
+  let syncFinishedAt = '';
+  let syncLastResult = '';      // success | fail | ''
+  let syncLastError = '';
+  const syncSteps = [];         // 本轮所有阶段记录，最多 50 条
+
+  // 最近事件环形队列（用于新连入 ws 一次性下发 snapshot）
+  const RECENT_EVENTS_MAX = 200;
+  const recentEvents = [];
+
+  // ---------- 工具函数 ----------
+  function localStamp(d) {
+    d = d || new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
+      + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+  }
+
+  function appendLog(line) {
+    try {
+      fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true });
+      fs.appendFileSync(LOG_PATH, `[${localStamp()}] ${line}\n`, 'utf8');
+    } catch (_e) {}
+  }
+
+  function readCfg() {
+    try {
+      const raw = fs.readFileSync(CONFIG_PATH, 'utf8');
+      const parsed = JSON.parse(raw);
+      cfg = deepMerge(defaults, parsed);
+    } catch (_e) {
+      cfg = JSON.parse(JSON.stringify(defaults));
+    }
+  }
+
+  function writeCfg() {
+    try {
+      fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
+      fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+      try { fs.chmodSync(CONFIG_PATH, 0o600); } catch (_e) {}
+    } catch (err) {
+      console.error('[ha] 写配置失败:', err.message);
+    }
+  }
+
+  // 隐藏密码用于响应
+  function redactCfg(c) {
+    const cp = JSON.parse(JSON.stringify(c));
+    ['primary', 'standby'].forEach(function (k) {
+      if (cp[k]) {
+        if (cp[k].ssh) cp[k].ssh.password = cp[k].ssh.password ? '***' : '';
+        if (cp[k].db)  cp[k].db.password  = cp[k].db.password  ? '***' : '';
+      }
+    });
+    return cp;
+  }
+
+  // 计算"对端"配置：selfRole=primary 时对端是 standby，反之亦然
+  function peerOf(cfgIn) {
+    const c = cfgIn || cfg;
+    return c.selfRole === 'primary' ? c.standby : c.primary;
+  }
+
+  function selfOf(cfgIn) {
+    const c = cfgIn || cfg;
+    return c.selfRole === 'primary' ? c.primary : c.standby;
+  }
+
+  // 推送给所有 /ws/ha 客户端
+  function broadcast(obj) {
+    let payload;
+    try { payload = JSON.stringify(obj); } catch (_e) { return; }
+    wssHa.clients.forEach(function (ws) {
+      if (ws.readyState === 1) {
+        try { ws.send(payload); } catch (_e) {}
+      }
+    });
+  }
+
+  function pushEvent(level, msg) {
+    const ev = { level, msg, ts: localStamp() };
+    recentEvents.push(ev);
+    while (recentEvents.length > RECENT_EVENTS_MAX) recentEvents.shift();
+    appendLog(`[${level}] ${msg}`);
+    broadcast({ type: 'event', data: ev });
+  }
+
+  function publicStatus() {
+    const peer = peerOf(cfg);
+    return {
+      enabled: !!cfg.enabled,
+      selfRole: cfg.selfRole,
+      peer: {
+        sshHost: peer.ssh.host, sshPort: peer.ssh.port,
+        dbHost:  peer.db.host,  dbPort:  peer.db.port,
+        dbDatabase: peer.db.database, dbUser: peer.db.user,
+      },
+      ssh: { status: sshStatus, lastError: sshLastError },
+      db:  {
+        connected: dbConnected, lastError: dbLastError, lastConnectedAt: dbLastConnectedAt,
+        autoRetrying: !!dbAutoRetryTimer, autoRetryCount: dbAutoRetryCount,
+        driverReady: !!mysql,
+      },
+      heartbeat: lastHeartbeat,
+      recentEvents: recentEvents.slice(-50),
+      sync: {
+        running: syncRunning,
+        step: syncStep,
+        startedAt: syncStartedAt,
+        finishedAt: syncFinishedAt,
+        lastResult: syncLastResult,
+        lastError: syncLastError,
+        steps: syncSteps.slice(-30),
+        allowed: cfg.selfRole === 'primary',  // 仅主机可触发
+        schedule: {
+          enabled: !!(cfg.syncSchedule && cfg.syncSchedule.enabled),
+          preset: (cfg.syncSchedule && cfg.syncSchedule.preset) || 'daily-3am',
+          cron: effectiveCron(),
+          customCron: (cfg.syncSchedule && cfg.syncSchedule.cron) || '0 3 * * *',
+          skipIfPeerDown: cfg.syncSchedule ? !!cfg.syncSchedule.skipIfPeerDown : true,
+          applyStatusMinusOne: cfg.syncSchedule ? !!cfg.syncSchedule.applyStatusMinusOne : true,
+          lastRunAt: (cfg.syncSchedule && cfg.syncSchedule.lastRunAt) || '',
+          lastRunResult: (cfg.syncSchedule && cfg.syncSchedule.lastRunResult) || '',
+          lastRunError: (cfg.syncSchedule && cfg.syncSchedule.lastRunError) || '',
+          nextRunAt: getNextRunAt(),
+          running: !!scheduleTimer,
+        },
+      },
+      failover: {
+        enabled: !!(cfg.failover && cfg.failover.enabled),
+        bufferSec: (cfg.failover && cfg.failover.bufferSec) || 30,
+        bufferPreset: (cfg.failover && cfg.failover.bufferPreset) || '30',
+        judgeMode: (cfg.failover && cfg.failover.judgeMode) || 'any',
+        consecutiveFails: (cfg.failover && cfg.failover.consecutiveFails) || 2,
+        autoYieldOnPeerRecover: cfg.failover ? !!cfg.failover.autoYieldOnPeerRecover : true,
+        autoYieldConsecutive: (cfg.failover && cfg.failover.autoYieldConsecutive) || 5,
+        cooldownSec: (cfg.failover && cfg.failover.cooldownSec != null) ? cfg.failover.cooldownSec : 60,
+        cooldownRemainingSec: typeof failoverCooldownUntil !== 'undefined' && failoverCooldownUntil > Date.now()
+          ? Math.ceil((failoverCooldownUntil - Date.now()) / 1000) : 0,
+        takenOver: !!(cfg.failover && cfg.failover.takenOver),
+        takenOverAt: (cfg.failover && cfg.failover.takenOverAt) || '',
+        takenOverError: (cfg.failover && cfg.failover.takenOverError) || '',
+        state: typeof failoverState !== 'undefined' ? failoverState : 'idle',
+        failCount: typeof failoverFailCount !== 'undefined' ? failoverFailCount : 0,
+        countdownSec: typeof failoverCountdownSec !== 'undefined' ? failoverCountdownSec : 0,
+        running: typeof failoverCheckTimer !== 'undefined' && !!failoverCheckTimer,
+        allowed: cfg.selfRole === 'standby' && cfg.enabled,
+      },
+      yielded: {
+        yieldedToStandby: !!(cfg.yielded && cfg.yielded.yieldedToStandby),
+        yieldedAt: (cfg.yielded && cfg.yielded.yieldedAt) || '',
+        watchRunning: typeof peerWatchTimer !== 'undefined' && !!peerWatchTimer,
+      },
+    };
+  }
+
+  // ---------- cron 工具：匹配 + 计算下次触发时间 ----------
+  // 仅支持 5 字段（分 时 日 月 周），每个字段支持 * / */N / a-b / 1,2,3 / 纯数字
+  // 不支持 @reboot / @daily / L / W / # 等扩展语法（够用即可，不引入 cron-parser 依赖）
+  const PRESET_TO_CRON = {
+    'daily-2am': '0 2 * * *',
+    'daily-3am': '0 3 * * *',
+    'weekly-sun-3am': '0 3 * * 0',
+  };
+
+  function matchCronField(field, val, min, max) {
+    if (field === '*') return true;
+    if (field.includes(',')) {
+      return field.split(',').some(function (p) { return matchCronField(p, val, min, max); });
+    }
+    const stepM = field.match(/^(\*|\d+(?:-\d+)?)\/(\d+)$/);
+    if (stepM) {
+      const range = stepM[1], step = Number(stepM[2]);
+      let lo = min, hi = max;
+      if (range !== '*') {
+        const rm = range.match(/^(\d+)(?:-(\d+))?$/);
+        if (!rm) return false;
+        lo = Number(rm[1]); hi = rm[2] ? Number(rm[2]) : max;
+      }
+      if (val < lo || val > hi) return false;
+      return ((val - lo) % step) === 0;
+    }
+    const rangeM = field.match(/^(\d+)-(\d+)$/);
+    if (rangeM) {
+      const a = Number(rangeM[1]), b = Number(rangeM[2]);
+      return val >= a && val <= b;
+    }
+    if (/^\d+$/.test(field)) return Number(field) === val;
+    return false;
+  }
+
+  function cronMatch(expr, date) {
+    const fields = String(expr || '').trim().split(/\s+/);
+    if (fields.length !== 5) return false;
+    const checks = [
+      [fields[0], date.getMinutes(),    0, 59],
+      [fields[1], date.getHours(),      0, 23],
+      [fields[2], date.getDate(),       1, 31],
+      [fields[3], date.getMonth() + 1,  1, 12],
+      [fields[4], date.getDay(),        0,  6],
+    ];
+    for (const [f, v, mn, mx] of checks) {
+      if (!matchCronField(f, v, mn, mx)) return false;
+    }
+    return true;
+  }
+
+  // 从 from 时间点向后扫描，找下一次 cron 命中的「整分钟」时刻
+  // 最多扫 7 天（10080 次循环），找不到返回 null
+  function cronNext(expr, from) {
+    if (!cronValid(expr)) return null;
+    const t = new Date(from || Date.now());
+    t.setSeconds(0, 0);
+    t.setMinutes(t.getMinutes() + 1); // 从下一分钟开始（本分钟可能已经触发过）
+    for (let i = 0; i < 10080; i++) {
+      if (cronMatch(expr, t)) return new Date(t);
+      t.setMinutes(t.getMinutes() + 1);
+    }
+    return null;
+  }
+
+  function cronValid(expr) {
+    const fields = String(expr || '').trim().split(/\s+/);
+    if (fields.length !== 5) return false;
+    const ranges = [[0, 59], [0, 23], [1, 31], [1, 12], [0, 6]];
+    // 用一个不可能的 date 做语法检查（任意时间走一遍 matchField，看是否抛错）
+    const sampleDate = new Date(2000, 0, 1, 0, 0, 0);
+    const sampleVals = [0, 0, 1, 1, 6];
+    try {
+      for (let i = 0; i < 5; i++) {
+        // matchCronField 不会抛错，但能识别非法语法返回 false
+        // 我们只校验：字段非空 + 不含异常字符
+        if (!/^[\d*\/,\-]+$/.test(fields[i])) return false;
+      }
+      return true;
+    } catch (_e) { return false; }
+  }
+
+  function presetToCron(preset, customCron) {
+    if (preset === 'custom') return customCron;
+    return PRESET_TO_CRON[preset] || PRESET_TO_CRON['daily-3am'];
+  }
+
+  // ---------- 定时同步：调度器状态 ----------
+  let scheduleTimer = null;
+  let scheduleLastTriggerMinute = ''; // YYYY-MM-DDTHH:MM，避免 30s 双 tick 重复触发
+
+  function effectiveCron() {
+    const sch = cfg.syncSchedule || {};
+    return presetToCron(sch.preset, sch.cron);
+  }
+
+  function getNextRunAt() {
+    const sch = cfg.syncSchedule || {};
+    if (!sch.enabled) return '';
+    const expr = effectiveCron();
+    if (!cronValid(expr)) return '';
+    const next = cronNext(expr, new Date());
+    return next ? localStamp(next) : '';
+  }
+
+  function startScheduleTimer() {
+    if (scheduleTimer) return;
+    appendLog('启动定时同步调度器（30s 一 tick）');
+    scheduleTimer = setInterval(scheduleTick, 30000);
+    // 启动时立刻 tick 一次（覆盖刚好整分钟启动的情况）
+    setTimeout(scheduleTick, 1000);
+  }
+  function stopScheduleTimer(reason) {
+    if (scheduleTimer) {
+      clearInterval(scheduleTimer);
+      scheduleTimer = null;
+      appendLog(`停止定时同步调度器（${reason || '-'}）`);
+    }
+    scheduleLastTriggerMinute = '';
+  }
+
+  async function scheduleTick() {
+    try {
+      const sch = cfg.syncSchedule || {};
+      if (!cfg.enabled) return;            // 主备总开关未启用
+      if (!sch.enabled) return;            // 定时同步未启用
+      if (cfg.selfRole !== 'primary') return; // 仅主机调度
+
+      const now = new Date();
+      const minuteKey = now.toISOString().slice(0, 16);
+      if (minuteKey === scheduleLastTriggerMinute) return; // 这分钟已处理过
+
+      const expr = effectiveCron();
+      if (!cronMatch(expr, now)) return;
+
+      scheduleLastTriggerMinute = minuteKey;
+
+      // 跳过策略
+      if (syncRunning) {
+        sch.lastRunAt = localStamp();
+        sch.lastRunResult = 'skipped-mutex';
+        sch.lastRunError = '上次同步未结束';
+        pushEvent('warn', '定时同步跳过：上次未结束');
+        writeCfg();
+        broadcastSnapshot();
+        return;
+      }
+      if (sch.skipIfPeerDown && (!lastHeartbeat.ipOk || !lastHeartbeat.dbPortOk)) {
+        sch.lastRunAt = localStamp();
+        sch.lastRunResult = 'skipped-peer-down';
+        sch.lastRunError = '对端不可达（IP 或 DB 端口）';
+        pushEvent('warn', '定时同步跳过：对端不可达');
+        writeCfg();
+        broadcastSnapshot();
+        return;
+      }
+
+      pushEvent('info', `定时同步触发（cron: ${expr}）`);
+      try {
+        await doSyncDb({ skipStatusUpdate: !sch.applyStatusMinusOne });
+        sch.lastRunResult = 'success';
+        sch.lastRunError = '';
+      } catch (err) {
+        sch.lastRunResult = 'fail';
+        sch.lastRunError = err.message;
+        // doSyncDb 内部已 pushEvent('error',...)，不重复推
+      }
+      sch.lastRunAt = localStamp();
+      writeCfg();
+      broadcastSnapshot();
+    } catch (err) {
+      appendLog(`scheduleTick 异常：${err.message}`);
+    }
+  }
+
+  // ---------- 故障接管：状态机 + 监测循环（仅 standby）----------
+  // 状态：idle / monitoring / counting-down / taking-over / taken-over / failed
+  let failoverState = 'idle';
+  let failoverFailCount = 0;
+  let failoverCountdownSec = 0;          // 实时倒计时秒数
+  let failoverCountdownTimer = null;     // 1s tick
+  let failoverCheckTimer = null;         // 3s tick（与心跳同节奏）
+  let failoverInProgress = false;        // 互斥锁：接管动作执行期间
+  // 自动让位计数：接管态下连续 N 次心跳全通才触发
+  let failoverPeerRecoverCount = 0;
+  // 冷却时间戳：reset 完成后 60 秒内不再触发新一轮接管/让位，防震荡
+  let failoverCooldownUntil = 0;
+
+  function isPeerAlive() {
+    const mode = (cfg.failover && cfg.failover.judgeMode) || 'any';
+    const ipOk = !!lastHeartbeat.ipOk;
+    const dbOk = !!lastHeartbeat.dbPortOk;
+    if (mode === 'both') return ipOk && dbOk;        // 两个都通才算活
+    if (mode === 'ip-only') return ipOk;             // 只看 IP
+    return ipOk && dbOk;                             // any 模式：等价于"任一不通就算失联"
+  }
+
+  function isPeerAliveAny() {
+    // judgeMode=any 的语义实现：任一通就视为活；只有都不通才视为失联
+    const ipOk = !!lastHeartbeat.ipOk;
+    const dbOk = !!lastHeartbeat.dbPortOk;
+    return ipOk || dbOk;
+  }
+
+  function isPeerDownByMode() {
+    const mode = (cfg.failover && cfg.failover.judgeMode) || 'any';
+    const ipOk = !!lastHeartbeat.ipOk;
+    const dbOk = !!lastHeartbeat.dbPortOk;
+    if (mode === 'both') return !ipOk && !dbOk;       // 两个都不通才算失联
+    if (mode === 'ip-only') return !ipOk;             // 只看 IP 不通
+    return !ipOk || !dbOk;                            // any: 任一不通就算失联
+  }
+
+  function startFailoverCheckTimer() {
+    if (failoverCheckTimer) return;
+    appendLog('启动故障接管监测循环（3s 一 tick）');
+    failoverCheckTimer = setInterval(failoverCheckTick, 3000);
+    setTimeout(failoverCheckTick, 1500);
+  }
+  function stopFailoverCheckTimer(reason) {
+    if (failoverCheckTimer) {
+      clearInterval(failoverCheckTimer);
+      failoverCheckTimer = null;
+      appendLog(`停止故障接管监测循环（${reason || '-'}）`);
+    }
+    stopFailoverCountdown('check-timer-stopped');
+    failoverFailCount = 0;
+  }
+  function startFailoverCountdown(initSec) {
+    stopFailoverCountdown('restart');
+    failoverCountdownSec = Number(initSec) || 30;
+    failoverState = 'counting-down';
+    pushEvent('warn', `主机失联，进入接管倒计时（${failoverCountdownSec}s）`);
+    broadcastSnapshot();
+    failoverCountdownTimer = setInterval(function () {
+      failoverCountdownSec -= 1;
+      if (failoverCountdownSec <= 0) {
+        stopFailoverCountdown('zero');
+        triggerFailover().catch(function () {});
+      } else {
+        // 每 5s 推一次进度，避免太密
+        if (failoverCountdownSec % 5 === 0) broadcastSnapshot();
+      }
+    }, 1000);
+  }
+  function stopFailoverCountdown(reason) {
+    if (failoverCountdownTimer) {
+      clearInterval(failoverCountdownTimer);
+      failoverCountdownTimer = null;
+    }
+    failoverCountdownSec = 0;
+  }
+
+  function failoverCheckTick() {
+    try {
+      const fo = cfg.failover || {};
+      // 必备前提：本机为备机 + 总开关启用 + 缓冲启用
+      if (!cfg.enabled || cfg.selfRole !== 'standby' || !fo.enabled) {
+        if (failoverState !== 'idle' && failoverState !== 'taken-over') {
+          failoverState = 'idle';
+          stopFailoverCountdown('disabled');
+          broadcastSnapshot();
+        }
+        return;
+      }
+      // 接管动作执行中：不并发
+      if (failoverInProgress) return;
+
+      // 已接管状态：检测主机端口恢复 → 自动让位
+      // 关键时序：主机重启时 SSH 端口比业务 dcim 早 ~20s 上线
+      //          只要备机感知到 SSH 或 DB 任一端口通就立即让位（先于主机的 dcim 自启）
+      //          → 备机 stop dcim + status=-1 完成时主机的 dcim 还没起 → 0 撕裂
+      if (failoverState === 'taken-over') {
+        if (!fo.autoYieldOnPeerRecover) return; // 关掉了自动让位
+        // SSH 或 DB 任一端口通就算"主机回归"
+        const peerAlive = !!lastHeartbeat.ipOk || !!lastHeartbeat.dbPortOk;
+        if (peerAlive) {
+          failoverPeerRecoverCount += 1;
+          const need = Math.max(1, Number(fo.autoYieldConsecutive) || 5);
+          if (failoverPeerRecoverCount === 1 || failoverPeerRecoverCount === Math.floor(need / 2)) {
+            pushEvent('info', `检测到主机端口恢复（${failoverPeerRecoverCount}/${need}），即将自动让位`);
+            broadcastSnapshot();
+          }
+          if (failoverPeerRecoverCount >= need) {
+            failoverPeerRecoverCount = 0;
+            pushEvent('warn', '【自动让位】主机已回归，备机自动 UPDATE status=-1 + 停止 dcim 采集');
+            doFailoverReset({ reason: 'auto-yield-on-peer-recover' }).catch(function (err) {
+              pushEvent('error', '【自动让位】失败：' + err.message);
+            });
+          }
+        } else {
+          // 端口又不通了，重置计数
+          if (failoverPeerRecoverCount > 0) {
+            pushEvent('info', `主机端口又不通，自动让位计数已清零（之前 ${failoverPeerRecoverCount} 次）`);
+            failoverPeerRecoverCount = 0;
+          }
+        }
+        return;
+      }
+
+      // 冷却期：reset 完成后 60s 内不触发新一轮接管，防止主机恢复时震荡
+      if (Date.now() < failoverCooldownUntil) return;
+
+      const peerDown = isPeerDownByMode();
+      const need = Math.max(1, Number(fo.consecutiveFails) || 2);
+
+      if (peerDown) {
+        failoverFailCount += 1;
+        fo.lastFailCount = failoverFailCount;
+        if (failoverState === 'monitoring' && failoverFailCount >= need) {
+          // 达到连续失败次数 → 启动倒计时
+          startFailoverCountdown(fo.bufferSec);
+        }
+      } else {
+        // 主机恢复：失败计数清零；若在倒计时则重置
+        if (failoverFailCount > 0) {
+          pushEvent('info', `主机心跳恢复（之前累计失败 ${failoverFailCount} 次）`);
+        }
+        failoverFailCount = 0;
+        fo.lastFailCount = 0;
+        if (failoverState === 'counting-down') {
+          stopFailoverCountdown('peer-recovered');
+          failoverState = 'monitoring';
+          pushEvent('info', '倒计时已重置');
+          broadcastSnapshot();
+        }
+        if (failoverState === 'idle' && fo.enabled) {
+          failoverState = 'monitoring';
+        }
+      }
+    } catch (err) {
+      appendLog(`failoverCheckTick 异常：${err.message}`);
+    }
+  }
+
+  // ---------- 接管动作（doFailover）----------
+  // 流程：dry-run 校验 → SSH 二次握手主机（脑裂防护）→ UPDATE status=1 → dcim restart
+  async function triggerFailover() {
+    if (failoverInProgress) return;
+    if (failoverState === 'taken-over') return;
+    failoverInProgress = true;
+    failoverState = 'taking-over';
+    broadcastSnapshot();
+
+    const fo = cfg.failover;
+    // 备机视角：自身是 standby，对端是 primary（也就是 cfg.primary）
+    // 但接管要操作的是「本机」的 dcim 容器和 db
+    const localDb = cfg.standby.db;       // 本机（备机）的 db
+    const peerSshCfg = cfg.primary.ssh;   // 对端（主机）的 ssh，仅用于二次握手探测
+
+    let localClient = null;
+    try {
+      pushEvent('error', '【接管】触发主机失联接管动作');
+
+      // ---------- 1. 脑裂防护：再尝试 SSH 主机一次（深度探测）----------
+      pushEvent('info', '【接管】1/5 尝试 SSH 握手主机（脑裂防护）');
+      let primarySshAlive = false;
+      try {
+        const c = await Promise.race([
+          newPeerSshClient(peerSshCfg),
+          new Promise(function (_, rej) { setTimeout(function () { rej(new Error('timeout')); }, 8000); }),
+        ]);
+        primarySshAlive = true;
+        try { c.end(); } catch (_e) {}
+      } catch (_e) {
+        primarySshAlive = false;
+      }
+      if (primarySshAlive) {
+        // 主机其实活着 → 取消接管，回到监测态
+        pushEvent('warn', '【接管】主机 SSH 握手成功，疑似网络分区，取消本次接管');
+        failoverState = 'monitoring';
+        failoverFailCount = 0;
+        return;
+      }
+      pushEvent('info', '【接管】主机 SSH 握手仍失败，确认主机失联');
+
+      // ---------- 2. 本地 SSH 连接（操作备机自己）----------
+      // 备机是本机，理论上不需要 SSH 自己，但为了和接管脚本同构，统一走 ssh2 客户端
+      // 用 cfg.standby.ssh 凭据连本机 127.0.0.1 也行，但更稳的是直接 spawn shell
+      // 这里用一个简单的 spawn 来跑 docker exec
+      pushEvent('info', '【接管】2/5 检查本机 dcim 容器');
+      const psResult = await new Promise(function (resolve) {
+        const proc = spawn('docker', ['ps', '--format', '{{.Names}}'], { stdio: ['ignore', 'pipe', 'pipe'] });
+        let so = '', se = '';
+        proc.stdout.on('data', function (d) { so += d.toString('utf8'); });
+        proc.stderr.on('data', function (d) { se += d.toString('utf8'); });
+        proc.on('close', function (code) { resolve({ code, so, se }); });
+        proc.on('error', function () { resolve({ code: -1, so: '', se: 'spawn-error' }); });
+      });
+      if (psResult.code !== 0 || !/(^|\n)dcim(\n|$)/.test(psResult.so)) {
+        throw new Error('本机 dcim 容器未运行：' + (psResult.se || psResult.so).slice(0, 200));
+      }
+
+      // ---------- 3. 清空 dcim-alarmlist 表（接管前必做：避免备机基于陈旧告警重复推送/误处理） ----------
+      pushEvent('info', '【接管】3/5 清空 dcim-alarmlist 表（DELETE）');
+      const clearAlarmOut = await new Promise(function (resolve) {
+        const args = [
+          'exec', 'dcim', 'mysql',
+          '-h', String(localDb.host || '127.0.0.1'),
+          '-P', String(localDb.port || 3306),
+          '-u', String(localDb.user || ''),
+          '--password=' + String(localDb.password || ''),
+          '-BN', '-e',
+          'USE `' + localDb.database + '`; DELETE FROM `dcim-alarmlist`; SELECT ROW_COUNT() AS affected;',
+        ];
+        const proc = spawn('docker', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+        let so = '', se = '';
+        proc.stdout.on('data', function (d) { so += d.toString('utf8'); });
+        proc.stderr.on('data', function (d) { se += d.toString('utf8'); });
+        proc.on('close', function (code) { resolve({ code, so, se }); });
+        proc.on('error', function () { resolve({ code: -1, so: '', se: 'spawn-error' }); });
+      });
+      if (clearAlarmOut.code !== 0) {
+        throw new Error('清空 dcim-alarmlist 失败 exit=' + clearAlarmOut.code + ': ' + (clearAlarmOut.se || clearAlarmOut.so).slice(0, 300));
+      }
+      const alarmAffected = (clearAlarmOut.so.trim().split('\n').filter(function (l) { return /^\d+$/.test(l.trim()); }).pop() || '0').trim();
+      pushEvent('info', `【接管】dcim-alarmlist 已清空（affected=${alarmAffected}）`);
+
+      // ---------- 4. UPDATE dcim-device.status=1 ----------
+      pushEvent('info', '【接管】4/5 UPDATE dcim-device SET status=1');
+      const updateOut = await new Promise(function (resolve) {
+        const args = [
+          'exec', 'dcim', 'mysql',
+          '-h', String(localDb.host || '127.0.0.1'),
+          '-P', String(localDb.port || 3306),
+          '-u', String(localDb.user || ''),
+          '--password=' + String(localDb.password || ''),
+          '-BN', '-e',
+          'USE `' + localDb.database + '`; UPDATE `dcim-device` SET status=1; SELECT ROW_COUNT() AS affected;',
+        ];
+        const proc = spawn('docker', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+        let so = '', se = '';
+        proc.stdout.on('data', function (d) { so += d.toString('utf8'); });
+        proc.stderr.on('data', function (d) { se += d.toString('utf8'); });
+        proc.on('close', function (code) { resolve({ code, so, se }); });
+        proc.on('error', function () { resolve({ code: -1, so: '', se: 'spawn-error' }); });
+      });
+      if (updateOut.code !== 0) {
+        throw new Error('UPDATE 失败 exit=' + updateOut.code + ': ' + (updateOut.se || updateOut.so).slice(0, 300));
+      }
+      const affected = (updateOut.so.trim().split('\n').filter(function (l) { return /^\d+$/.test(l.trim()); }).pop() || '0').trim();
+      pushEvent('info', `【接管】UPDATE 完成（affected=${affected}）`);
+
+      // ---------- 5. 重启本机 dcim 采集 ----------
+      pushEvent('info', '【接管】5/5 重启本机 dcim 采集（docker exec dcim systemctl restart dcim）');
+      const restartOut = await new Promise(function (resolve) {
+        const proc = spawn('docker', ['exec', 'dcim', 'systemctl', 'restart', 'dcim'], { stdio: ['ignore', 'pipe', 'pipe'] });
+        let so = '', se = '';
+        proc.stdout.on('data', function (d) { so += d.toString('utf8'); });
+        proc.stderr.on('data', function (d) { se += d.toString('utf8'); });
+        proc.on('close', function (code) { resolve({ code, so, se }); });
+        proc.on('error', function () { resolve({ code: -1, so: '', se: 'spawn-error' }); });
+      });
+      if (restartOut.code !== 0) {
+        throw new Error('重启 dcim 失败 exit=' + restartOut.code + ': ' + (restartOut.se || restartOut.so).slice(0, 300));
+      }
+
+      // ---------- 5. 标记已接管 ----------
+      fo.takenOver = true;
+      fo.takenOverAt = localStamp();
+      fo.takenOverError = '';
+      failoverState = 'taken-over';
+      writeCfg();
+      pushEvent('error', `【接管】完成：备机已接管业务，请确认主机状态后点「重置接管状态」恢复`);
+    } catch (err) {
+      fo.takenOver = false;
+      fo.takenOverError = err.message;
+      failoverState = 'failed';
+      writeCfg();
+      pushEvent('error', '【接管】失败：' + err.message);
+    } finally {
+      if (localClient) { try { localClient.end(); } catch (_e) {} }
+      failoverInProgress = false;
+      broadcastSnapshot();
+    }
+  }
+
+  // ---------- 接管重置（doFailoverReset）----------
+  // 流程：UPDATE status=-1 → 停 dcim → 标记 takenOver=false → 回到 monitoring
+  async function doFailoverReset(opts) {
+    opts = opts || {};
+    const isAuto = opts.reason === 'auto-yield-on-peer-recover';
+    const reasonTag = isAuto ? '自动让位' : '重置';
+    if (failoverInProgress) throw new Error('接管动作执行中，无法重置');
+    if (cfg.selfRole !== 'standby') throw new Error('仅备机可重置接管状态');
+    const fo = cfg.failover || {};
+    if (!fo.takenOver) throw new Error('当前未处于接管状态，无需重置');
+
+    failoverInProgress = true;
+    try {
+      pushEvent('info', `【${reasonTag}】1/2 UPDATE dcim-device SET status=-1`);
+      const localDb = cfg.standby.db;
+      const updateOut = await new Promise(function (resolve) {
+        const args = [
+          'exec', 'dcim', 'mysql',
+          '-h', String(localDb.host || '127.0.0.1'),
+          '-P', String(localDb.port || 3306),
+          '-u', String(localDb.user || ''),
+          '--password=' + String(localDb.password || ''),
+          '-BN', '-e',
+          'USE `' + localDb.database + '`; UPDATE `dcim-device` SET status=-1; SELECT ROW_COUNT() AS affected;',
+        ];
+        const proc = spawn('docker', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+        let so = '', se = '';
+        proc.stdout.on('data', function (d) { so += d.toString('utf8'); });
+        proc.stderr.on('data', function (d) { se += d.toString('utf8'); });
+        proc.on('close', function (code) { resolve({ code, so, se }); });
+        proc.on('error', function () { resolve({ code: -1, so: '', se: 'spawn-error' }); });
+      });
+      if (updateOut.code !== 0) {
+        throw new Error('UPDATE 失败 exit=' + updateOut.code + ': ' + (updateOut.se || updateOut.so).slice(0, 300));
+      }
+      const affected = (updateOut.so.trim().split('\n').filter(function (l) { return /^\d+$/.test(l.trim()); }).pop() || '0').trim();
+      pushEvent('info', `【${reasonTag}】UPDATE 完成（affected=${affected}）`);
+
+      pushEvent('info', `【${reasonTag}】2/2 停止本机 dcim 采集`);
+      const stopOut = await new Promise(function (resolve) {
+        const proc = spawn('docker', ['exec', 'dcim', 'systemctl', 'stop', 'dcim'], { stdio: ['ignore', 'pipe', 'pipe'] });
+        let so = '', se = '';
+        proc.stdout.on('data', function (d) { so += d.toString('utf8'); });
+        proc.stderr.on('data', function (d) { se += d.toString('utf8'); });
+        proc.on('close', function (code) { resolve({ code, so, se }); });
+        proc.on('error', function () { resolve({ code: -1, so: '', se: 'spawn-error' }); });
+      });
+      if (stopOut.code !== 0) {
+        throw new Error('停止 dcim 失败 exit=' + stopOut.code + ': ' + (stopOut.se || stopOut.so).slice(0, 300));
+      }
+
+      fo.takenOver = false;
+      fo.takenOverAt = '';
+      fo.takenOverError = '';
+      failoverState = (cfg.enabled && cfg.selfRole === 'standby' && fo.enabled) ? 'monitoring' : 'idle';
+      failoverFailCount = 0;
+      failoverPeerRecoverCount = 0;
+      // 冷却期：reset 完成后 N 秒内不再触发新一轮接管，防止主机抖动导致震荡
+      const cooldownSec = Math.max(0, Number(fo.cooldownSec) || 60);
+      failoverCooldownUntil = Date.now() + cooldownSec * 1000;
+      writeCfg();
+      pushEvent('info', `【${reasonTag}】完成：备机已让位（status=-1 + dcim 已停），主机将在 5s 内自动接回业务（${cooldownSec}s 冷却中，期间不再触发接管）`);
+    } finally {
+      failoverInProgress = false;
+      broadcastSnapshot();
+    }
+  }
+
+
+
+  // ---------- TCP 端口探测（IP / DB 端口）----------
+  function tcpProbe(host, port, timeoutMs) {
+    return new Promise(function (resolve) {
+      if (!host || !port) return resolve(false);
+      const sock = new net.Socket();
+      let done = false;
+      const finish = function (ok) {
+        if (done) return;
+        done = true;
+        try { sock.destroy(); } catch (_e) {}
+        resolve(!!ok);
+      };
+      sock.setTimeout(timeoutMs || 1500);
+      sock.once('connect', function () { finish(true); });
+      sock.once('timeout', function () { finish(false); });
+      sock.once('error',   function () { finish(false); });
+      try { sock.connect(Number(port), String(host)); }
+      catch (_e) { finish(false); }
+    });
+  }
+
+  // ---------- DB 池：完整复刻 sms 子站的 openPool / closePool / startAutoRetry ----------
+  const DB_AUTO_RETRY_MS = 5000;
+
+  async function closeDbPool(reason) {
+    if (pool) {
+      const old = pool;
+      pool = null;
+      dbConnected = false;
+      try { await old.end(); } catch (_e) {}
+      appendLog(`DB 池关闭：${reason || ''}`.trim());
+    } else {
+      dbConnected = false;
+    }
+  }
+
+  async function openDbPool(opts) {
+    if (!mysql) throw new Error('mysql2 驱动未安装');
+    await closeDbPool('reconnect');
+    const p = mysql.createPool({
+      host: opts.host,
+      port: Number(opts.port) || 3306,
+      user: opts.user,
+      password: opts.password,
+      database: opts.database || undefined,
+      waitForConnections: true,
+      connectionLimit: 5,
+      queueLimit: 0,
+      connectTimeout: 8000,
+    });
+    const conn = await p.getConnection();
+    try { await conn.ping(); } finally { conn.release(); }
+    pool = p;
+    dbConnected = true;
+    dbLastError = '';
+    dbLastConnectedAt = localStamp();
+    return p;
+  }
+
+  function stopDbAutoRetry(reason) {
+    if (dbAutoRetryTimer) {
+      clearTimeout(dbAutoRetryTimer);
+      dbAutoRetryTimer = null;
+      if (dbAutoRetryCount > 0) {
+        appendLog(`DB 后台重试停止（${reason || '-'}），共试 ${dbAutoRetryCount} 次`);
+      }
+      dbAutoRetryCount = 0;
+    }
+  }
+  // 渐进退避：5s × 3 → 15s × 5 → 60s 封顶；
+  // 命中 MySQL Host blocked / Access denied 等\"硬错误\"直接跳到 60s，
+  // 避免再次踩 max_connect_errors=100 阈值
+  function pickDbRetryDelayMs(count, lastErrMsg) {
+    const errs = String(lastErrMsg || '').toLowerCase();
+    if (errs.includes('blocked because of many connection errors') || errs.includes('access denied')) return 60000;
+    if (count < 3)  return 5000;
+    if (count < 8)  return 15000;
+    return 60000;
+  }
+  function startDbAutoRetry() {
+    if (dbAutoRetryTimer) return;
+    dbAutoRetryCount = 0;
+    appendLog('启用 DB 后台重试（渐进退避：5s ×3 → 15s ×5 → 60s 封顶）');
+    const tick = async function () {
+      dbAutoRetryTimer = null;
+      const peer = peerOf(cfg);
+      if (!cfg.enabled) { stopDbAutoRetry('已关功能'); return; }
+      if (dbConnected) { stopDbAutoRetry('已连接'); return; }
+      if (!peer.db.host || !peer.db.user) { stopDbAutoRetry('配置不完整'); return; }
+      dbAutoRetryCount += 1;
+      try {
+        await openDbPool(peer.db);
+        appendLog(`DB 重试第 ${dbAutoRetryCount} 次成功：${peer.db.user}@${peer.db.host}:${peer.db.port}/${peer.db.database || '-'}`);
+        pushEvent('info', `对端数据库已连通（${peer.db.host}:${peer.db.port}）`);
+        stopDbAutoRetry('连接成功');
+        return;
+      } catch (err) {
+        dbLastError = err.message;
+        if (dbAutoRetryCount === 1 || dbAutoRetryCount % 6 === 0) {
+          appendLog(`DB 重试第 ${dbAutoRetryCount} 次仍失败：${err.message}`);
+        }
+      }
+      const next = pickDbRetryDelayMs(dbAutoRetryCount, dbLastError);
+      dbAutoRetryTimer = setTimeout(tick, next);
+    };
+    dbAutoRetryTimer = setTimeout(tick, 5000);
+  }
+
+  async function tryStartDb() {
+    if (!cfg.enabled) return;
+    const peer = peerOf(cfg);
+    if (!peer.db.host || !peer.db.user) {
+      appendLog('DB 配置不完整，跳过自启');
+      return;
+    }
+    try {
+      await openDbPool(peer.db);
+      appendLog(`DB 自启成功：${peer.db.user}@${peer.db.host}:${peer.db.port}/${peer.db.database || '-'}`);
+      pushEvent('info', `对端数据库已连通（${peer.db.host}:${peer.db.port}）`);
+    } catch (err) {
+      dbLastError = err.message;
+      appendLog(`DB 自启失败：${err.message}（启用后台重试）`);
+      pushEvent('warn', `对端数据库连接失败：${err.message}`);
+      startDbAutoRetry();
+    }
+  }
+
+  // ---------- SSH 长连接：单例 + 断线重连 + ssh2 自带 keepalive ----------
+  function clearSshReconnectTimer() {
+    if (sshReconnectTimer) { clearTimeout(sshReconnectTimer); sshReconnectTimer = null; }
+  }
+
+  function closeSshClient(reason) {
+    clearSshReconnectTimer();
+    if (sshClient) {
+      const old = sshClient;
+      sshClient = null;
+      try { old.removeAllListeners('error'); } catch (_e) {}
+      try { old.removeAllListeners('close'); } catch (_e) {}
+      try { old.end(); } catch (_e) {}
+    }
+    sshStatus = 'idle';
+    if (reason) appendLog(`SSH 长连接关闭：${reason}`);
+  }
+
+  function scheduleSshReconnect(why) {
+    if (!cfg.enabled) return;
+    if (sshReconnectTimer) return;
+    const delay = sshReconnectDelay;
+    sshReconnectDelay = Math.min(5000, sshReconnectDelay + 1000);
+    appendLog(`SSH 将在 ${delay}ms 后重连：${why || '-'}`);
+    sshReconnectTimer = setTimeout(function () {
+      sshReconnectTimer = null;
+      connectSsh();
+    }, delay);
+  }
+
+  function connectSsh() {
+    if (!cfg.enabled) return;
+    const peer = peerOf(cfg);
+    if (!peer.ssh.host || !peer.ssh.user) {
+      appendLog('SSH 配置不完整，跳过连接');
+      return;
+    }
+    if (sshClient && (sshStatus === 'connected' || sshStatus === 'connecting')) return;
+
+    sshStatus = 'connecting';
+    sshLastError = '';
+    appendLog(`SSH 开始连接：${peer.ssh.user}@${peer.ssh.host}:${peer.ssh.port}`);
+    const c = new Client();
+    sshClient = c;
+
+    c.on('ready', function () {
+      sshStatus = 'connected';
+      sshReconnectDelay = 1000;
+      pushEvent('info', `对端 SSH 已建立长连接（${peer.ssh.host}:${peer.ssh.port}）`);
+      broadcastSnapshot();
+    });
+    c.on('error', function (err) {
+      sshLastError = err && err.message || String(err);
+      sshStatus = 'broken';
+      pushEvent('error', `对端 SSH 出错：${sshLastError}`);
+      try { c.end(); } catch (_e) {}
+      if (sshClient === c) sshClient = null;
+      scheduleSshReconnect(sshLastError);
+      broadcastSnapshot();
+    });
+    c.on('close', function () {
+      if (sshStatus === 'connected') {
+        pushEvent('warn', '对端 SSH 长连接断开');
+      }
+      sshStatus = 'broken';
+      if (sshClient === c) sshClient = null;
+      scheduleSshReconnect('connection-closed');
+      broadcastSnapshot();
+    });
+
+    try {
+      c.connect({
+        host: peer.ssh.host,
+        port: Number(peer.ssh.port) || 22,
+        username: peer.ssh.user,
+        password: peer.ssh.password || '',
+        readyTimeout: 8000,
+        keepaliveInterval: 10000,
+        keepaliveCountMax: 3,
+      });
+    } catch (err) {
+      sshLastError = err && err.message || String(err);
+      sshStatus = 'broken';
+      pushEvent('error', `对端 SSH 连接抛异常：${sshLastError}`);
+      scheduleSshReconnect(sshLastError);
+    }
+  }
+
+  function broadcastSnapshot() {
+    broadcast({ type: 'snapshot', data: publicStatus() });
+  }
+
+  // ---------- 心跳：每 3 秒一轮，并发去重 ----------
+  function startHeartbeat() {
+    if (heartbeatTimer) return;
+    appendLog('启动心跳调度（每 3s 一轮）');
+    heartbeatTimer = setInterval(async function () {
+      if (heartbeatProbing) return;
+      if (!cfg.enabled) return;
+      heartbeatProbing = true;
+      try {
+        const peer = peerOf(cfg);
+        const [ipOk, dbPortOk] = await Promise.all([
+          tcpProbe(peer.ssh.host, peer.ssh.port, 1500),
+          tcpProbe(peer.db.host,  peer.db.port,  1500),
+        ]);
+        const ts = localStamp();
+        lastHeartbeat = { ipOk, dbPortOk, ts };
+        // 状态变化才推 event
+        if (lastBroadcastIpOk !== ipOk) {
+          if (lastBroadcastIpOk !== null) {
+            pushEvent(ipOk ? 'info' : 'error',
+              ipOk ? `对端 IP 已恢复（${peer.ssh.host}:${peer.ssh.port}）`
+                   : `对端 IP 不通（${peer.ssh.host}:${peer.ssh.port}）`);
+          }
+          lastBroadcastIpOk = ipOk;
+        }
+        if (lastBroadcastDbOk !== dbPortOk) {
+          if (lastBroadcastDbOk !== null) {
+            pushEvent(dbPortOk ? 'info' : 'warn',
+              dbPortOk ? `对端 DB 端口已恢复（${peer.db.host}:${peer.db.port}）`
+                       : `对端 DB 端口不通（${peer.db.host}:${peer.db.port}）`);
+          }
+          lastBroadcastDbOk = dbPortOk;
+        }
+        // 每轮固定推 heartbeat（让前端可视化"后端还在跑"）
+        broadcast({ type: 'heartbeat', data: lastHeartbeat });
+      } catch (err) {
+        appendLog(`心跳异常：${err.message}`);
+      } finally {
+        heartbeatProbing = false;
+      }
+    }, 3000);
+  }
+  function stopHeartbeat(reason) {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+      appendLog(`停止心跳调度（${reason || '-'}）`);
+    }
+    lastBroadcastIpOk = null;
+    lastBroadcastDbOk = null;
+  }
+
+  // ---------- 总开关：enable / disable ----------
+  async function applyEnabled() {
+    if (cfg.enabled) {
+      pushEvent('info', `双机热备已启用（角色：${cfg.selfRole === 'primary' ? '主机' : '备机'}）`);
+      connectSsh();
+      tryStartDb().catch(function () {});
+      startHeartbeat();
+      // 定时同步只在 primary 跑（备机不调度，避免双触发）
+      if (cfg.selfRole === 'primary' && cfg.syncSchedule && cfg.syncSchedule.enabled) {
+        startScheduleTimer();
+      } else {
+        stopScheduleTimer('non-primary or disabled');
+      }
+      // 故障接管监测仅在 standby 跑
+      if (cfg.selfRole === 'standby' && cfg.failover && cfg.failover.enabled) {
+        if (!cfg.failover.takenOver) {
+          failoverState = 'monitoring';
+          failoverFailCount = 0;
+        } else {
+          failoverState = 'taken-over';
+        }
+        startFailoverCheckTimer();
+      } else {
+        stopFailoverCheckTimer('non-standby or disabled');
+        if (cfg.failover && !cfg.failover.takenOver) failoverState = 'idle';
+      }
+      // 主机被动监测备机接管状态（仅 primary）
+      if (cfg.selfRole === 'primary') {
+        startPeerWatchTimer();
+      } else {
+        stopPeerWatchTimer('non-primary');
+      }
+    } else {
+      pushEvent('info', '双机热备已停用');
+      stopHeartbeat('disabled');
+      stopDbAutoRetry('disabled');
+      await closeDbPool('disabled');
+      closeSshClient('disabled');
+      stopScheduleTimer('ha disabled');
+      stopFailoverCheckTimer('ha disabled');
+      stopPeerWatchTimer('ha disabled');
+    }
+    // enabled / selfRole 等顶层状态变了，主动推一次 snapshot，让所有 ws 客户端立刻刷新
+    broadcastSnapshot();
+  }
+
+  // ---------- REST API ----------
+  app.get('/api/ha/config', function (_req, res) {
+    res.json({ ok: true, config: redactCfg(cfg) });
+  });
+
+  // PUT /api/ha/config
+  // body 中：密码字段为 '***' 表示"保留原值"；空串表示"清空"；其他值表示"覆盖"
+  app.put('/api/ha/config', async function (req, res) {
+    const body = req.body || {};
+    const next = {
+      enabled: !!body.enabled,
+      selfRole: body.selfRole === 'standby' ? 'standby' : 'primary',
+      primary: { ssh: {}, db: {} },
+      standby: { ssh: {}, db: {} },
+    };
+    function pickPair(side) {
+      const incoming = body[side] || {};
+      const oldSide  = cfg[side] || defaults[side];
+      ['ssh', 'db'].forEach(function (kind) {
+        const incomingKind = incoming[kind] || {};
+        const oldKind      = oldSide[kind] || {};
+        const merged = Object.assign({}, oldKind, {
+          host: String(incomingKind.host == null ? oldKind.host : incomingKind.host).trim(),
+          port: Number(incomingKind.port) || oldKind.port,
+          user: String(incomingKind.user == null ? oldKind.user : incomingKind.user).trim(),
+        });
+        if (kind === 'db') {
+          merged.database = String(incomingKind.database == null ? (oldKind.database || '') : incomingKind.database).trim();
+        }
+        // 密码：'***' 保留旧值，否则用新值
+        if (incomingKind.password === undefined || incomingKind.password === '***') {
+          merged.password = oldKind.password || '';
+        } else {
+          merged.password = String(incomingKind.password);
+        }
+        next[side][kind] = merged;
+      });
+    }
+    pickPair('primary');
+    pickPair('standby');
+
+    // 保留原有的 syncSchedule（只有 PUT /api/ha/sync-schedule 可改它）
+    next.syncSchedule = cfg.syncSchedule || JSON.parse(JSON.stringify(defaults.syncSchedule));
+    // 保留原有的 failover（只有 PUT /api/ha/failover 可改它，takenOver 等运行期状态也保持）
+    next.failover = cfg.failover || JSON.parse(JSON.stringify(defaults.failover));
+    next.yielded = cfg.yielded || JSON.parse(JSON.stringify(defaults.yielded));
+
+    cfg = next;
+    writeCfg();
+    pushEvent('info', '配置已更新，重置心跳与连接');
+
+    // 重置：先全停，再按新配置启动
+    stopHeartbeat('config-changed');
+    stopDbAutoRetry('config-changed');
+    await closeDbPool('config-changed');
+    closeSshClient('config-changed');
+
+    await applyEnabled();
+    res.json({ ok: true, config: redactCfg(cfg), status: publicStatus() });
+  });
+
+  app.get('/api/ha/status', function (_req, res) {
+    res.json({ ok: true, status: publicStatus() });
+  });
+
+  // 临时探测 SSH 凭证（不落盘）
+  // 密码字段：'***' 或省略 → 沿用 cfg 里已落盘的密码（需要 body.side='primary'|'standby'）
+  app.post('/api/ha/test/ssh', function (req, res) {
+    const b = req.body || {};
+    const host = String(b.host || '').trim();
+    const port = Number(b.port) || 22;
+    const user = String(b.user || '').trim();
+    let password = String(b.password == null ? '' : b.password);
+    if (password === '' || password === '***') {
+      const side = b.side === 'standby' ? 'standby' : (b.side === 'primary' ? 'primary' : null);
+      if (!side) {
+        return res.status(400).json({ ok: false, message: '密码为空时必须指定 side=primary|standby 以使用已保存密码' });
+      }
+      password = String((cfg[side] && cfg[side].ssh && cfg[side].ssh.password) || '');
+      if (!password) {
+        return res.status(400).json({ ok: false, message: `${side === 'primary' ? '主' : '备'}服务器尚未保存 SSH 密码，请在密码框中输入后再测试` });
+      }
+    }
+    if (!host || !user) return res.status(400).json({ ok: false, message: 'host/user 必填' });
+    const c = new Client();
+    let done = false;
+    const finish = function (ok, msg) {
+      if (done) return;
+      done = true;
+      try { c.end(); } catch (_e) {}
+      res.json({ ok, message: msg || '' });
+    };
+    c.on('ready', function () { finish(true, '连接成功'); });
+    c.on('error', function (err) { finish(false, err && err.message || String(err)); });
+    setTimeout(function () { finish(false, '连接超时'); }, 8000);
+    try {
+      c.connect({ host, port, username: user, password, readyTimeout: 6000 });
+    } catch (err) {
+      finish(false, err.message);
+    }
+  });
+
+  // 临时探测 DB 凭证（不落盘）
+  // 密码字段：'***' 或省略 → 沿用 cfg 里已落盘的密码（需要 body.side='primary'|'standby'）
+  app.post('/api/ha/test/db', async function (req, res) {
+    if (!mysql) return res.status(500).json({ ok: false, message: 'mysql2 驱动未安装' });
+    const b = req.body || {};
+    const host = String(b.host || '').trim();
+    const port = Number(b.port) || 3306;
+    const user = String(b.user || '').trim();
+    let password = String(b.password == null ? '' : b.password);
+    if (password === '' || password === '***') {
+      const side = b.side === 'standby' ? 'standby' : (b.side === 'primary' ? 'primary' : null);
+      if (!side) {
+        return res.status(400).json({ ok: false, message: '密码为空时必须指定 side=primary|standby 以使用已保存密码' });
+      }
+      password = String((cfg[side] && cfg[side].db && cfg[side].db.password) || '');
+      if (!password) {
+        return res.status(400).json({ ok: false, message: `${side === 'primary' ? '主' : '备'}服务器尚未保存 DB 密码，请在密码框中输入后再测试` });
+      }
+    }
+    const database = String(b.database || '').trim();
+    if (!host || !user) return res.status(400).json({ ok: false, message: 'host/user 必填' });
+    let p = null;
+    try {
+      p = mysql.createPool({
+        host, port, user, password, database: database || undefined,
+        waitForConnections: true, connectionLimit: 1, queueLimit: 0, connectTimeout: 6000,
+      });
+      const conn = await p.getConnection();
+      try { await conn.ping(); } finally { conn.release(); }
+      res.json({ ok: true, message: '连接成功' });
+    } catch (err) {
+      res.json({ ok: false, message: err.message });
+    } finally {
+      if (p) { try { await p.end(); } catch (_e) {} }
+    }
+  });
+
+  // 手动重启：重置 SSH 长连接 + DB 池
+  app.post('/api/ha/restart', async function (_req, res) {
+    if (!cfg.enabled) {
+      return res.json({ ok: false, message: '总开关未启用，无需重启' });
+    }
+    appendLog('收到 /api/ha/restart：重置 SSH + DB');
+    pushEvent('info', '手动重置 SSH 与 DB 连接');
+    stopDbAutoRetry('manual-restart');
+    await closeDbPool('manual-restart');
+    closeSshClient('manual-restart');
+    setTimeout(function () { applyEnabled().catch(function () {}); }, 200);
+    res.json({ ok: true, status: publicStatus() });
+  });
+
+  // ---------- 数据库同步：主 22 → 备 50 ----------
+  // 流程（用户需求字面）：
+  //   1. SSH 进入备机 → docker exec dcim systemctl stop dcim 停采集
+  //   2. SSH 进入备机 → 备份当前 dcim 库（gzip dump，写在备机 /opt/webssh/logs/）
+  //   3. 在备机容器内执行 UPDATE `dcim-device` SET status=-1
+  //   4. 主机上 mysqldump 整个 dcim 库（用 cfg.primary.db 凭据），通过 SSH 通道流到备机的 mysql
+  //   5. 不自动重启采集；前端提示用户在备机手动 systemctl start dcim
+  //
+  // 安全约束：
+  //   - 仅当 selfRole === 'primary' 时允许触发
+  //   - 任意时刻只允许 1 个同步任务（syncRunning 互斥锁）
+  //   - 全部步骤都要 push event 到 ws，前端实时可见
+  //   - 任何步骤失败：记录、推 error、退出（不回滚已停的 dcim 服务）
+
+  function recordSyncStep(name, status, msg) {
+    const step = { name: name, status: status, msg: msg || '', ts: localStamp() };
+    syncSteps.push(step);
+    while (syncSteps.length > 50) syncSteps.shift();
+    syncStep = name + (status === 'doing' ? '...' : '');
+    const lvl = status === 'fail' ? 'error' : (status === 'done' ? 'info' : 'info');
+    pushEvent(lvl, `[同步] ${name}：${status === 'doing' ? '执行中' : status === 'done' ? '完成' : '失败'}` + (msg ? '（' + msg + '）' : ''));
+    broadcastSnapshot();
+  }
+
+  // 在备机上 SSH 执行单条命令；返回 { code, stdout, stderr }
+  function peerExec(client, cmd, timeoutMs) {
+    return new Promise(function (resolve, reject) {
+      let done = false;
+      const finish = function (err, val) {
+        if (done) return;
+        done = true;
+        if (err) reject(err); else resolve(val);
+      };
+      const t = setTimeout(function () { finish(new Error('SSH 命令超时: ' + cmd.slice(0, 80))); }, timeoutMs || 60000);
+      client.exec(cmd, function (err, stream) {
+        if (err) { clearTimeout(t); return finish(err); }
+        let so = '', se = '';
+        stream.on('close', function (code) {
+          clearTimeout(t);
+          finish(null, { code: code, stdout: so, stderr: se });
+        }).on('data', function (d) { so += d.toString('utf8'); })
+          .stderr.on('data', function (d) { se += d.toString('utf8'); });
+      });
+    });
+  }
+
+  // 把本地一段内容当 stdin 流到对端命令（用于 mysqldump | ssh ... | mysql 模式）
+  function peerExecPipe(client, cmd, stdinStream, timeoutMs) {
+    return new Promise(function (resolve, reject) {
+      let done = false;
+      const finish = function (err, val) {
+        if (done) return;
+        done = true;
+        if (err) reject(err); else resolve(val);
+      };
+      const t = setTimeout(function () { finish(new Error('SSH pipe 超时: ' + cmd.slice(0, 80))); }, timeoutMs || 600000);
+      client.exec(cmd, function (err, stream) {
+        if (err) { clearTimeout(t); return finish(err); }
+        let so = '', se = '';
+        stream.on('close', function (code) {
+          clearTimeout(t);
+          finish(null, { code: code, stdout: so, stderr: se });
+        }).on('data', function (d) { so += d.toString('utf8'); })
+          .stderr.on('data', function (d) { se += d.toString('utf8'); });
+        stdinStream.on('error', function (e) { clearTimeout(t); finish(e); });
+        stdinStream.pipe(stream);
+      });
+    });
+  }
+
+  // 用 child_process.spawn 跑 mysqldump，把 stdout 当 readable stream 返回
+  // 关键：走 docker exec dcim mysqldump 而不是宿主机 mysqldump
+  //   原因：宿主机系统用的是 MariaDB 10.3 mysqldump，跟 MySQL 5.7 不兼容
+  //         （MariaDB mysqldump 不会自动跳过 STORED 生成列的 INSERT，导致灌库时报
+  //          ERROR 3105 "value specified for generated column ... is not allowed"）
+  //         dcim 容器内的 mysqldump 5.7.39 跟主库版本完全一致，会正确处理生成列
+  function spawnLocalDump(dbCfg) {
+    const args = [
+      'exec', 'dcim', 'mysqldump',
+      '-h', String(dbCfg.host || '127.0.0.1'),
+      '-P', String(dbCfg.port || 3306),
+      '-u', String(dbCfg.user || ''),
+      '--password=' + String(dbCfg.password || ''),
+      '--single-transaction',
+      '--quick',
+      '--routines',
+      '--triggers',
+      '--events',
+      '--hex-blob',
+      // dcim 业务用户通常没 PROCESS 权限，避免 mysqldump 默认尝试 dump tablespace 元数据时 1227 报错
+      '--no-tablespaces',
+      '--default-character-set=utf8mb4',
+      String(dbCfg.database || ''),
+    ];
+    const proc = spawn('docker', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stderrBuf = '';
+    proc.stderr.on('data', function (d) { stderrBuf += d.toString('utf8'); });
+    proc.on('error', function (err) { stderrBuf += 'spawn error: ' + err.message; });
+    return { proc: proc, stream: proc.stdout, getStderr: function () { return stderrBuf; } };
+  }
+
+  // 建一个一次性 SSH 客户端（本任务专用，不复用心跳的 sshClient——避免互相污染）
+  function newPeerSshClient(sshCfg) {
+    return new Promise(function (resolve, reject) {
+      const c = new Client();
+      let done = false;
+      const finish = function (err, val) {
+        if (done) return;
+        done = true;
+        if (err) reject(err); else resolve(val);
+      };
+      c.on('ready', function () { finish(null, c); });
+      c.on('error', function (err) { finish(err); });
+      try {
+        c.connect({
+          host: sshCfg.host,
+          port: Number(sshCfg.port) || 22,
+          username: sshCfg.user,
+          password: sshCfg.password || '',
+          readyTimeout: 12000,
+          keepaliveInterval: 10000,
+        });
+      } catch (err) { finish(err); }
+    });
+  }
+
+  async function doSyncDb(opts) {
+    opts = opts || {};
+    const skipStatusUpdate = !!opts.skipStatusUpdate;
+    if (cfg.selfRole !== 'primary') throw new Error('仅当本机角色为「主机」时可触发同步');
+    if (syncRunning) throw new Error('已有同步任务在执行');
+    if (!cfg.enabled) throw new Error('总开关未启用');
+    const peerSsh = cfg.standby.ssh;
+    const localDb = cfg.primary.db;
+    const peerDb  = cfg.standby.db;
+    if (!peerSsh.host || !peerSsh.user) throw new Error('备机 SSH 配置不完整');
+    if (!localDb.host || !localDb.user || !localDb.database) throw new Error('主机 DB 配置不完整');
+    if (!peerDb.host  || !peerDb.user  || !peerDb.database)  throw new Error('备机 DB 配置不完整');
+
+    // 同步互斥：备机如果已经接管业务，主机灌库会冲掉接管期间的新数据 → 拒绝同步
+    try {
+      const peerStatus = await fetchPeerStatus(peerSsh.host, PEER_WATCH_PORT, 4000);
+      if (peerStatus && peerStatus.ok && peerStatus.status && peerStatus.status.failover && peerStatus.status.failover.takenOver) {
+        throw new Error('备机当前处于「已接管」状态，主机同步已被锁定。请先到备机点「重置接管状态」恢复后再同步');
+      }
+    } catch (err) {
+      // 网络异常不阻断同步（备机如果不可达，本来就该 sync）；只有明确读到 takenOver=true 才拒绝
+      if (/已接管/.test(err.message)) throw err;
+    }
+
+    syncRunning = true;
+    syncStartedAt = localStamp();
+    syncFinishedAt = '';
+    syncLastResult = '';
+    syncLastError = '';
+    syncSteps.length = 0;
+    pushEvent('info', '开始数据库同步：主 → 备');
+    broadcastSnapshot();
+
+    let peerClient = null;
+    try {
+      // ----- 0. 建立到备机的一次性 SSH -----
+      recordSyncStep('SSH 连接备机', 'doing');
+      peerClient = await newPeerSshClient(peerSsh);
+      recordSyncStep('SSH 连接备机', 'done', `${peerSsh.user}@${peerSsh.host}:${peerSsh.port}`);
+
+      // ----- 1. 停采集：docker exec dcim systemctl stop dcim -----
+      recordSyncStep('停止备机采集 (docker exec dcim systemctl stop dcim)', 'doing');
+      let r = await peerExec(peerClient, 'docker exec dcim systemctl stop dcim 2>&1', 30000);
+      if (r.code !== 0) throw new Error(`stop dcim 失败 exit=${r.code}: ${(r.stderr || r.stdout).slice(0, 200)}`);
+      recordSyncStep('停止备机采集', 'done');
+
+      // ----- 2. 备份备机当前 dcim 库 -----
+      const stamp2 = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14);
+      const bakPath = `/opt/webssh/logs/ha-sync-bak-${stamp2}.sql.gz`;
+      recordSyncStep(`备份备机 dcim 库 → ${bakPath}`, 'doing');
+      // 在备机宿主机上 mysqldump（备机宿主机有 mysql 客户端）
+      const dumpCmd =
+        `mysqldump -h ${peerDb.host} -P ${peerDb.port} -u ${peerDb.user} ` +
+        `--password=${peerDb.password || ''} --single-transaction --quick ` +
+        `--routines --triggers --events --hex-blob --default-character-set=utf8mb4 ` +
+        `${peerDb.database} | gzip -c > ${bakPath} && echo BAK_OK && ls -lh ${bakPath}`;
+      r = await peerExec(peerClient, dumpCmd, 600000);
+      if (r.code !== 0 || !/BAK_OK/.test(r.stdout)) {
+        throw new Error(`备份失败 exit=${r.code}: ${(r.stderr || r.stdout).slice(0, 300)}`);
+      }
+      recordSyncStep('备份备机 dcim 库', 'done', r.stdout.split('\n').filter(Boolean).pop());
+
+      // ----- 3. 主机 mysqldump | ssh peer "mysql ..." -----
+      // 顺序说明：先灌库再 UPDATE。
+      //   灌库会把 dcim-device 表 DROP+CREATE+INSERT 整体覆盖（包含主库真实 status 值），
+      //   所以 UPDATE 必须在灌库之后执行，才能让备机最终的 status 全为 -1。
+      recordSyncStep('主→备 灌库（mysqldump | ssh peer mysql）', 'doing');
+      // 关键：sed 过滤掉 dump 里的 DEFINER 子句
+      //   场景：主库的视图 / 触发器 / 存储过程 / 事件被 mysqldump 写成
+      //         CREATE DEFINER=`root`@`localhost` ... 形式
+      //         备机的 dcim 用户没 SUPER 权限，无法把 DEFINER 设为 root，导入时报 1227
+      //   做法：剥掉 DEFINER 子句 → 备机自动用当前用户（dcim）当 DEFINER
+      //   覆盖三种写法：DEFINER=`x`@`y` / DEFINER='x'@'y' / DEFINER=x@y
+      const stripDefinerSed = `sed -E 's/DEFINER=\`[^\`]*\`@\`[^\`]*\`[[:space:]]*//g; s/DEFINER='\\''[^'\\'']*'\\''@'\\''[^'\\'']*'\\''[[:space:]]*//g; s/DEFINER=[^[:space:]]+[[:space:]]+//g; s/SQL SECURITY DEFINER/SQL SECURITY INVOKER/g'`;
+      const importCmd =
+        `${stripDefinerSed} | ` +
+        `mysql -h ${peerDb.host} -P ${peerDb.port} -u ${peerDb.user} ` +
+        `--password=${peerDb.password || ''} --default-character-set=utf8mb4 ` +
+        `${peerDb.database}`;
+      const dump = spawnLocalDump(localDb);
+      const importResult = await peerExecPipe(peerClient, importCmd, dump.stream, 1800000); // 30 分钟
+      // mysqldump 进程结束码（如果失败 stderr 里会有"Got error"）
+      const dumpStderr = dump.getStderr();
+      try { dump.proc.kill('SIGTERM'); } catch (_e) {}
+      if (importResult.code !== 0) {
+        throw new Error(`灌库 mysql 端 exit=${importResult.code}: ${(importResult.stderr || '').slice(0, 300)}`);
+      }
+      if (dumpStderr && /error/i.test(dumpStderr) && !/Using a password/i.test(dumpStderr)) {
+        throw new Error(`mysqldump 报错: ${dumpStderr.slice(0, 300)}`);
+      }
+      recordSyncStep('主→备 灌库', 'done', '完成');
+
+      // ----- 4. 备机容器内 UPDATE dcim-device.status = -1（必须在灌库后执行）-----
+      // 默认必做（与手动同步一致）。skipStatusUpdate=true 时跳过（仅供未来 / 测试用）
+      if (skipStatusUpdate) {
+        recordSyncStep('备机 UPDATE dcim-device.status=-1', 'done', '已按选项跳过');
+      } else {
+        recordSyncStep('备机容器内 UPDATE `dcim-device` SET status=-1', 'doing');
+        // 注意：表名 dcim-device 含连字符，必须用反引号转义
+        const updateSql = "USE \\`" + peerDb.database + "\\`; UPDATE \\`dcim-device\\` SET status=-1; SELECT ROW_COUNT() AS affected;";
+        const updateCmd =
+          `docker exec dcim mysql -h ${peerDb.host} -P ${peerDb.port} -u ${peerDb.user} ` +
+          `--password=${peerDb.password || ''} -BN -e "${updateSql}" 2>&1`;
+        r = await peerExec(peerClient, updateCmd, 60000);
+        if (r.code !== 0) throw new Error(`UPDATE 失败 exit=${r.code}: ${(r.stderr || r.stdout).slice(0, 300)}`);
+        const affectedMatch = (r.stdout.trim().split('\n').filter(function (l) { return /^\d+$/.test(l.trim()); }).pop() || '').trim();
+        recordSyncStep('备机 UPDATE dcim-device.status=-1', 'done', `affected=${affectedMatch}`);
+      }
+
+      // ----- 5. 完成 -----
+      syncLastResult = 'success';
+      syncStep = '已完成（请到备机手动 docker exec dcim systemctl start dcim 启动采集）';
+      pushEvent('info', '同步完成。请到备机手动启动 dcim 采集（备份: ' + bakPath + '）');
+    } catch (err) {
+      syncLastResult = 'fail';
+      syncLastError = err.message;
+      pushEvent('error', '同步失败：' + err.message);
+      recordSyncStep(syncStep || '失败', 'fail', err.message);
+      throw err;
+    } finally {
+      if (peerClient) { try { peerClient.end(); } catch (_e) {} }
+      syncRunning = false;
+      syncFinishedAt = localStamp();
+      broadcastSnapshot();
+    }
+  }
+
+  app.post('/api/ha/sync', function (req, res) {
+    if (cfg.selfRole !== 'primary') return res.status(400).json({ ok: false, message: '仅主机可触发同步' });
+    if (!cfg.enabled) return res.status(400).json({ ok: false, message: '总开关未启用' });
+    if (syncRunning) return res.status(409).json({ ok: false, message: '已有同步任务在执行' });
+    // 立即返回 202，任务异步跑
+    doSyncDb().catch(function () {}); // 错误已在内部记录
+    res.status(202).json({ ok: true, message: '同步任务已启动，状态请看 /api/ha/status' });
+  });
+
+  // ---------- 定时同步：调度配置读写 ----------
+  app.get('/api/ha/sync-schedule', function (_req, res) {
+    const sch = cfg.syncSchedule || {};
+    res.json({
+      ok: true,
+      data: {
+        enabled: !!sch.enabled,
+        preset: sch.preset || 'daily-3am',
+        cron: effectiveCron(),
+        customCron: sch.cron || '0 3 * * *',
+        skipIfPeerDown: sch.skipIfPeerDown !== false,
+        applyStatusMinusOne: sch.applyStatusMinusOne !== false,
+        lastRunAt: sch.lastRunAt || '',
+        lastRunResult: sch.lastRunResult || '',
+        lastRunError: sch.lastRunError || '',
+        nextRunAt: getNextRunAt(),
+        running: !!scheduleTimer,
+        allowed: cfg.selfRole === 'primary' && cfg.enabled,
+        presets: Object.keys(PRESET_TO_CRON).concat(['custom']),
+      },
+    });
+  });
+
+  app.put('/api/ha/sync-schedule', function (req, res) {
+    const b = req.body || {};
+    // 校验 preset
+    const validPresets = Object.keys(PRESET_TO_CRON).concat(['custom']);
+    const preset = validPresets.indexOf(b.preset) >= 0 ? b.preset : 'daily-3am';
+    let customCron = String(b.cron == null ? '' : b.cron).trim();
+    if (preset === 'custom') {
+      if (!customCron) return res.status(400).json({ ok: false, message: '自定义 cron 不能为空' });
+      if (!cronValid(customCron)) return res.status(400).json({ ok: false, message: 'cron 表达式格式不合法（仅支持 5 字段：分 时 日 月 周）' });
+    } else {
+      // 非 custom 时也保留 customCron（用户切回 custom 时还能找回）
+      if (customCron && !cronValid(customCron)) customCron = '0 3 * * *';
+      if (!customCron) customCron = '0 3 * * *';
+    }
+    const next = {
+      enabled: !!b.enabled,
+      preset,
+      cron: customCron,
+      skipIfPeerDown: b.skipIfPeerDown !== false,
+      applyStatusMinusOne: b.applyStatusMinusOne !== false,
+      // 历史记录字段不被前端覆盖，保留原值
+      lastRunAt: (cfg.syncSchedule && cfg.syncSchedule.lastRunAt) || '',
+      lastRunResult: (cfg.syncSchedule && cfg.syncSchedule.lastRunResult) || '',
+      lastRunError: (cfg.syncSchedule && cfg.syncSchedule.lastRunError) || '',
+    };
+    cfg.syncSchedule = next;
+    writeCfg();
+    pushEvent('info', `定时同步配置已更新：enabled=${next.enabled} cron=${effectiveCron()}`);
+
+    // 立刻按新配置启停调度器
+    stopScheduleTimer('config-changed');
+    if (cfg.enabled && cfg.selfRole === 'primary' && next.enabled) {
+      startScheduleTimer();
+    }
+    broadcastSnapshot();
+    res.json({ ok: true, data: { ...next, cron: effectiveCron(), customCron, nextRunAt: getNextRunAt(), running: !!scheduleTimer } });
+  });
+
+  // ---------- 主机端被动逻辑：监听备机接管状态，自动停/启 dcim ----------
+  // 流程：
+  //   每 5s 通过 HTTP 查备机 http://<peer>:<port>/api/ha/status
+  //   读出 status.failover.takenOver
+  //   若 takenOver=true 且本机未让位 → docker exec dcim systemctl stop dcim + 标记 yielded=true
+  //   若 takenOver=false 且本机已让位 → docker exec dcim systemctl start dcim + 标记 yielded=false
+  let peerWatchTimer = null;
+  let peerWatchInProgress = false;
+  const PEER_WATCH_PORT = Number(process.env.HA_PEER_WATCH_PORT || 3010);
+
+  function fetchPeerStatus(host, port, timeoutMs) {
+    return new Promise(function (resolve) {
+      const req = http.get({ host, port, path: '/api/ha/status', timeout: timeoutMs || 4000 }, function (resp) {
+        let buf = '';
+        resp.on('data', function (d) { buf += d.toString('utf8'); });
+        resp.on('end', function () {
+          try { resolve(JSON.parse(buf)); }
+          catch (_e) { resolve(null); }
+        });
+      });
+      req.on('error', function () { resolve(null); });
+      req.on('timeout', function () { try { req.destroy(); } catch (_e) {} resolve(null); });
+    });
+  }
+
+  function execDockerSimple(args, timeoutMs) {
+    return new Promise(function (resolve) {
+      const proc = spawn('docker', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+      let so = '', se = '';
+      const t = setTimeout(function () { try { proc.kill('SIGTERM'); } catch (_e) {} }, timeoutMs || 30000);
+      proc.stdout.on('data', function (d) { so += d.toString('utf8'); });
+      proc.stderr.on('data', function (d) { se += d.toString('utf8'); });
+      proc.on('close', function (code) { clearTimeout(t); resolve({ code, so, se }); });
+      proc.on('error', function () { clearTimeout(t); resolve({ code: -1, so: '', se: 'spawn-error' }); });
+    });
+  }
+
+  async function peerWatchTick() {
+    if (peerWatchInProgress) return;
+    peerWatchInProgress = true;
+    try {
+      if (!cfg.enabled || cfg.selfRole !== 'primary') return;
+      const peerHost = cfg.standby && cfg.standby.ssh && cfg.standby.ssh.host;
+      if (!peerHost) return;
+      const peerStatus = await fetchPeerStatus(peerHost, PEER_WATCH_PORT, 4000);
+      if (!peerStatus || !peerStatus.ok || !peerStatus.status) return;
+      const peerFo = peerStatus.status.failover || {};
+      const peerTakenOver = !!peerFo.takenOver;
+
+      if (!cfg.yielded) cfg.yielded = JSON.parse(JSON.stringify(defaults.yielded));
+      const wasYielded = !!cfg.yielded.yieldedToStandby;
+
+      if (peerTakenOver && !wasYielded) {
+        // 备机已接管 → 主机让位
+        pushEvent('error', '【让位】备机已接管业务，本机自动停止 dcim 采集');
+        const r = await execDockerSimple(['exec', 'dcim', 'systemctl', 'stop', 'dcim'], 30000);
+        if (r.code === 0) {
+          cfg.yielded.yieldedToStandby = true;
+          cfg.yielded.yieldedAt = localStamp();
+          writeCfg();
+          pushEvent('warn', '【让位】完成：本机 dcim 已停止，业务运行在备机');
+        } else {
+          pushEvent('error', '【让位】停止 dcim 失败：' + ((r.se || r.so) || '').slice(0, 200));
+        }
+        broadcastSnapshot();
+      } else if (!peerTakenOver && wasYielded) {
+        // 备机已重置 → 主机收回
+        pushEvent('info', '【收回】备机已重置接管状态，本机自动启动 dcim 采集');
+        const r = await execDockerSimple(['exec', 'dcim', 'systemctl', 'start', 'dcim'], 30000);
+        if (r.code === 0) {
+          cfg.yielded.yieldedToStandby = false;
+          cfg.yielded.yieldedAt = '';
+          writeCfg();
+          pushEvent('info', '【收回】完成：本机 dcim 已重新启动');
+        } else {
+          pushEvent('error', '【收回】启动 dcim 失败：' + ((r.se || r.so) || '').slice(0, 200));
+        }
+        broadcastSnapshot();
+      }
+    } catch (err) {
+      // 静默：网络异常等不刷屏
+    } finally {
+      peerWatchInProgress = false;
+    }
+  }
+
+  function startPeerWatchTimer() {
+    if (peerWatchTimer) return;
+    appendLog('启动主机被动监测循环（5s 查备机接管状态）');
+    peerWatchTimer = setInterval(peerWatchTick, 5000);
+    setTimeout(peerWatchTick, 2000);
+  }
+  function stopPeerWatchTimer(reason) {
+    if (peerWatchTimer) {
+      clearInterval(peerWatchTimer);
+      peerWatchTimer = null;
+      appendLog(`停止主机被动监测循环（${reason || '-'}）`);
+    }
+  }
+
+  // ---------- 故障接管：REST 路由 ----------
+  app.get('/api/ha/failover', function (_req, res) {
+    const fo = cfg.failover || {};
+    res.json({
+      ok: true,
+      data: {
+        enabled: !!fo.enabled,
+        bufferSec: Number(fo.bufferSec) || 30,
+        bufferPreset: fo.bufferPreset || '30',
+        judgeMode: fo.judgeMode || 'any',
+        consecutiveFails: Number(fo.consecutiveFails) || 2,
+        autoYieldOnPeerRecover: !!fo.autoYieldOnPeerRecover,
+        autoYieldConsecutive: Number(fo.autoYieldConsecutive) || 5,
+        cooldownSec: fo.cooldownSec != null ? Number(fo.cooldownSec) : 60,
+        cooldownRemainingSec: failoverCooldownUntil > Date.now()
+          ? Math.ceil((failoverCooldownUntil - Date.now()) / 1000) : 0,
+        peerRecoverCount: failoverPeerRecoverCount,
+        takenOver: !!fo.takenOver,
+        takenOverAt: fo.takenOverAt || '',
+        takenOverError: fo.takenOverError || '',
+        state: failoverState,
+        failCount: failoverFailCount,
+        countdownSec: failoverCountdownSec,
+        allowed: cfg.selfRole === 'standby' && cfg.enabled,
+      },
+    });
+  });
+
+  app.put('/api/ha/failover', function (req, res) {
+    const b = req.body || {};
+    const fo = cfg.failover || JSON.parse(JSON.stringify(defaults.failover));
+    const before = !!fo.enabled;
+    fo.enabled = !!b.enabled;
+    if (b.bufferSec !== undefined) {
+      const sec = Number(b.bufferSec);
+      if (!(sec >= 5 && sec <= 3600)) {
+        return res.status(400).json({ ok: false, message: 'bufferSec 必须在 5-3600 之间' });
+      }
+      fo.bufferSec = sec;
+    }
+    if (b.bufferPreset !== undefined) fo.bufferPreset = String(b.bufferPreset);
+    if (b.judgeMode !== undefined) {
+      const m = String(b.judgeMode);
+      if (['any', 'both', 'ip-only'].indexOf(m) < 0) {
+        return res.status(400).json({ ok: false, message: 'judgeMode 必须是 any/both/ip-only' });
+      }
+      fo.judgeMode = m;
+    }
+    if (b.consecutiveFails !== undefined) {
+      const n = Number(b.consecutiveFails);
+      if (!(n >= 1 && n <= 20)) {
+        return res.status(400).json({ ok: false, message: 'consecutiveFails 必须在 1-20 之间' });
+      }
+      fo.consecutiveFails = n;
+    }
+    if (b.autoYieldOnPeerRecover !== undefined) {
+      fo.autoYieldOnPeerRecover = !!b.autoYieldOnPeerRecover;
+    }
+    if (b.autoYieldConsecutive !== undefined) {
+      const n = Number(b.autoYieldConsecutive);
+      if (!(n >= 1 && n <= 60)) {
+        return res.status(400).json({ ok: false, message: 'autoYieldConsecutive 必须在 1-60 之间' });
+      }
+      fo.autoYieldConsecutive = n;
+    }
+    if (b.cooldownSec !== undefined) {
+      const n = Number(b.cooldownSec);
+      if (!(n >= 0 && n <= 3600)) {
+        return res.status(400).json({ ok: false, message: 'cooldownSec 必须在 0-3600 之间' });
+      }
+      fo.cooldownSec = n;
+    }
+    cfg.failover = fo;
+    writeCfg();
+    pushEvent('info', `故障接管配置已更新：enabled=${fo.enabled} buffer=${fo.bufferSec}s judge=${fo.judgeMode} consecutive=${fo.consecutiveFails} autoYield=${fo.autoYieldOnPeerRecover}/${fo.autoYieldConsecutive} cooldown=${fo.cooldownSec}s`);
+
+    // 启停监测循环（仅 standby + 总开关启用时启动）
+    if (cfg.enabled && cfg.selfRole === 'standby' && fo.enabled) {
+      if (!fo.takenOver) {
+        failoverState = 'monitoring';
+        failoverFailCount = 0;
+      }
+      startFailoverCheckTimer();
+    } else {
+      stopFailoverCheckTimer('config-changed');
+      if (!fo.takenOver) failoverState = 'idle';
+    }
+    broadcastSnapshot();
+    res.json({ ok: true, data: { ...fo, state: failoverState, allowed: cfg.selfRole === 'standby' && cfg.enabled } });
+  });
+
+  // 立即停止缓冲监测（不影响已接管状态）
+  app.post('/api/ha/failover/stop', function (_req, res) {
+    if (!cfg.failover) cfg.failover = JSON.parse(JSON.stringify(defaults.failover));
+    cfg.failover.enabled = false;
+    writeCfg();
+    stopFailoverCheckTimer('manual-stop');
+    if (!cfg.failover.takenOver) failoverState = 'idle';
+    pushEvent('info', '故障接管监测已停止');
+    broadcastSnapshot();
+    res.json({ ok: true, data: { state: failoverState } });
+  });
+
+  // 重置接管状态：UPDATE status=-1 + 停 dcim
+  app.post('/api/ha/failover/reset', async function (_req, res) {
+    try {
+      await doFailoverReset();
+      res.json({ ok: true, message: '已重置接管状态' });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: err.message });
+    }
+  });
+
+  // dry-run 测试：检查接管命令是否能跑通（不真接管）
+  // 1) docker ps 看 dcim 容器存在
+  // 2) docker exec dcim mysql ... -e "EXPLAIN UPDATE..."（仅校验权限和连通性）
+  // 3) 不真重启 dcim
+  app.post('/api/ha/failover/test', async function (_req, res) {
+    if (cfg.selfRole !== 'standby') return res.status(400).json({ ok: false, message: '仅备机可测试接管' });
+    const localDb = cfg.standby.db;
+    const checks = { dockerPs: '', mysqlConn: '', updateGrant: '', deleteGrant: '' };
+    try {
+      // step1: docker ps，确认 dcim 容器存在
+      const ps = await execDockerSimple(['ps', '--format', '{{.Names}}'], 15000);
+      checks.dockerPs = (ps.code === 0 && /(^|\n)dcim(\n|$)/.test(ps.so))
+        ? 'OK'
+        : ('FAIL: ' + ((ps.se || ps.so) || 'docker 不可用').slice(0, 200));
+
+      // step2: mysql 连通 + 能 SELECT
+      const m = await execDockerSimple([
+        'exec', 'dcim', 'mysql',
+        '-h', String(localDb.host || '127.0.0.1'),
+        '-P', String(localDb.port || 3306),
+        '-u', String(localDb.user || ''),
+        '--password=' + String(localDb.password || ''),
+        '-BN', '-e',
+        'USE `' + localDb.database + '`; SELECT COUNT(*) FROM `dcim-device`;',
+      ], 15000);
+      checks.mysqlConn = (m.code === 0) ? 'OK' : ('FAIL: ' + ((m.se || m.so) || '').slice(0, 200));
+
+      // step3: SHOW GRANTS 看 UPDATE 权限
+      const g = await execDockerSimple([
+        'exec', 'dcim', 'mysql',
+        '-h', String(localDb.host || '127.0.0.1'),
+        '-P', String(localDb.port || 3306),
+        '-u', String(localDb.user || ''),
+        '--password=' + String(localDb.password || ''),
+        '-BN', '-e', 'SHOW GRANTS FOR CURRENT_USER();',
+      ], 15000);
+      if (g.code === 0) {
+        const hasUpdate = /\bUPDATE\b|\bALL PRIVILEGES\b/i.test(g.so);
+        const hasDelete = /\bDELETE\b|\bALL PRIVILEGES\b/i.test(g.so);
+        checks.updateGrant = hasUpdate ? 'OK' : ('FAIL: 当前用户没有 UPDATE 权限\n' + g.so.slice(0, 300));
+        checks.deleteGrant = hasDelete ? 'OK' : ('FAIL: 当前用户没有 DELETE 权限（清空 dcim-alarmlist 需要）\n' + g.so.slice(0, 300));
+      } else {
+        checks.updateGrant = 'FAIL: ' + ((g.se || g.so) || '').slice(0, 200);
+        checks.deleteGrant = 'FAIL: ' + ((g.se || g.so) || '').slice(0, 200);
+      }
+
+      const allOk = checks.dockerPs === 'OK' && checks.mysqlConn === 'OK' && checks.updateGrant === 'OK' && checks.deleteGrant === 'OK';
+      res.json({
+        ok: allOk,
+        data: checks,
+        message: allOk ? '所有校验通过，接管命令应能正常执行' : '部分校验失败，请检查',
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: err.message, data: checks });
+    }
+  });
+
+
+  // ---------- MySQL 连接保护调优（max_connect_errors）----------
+  // 探测：经 SSH 进对端容器查 mysqld 当前 max_connect_errors 在线值 + my.cnf 落盘值
+  // 目标容器名 / cnf 路径 / 重启命令 走可覆盖的 env，默认匹配当前部署
+  const TUNE_CONTAINER = process.env.HA_TUNE_CONTAINER || 'dcim';
+  const TUNE_CNF_PATH  = process.env.HA_TUNE_CNF_PATH  || '/etc/my.cnf';
+  const TUNE_TARGET    = Number(process.env.HA_TUNE_TARGET || 100000);
+
+  // sed 模板：替换 max_connect_errors 一行；如果 my.cnf 里没有这一行，则在 [mysqld] 段后追加
+  function buildTuneSed(targetVal) {
+    // 1) 已存在该行：替换
+    // 2) 不存在：在 [mysqld] 后追加（用 awk 处理更稳）
+    return [
+      `if grep -qE '^[[:space:]]*max_connect_errors[[:space:]]*=' ${TUNE_CNF_PATH}; then`,
+      `  sed -i -E 's/^[[:space:]]*max_connect_errors[[:space:]]*=[[:space:]]*[0-9]+/max_connect_errors = ${targetVal}/' ${TUNE_CNF_PATH};`,
+      `else`,
+      `  awk 'BEGIN{done=0} /^\\[mysqld\\]/&&!done{print;print "max_connect_errors = ${targetVal}";done=1;next} {print}' ${TUNE_CNF_PATH} > ${TUNE_CNF_PATH}.new && mv ${TUNE_CNF_PATH}.new ${TUNE_CNF_PATH};`,
+      `fi`,
+    ].join(' ');
+  }
+
+  // 探一端的 mysqld：在线值 + my.cnf 落盘值
+  async function probeMysqlVar(sshCfg, dbCfg) {
+    const c = await newPeerSshClient(sshCfg);
+    try {
+      // 在线值（用 dcim 用户，普通账号也能 SHOW VARIABLES）
+      const q1 = `docker exec ${TUNE_CONTAINER} mysql -u${dbCfg.user} --password=${dbCfg.password || ''} -BN -e "SHOW VARIABLES LIKE 'max_connect_errors';" 2>&1 | tail -1 | awk '{print $2}'`;
+      let r = await peerExec(c, q1, 15000);
+      const live = (r.stdout || '').trim().split('\n').filter(function (l) { return /^\d+$/.test(l); }).pop() || '';
+      // 落盘值
+      const q2 = `docker exec ${TUNE_CONTAINER} sh -c "grep -E '^[[:space:]]*max_connect_errors[[:space:]]*=' ${TUNE_CNF_PATH} 2>/dev/null | tail -1 | awk -F= '{gsub(/[[:space:]]/,\\"\\"); print \\$2}'" 2>&1`;
+      r = await peerExec(c, q2, 10000);
+      const onDisk = (r.stdout || '').trim().split('\n').filter(function (l) { return /^\d+$/.test(l); }).pop() || '';
+      return { ok: true, live: live ? Number(live) : null, onDisk: onDisk ? Number(onDisk) : null };
+    } catch (err) {
+      return { ok: false, message: err.message };
+    } finally {
+      try { c.end(); } catch (_e) {}
+    }
+  }
+
+  app.get('/api/ha/mysql-vars', async function (_req, res) {
+    if (!cfg.enabled) return res.status(400).json({ ok: false, message: '总开关未启用' });
+    const out = { target: TUNE_TARGET };
+    out.primary = await probeMysqlVar(cfg.primary.ssh, cfg.primary.db);
+    out.standby = await probeMysqlVar(cfg.standby.ssh, cfg.standby.db);
+    res.json({ ok: true, data: out });
+  });
+
+  // 调优单端：备份 my.cnf → sed/awk 改写 → 重启 mysqld → 校验在线值
+  // restart=false 时只改文件不重启（生效要等下次自然重启）
+  let tuneRunning = false;
+  async function tuneOneSide(label, sshCfg, dbCfg, doRestart) {
+    const c = await newPeerSshClient(sshCfg);
+    try {
+      const stamp = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14);
+      const bak = `${TUNE_CNF_PATH}.bak-${stamp}`;
+      pushEvent('info', `[调优 ${label}] 备份 my.cnf → ${bak}`);
+      let r = await peerExec(c, `docker exec ${TUNE_CONTAINER} cp ${TUNE_CNF_PATH} ${bak} && docker exec ${TUNE_CONTAINER} ls -l ${bak}`, 15000);
+      if (r.code !== 0) throw new Error(`备份失败: ${(r.stderr || r.stdout).slice(0, 200)}`);
+
+      pushEvent('info', `[调优 ${label}] 改写 max_connect_errors = ${TUNE_TARGET}`);
+      const sedScript = buildTuneSed(TUNE_TARGET);
+      r = await peerExec(c, `docker exec ${TUNE_CONTAINER} sh -c "${sedScript.replace(/"/g, '\\"')}"`, 15000);
+      if (r.code !== 0) throw new Error(`改写失败: ${(r.stderr || r.stdout).slice(0, 200)}`);
+
+      // 校验落盘
+      r = await peerExec(c, `docker exec ${TUNE_CONTAINER} grep -E '^[[:space:]]*max_connect_errors' ${TUNE_CNF_PATH}`, 10000);
+      const onDisk = (r.stdout || '').trim();
+      if (!onDisk.includes(String(TUNE_TARGET))) throw new Error(`落盘校验失败: ${onDisk}`);
+      pushEvent('info', `[调优 ${label}] 落盘校验通过：${onDisk}`);
+
+      if (!doRestart) {
+        pushEvent('info', `[调优 ${label}] 跳过重启（下次 mysqld 自然重启后生效）`);
+        return { ok: true, restarted: false, onDisk: onDisk, bak: bak };
+      }
+
+      pushEvent('warn', `[调优 ${label}] 重启 mysqld（dcim 业务会断 1-3s）`);
+      r = await peerExec(c, `docker exec ${TUNE_CONTAINER} systemctl restart mysqld`, 60000);
+      if (r.code !== 0) throw new Error(`重启 mysqld 失败 exit=${r.code}: ${(r.stderr || r.stdout).slice(0, 200)}`);
+
+      // 等 5s 让 mysqld 起来
+      await new Promise(function (rs) { setTimeout(rs, 5000); });
+      // 在线值校验
+      const checkCmd = `docker exec ${TUNE_CONTAINER} mysql -u${dbCfg.user} --password=${dbCfg.password || ''} -BN -e "SHOW VARIABLES LIKE 'max_connect_errors';" 2>&1 | tail -1 | awk '{print $2}'`;
+      r = await peerExec(c, checkCmd, 15000);
+      const live = (r.stdout || '').trim().split('\n').filter(function (l) { return /^\d+$/.test(l); }).pop() || '';
+      if (Number(live) !== TUNE_TARGET) throw new Error(`mysqld 在线值仍是 ${live || '(空)'}, 期望 ${TUNE_TARGET}`);
+      pushEvent('info', `[调优 ${label}] mysqld 在线值已生效：max_connect_errors=${live}`);
+      return { ok: true, restarted: true, live: Number(live), bak: bak };
+    } finally {
+      try { c.end(); } catch (_e) {}
+    }
+  }
+
+  app.post('/api/ha/tune-mysql', async function (req, res) {
+    if (!cfg.enabled) return res.status(400).json({ ok: false, message: '总开关未启用' });
+    if (tuneRunning) return res.status(409).json({ ok: false, message: '已有调优任务在执行' });
+    const body = req.body || {};
+    const side = body.side === 'primary' || body.side === 'standby' || body.side === 'both' ? body.side : 'both';
+    const restart = body.restart !== false;  // 默认重启
+
+    tuneRunning = true;
+    pushEvent('info', `开始 MySQL 调优：side=${side} restart=${restart} target=${TUNE_TARGET}`);
+    const result = { side: side, restart: restart, target: TUNE_TARGET };
+    try {
+      if (side === 'primary' || side === 'both') {
+        result.primary = await tuneOneSide('主机', cfg.primary.ssh, cfg.primary.db, restart);
+      }
+      if (side === 'standby' || side === 'both') {
+        result.standby = await tuneOneSide('备机', cfg.standby.ssh, cfg.standby.db, restart);
+      }
+      pushEvent('info', `MySQL 调优完成：side=${side}`);
+      res.json({ ok: true, result: result });
+    } catch (err) {
+      pushEvent('error', `MySQL 调优失败：${err.message}`);
+      res.status(500).json({ ok: false, message: err.message, result: result });
+    } finally {
+      tuneRunning = false;
+    }
+  });
+
+  // ---------- WebSocket /ws/ha ----------
+  wssHa.on('connection', function (ws) {
+    // 新连接立刻推一次全量快照
+    try { ws.send(JSON.stringify({ type: 'snapshot', data: publicStatus() })); } catch (_e) {}
+    ws.on('message', function (raw) {
+      let msg;
+      try { msg = JSON.parse(String(raw)); } catch (_e) { return; }
+      if (msg && msg.type === 'ping') {
+        try { ws.send(JSON.stringify({ type: 'pong', ts: Date.now() })); } catch (_e) {}
+      }
+    });
+    ws.on('error', function () {});
+  });
+
+  // ---------- 自启 ----------
+  readCfg();
+  appendLog(`服务启动，enabled=${cfg.enabled}, selfRole=${cfg.selfRole}`);
+  if (cfg.enabled) {
+    // 异步启动，避免阻塞 server.js 主流程
+    setTimeout(function () { applyEnabled().catch(function (err) {
+      appendLog(`自启失败：${err.message}`);
+    }); }, 1000);
+  }
+})();
+
 // ===== 信创短信猫 - 数据库监测「新告警提示」 =====
 (function setupSmsMonitor() {
   const path = require('path');
@@ -2181,7 +4192,46 @@ wssTcp.on('connection', function (ws) {
     httpTimeoutMs: 8000,                    // 请求超时
     autoQueryResultIntervalSec: 30,         // 后台周期查询结果
   };
-  let cfg = Object.assign({}, defaults);
+
+  // ===== 多品牌驱动注册表 =====
+  // 每个 driver 提供：name 显示名 / capabilities 能力声明 / defaults 默认参数
+  // 以及 callPush(pcfg, payload) / callResults(pcfg, ids) / callSimStatus(pcfg) 的具体实现
+  // capabilities.sim=false → 前端隐藏 SIM 卡相关 UI
+  // capabilities.results=false → 后台不启动结果轮询
+  // 实现还没接入的品牌请把方法保留为 throw new Error('暂未接入...')，UI 层会兜底
+  const DRIVERS = {
+    xinchuang: {
+      name: '信创短信猫',
+      capabilities: { sim: true, results: true },
+      defaults: defaults,
+      // 三个 call 方法在原 callPush/callResults/callSimStatus 函数内联，
+      // 这里通过同名包装统一入口，避免大幅改造原代码
+      callPush: null, callResults: null, callSimStatus: null,
+    },
+    // 占位品牌：UI 能选，但后端尚未实现，调用时给出友好错误
+    // 之后接入新品牌，复制 xinchuang 这一项，实现 callPush/callResults/callSimStatus 即可
+    rixin: {
+      name: '日新短信猫（占位）',
+      capabilities: { sim: false, results: false },
+      defaults: { enabled: false, gatewayHost: '', gatewayPort: 0, type: 'SMS', encoding: 'UTF-8', httpTimeoutMs: 8000 },
+      callPush: function () { throw new Error('日新短信猫暂未接入'); },
+      callResults: function () { throw new Error('日新短信猫暂未接入'); },
+      callSimStatus: function () { throw new Error('日新短信猫暂未接入'); },
+    },
+  };
+  function listBrands() {
+    return Object.keys(DRIVERS).map(function (k) {
+      return { key: k, name: DRIVERS[k].name, capabilities: Object.assign({}, DRIVERS[k].capabilities) };
+    });
+  }
+  function brandKeyOrFallback(k) {
+    return DRIVERS[k] ? k : 'xinchuang';
+  }
+
+  // cfgRoot 是磁盘上的整体配置：{ brand, brands: { xinchuang: {...}, rixin: {...} } }
+  // cfg 始终是 cfgRoot.brands[cfgRoot.brand] 的引用，让原有所有 cfg.X 读写零改造
+  let cfgRoot = { brand: 'xinchuang', brands: { xinchuang: Object.assign({}, defaults) } };
+  let cfg = cfgRoot.brands.xinchuang;
 
   // 发送历史：每条 {id, stime, type, to, text, status, ackTime, error, source}
   // source: 'manual' | 'auto'
@@ -2317,34 +4367,70 @@ wssTcp.on('connection', function (ws) {
       persons: persons,
     };
   }
+  // 把单个品牌的扁平参数 normalize 一遍：填默认 + clamp 越界值
+  function normalizeBrandCfg(brandKey, raw) {
+    const drv = DRIVERS[brandKey] || DRIVERS.xinchuang;
+    const dft = drv.defaults || defaults;
+    const merged = Object.assign({}, dft, raw || {});
+    if ('gatewayPort' in merged) merged.gatewayPort = clamp(merged.gatewayPort, 1, 65535, dft.gatewayPort || 8791);
+    if ('httpTimeoutMs' in merged) merged.httpTimeoutMs = clamp(merged.httpTimeoutMs, 1000, 60000, dft.httpTimeoutMs || 8000);
+    if ('autoQueryResultIntervalSec' in merged) {
+      merged.autoQueryResultIntervalSec = clamp(merged.autoQueryResultIntervalSec, 5, 600, dft.autoQueryResultIntervalSec || 30);
+    }
+    if (brandKey === 'xinchuang') {
+      merged.pushPath = merged.pushPath || DEFAULT_PATHS.push;
+      merged.resultsPath = merged.resultsPath || DEFAULT_PATHS.results;
+      merged.simStatusPath = merged.simStatusPath || DEFAULT_PATHS.sim;
+    }
+    merged.enabled = !!merged.enabled;
+    merged.autoPushOnAlarm = !!merged.autoPushOnAlarm;
+    merged.autoPushOnCancel = !!merged.autoPushOnCancel;
+    delete merged.recipients;
+    delete merged.recipientIds;
+    return merged;
+  }
+
+  // 强制单品牌互斥：当某品牌 enabled=true 时，把其他品牌的 enabled 一律置 false
+  function enforceSingleEnabled(activeKey) {
+    Object.keys(cfgRoot.brands).forEach(function (k) {
+      if (k !== activeKey && cfgRoot.brands[k]) cfgRoot.brands[k].enabled = false;
+    });
+  }
+  // 把 cfg 引用切到目标品牌，确保后续所有 cfg.X 读到的是新品牌的参数
+  function activateBrand(brandKey) {
+    const key = brandKeyOrFallback(brandKey);
+    if (!cfgRoot.brands[key]) cfgRoot.brands[key] = normalizeBrandCfg(key, {});
+    cfgRoot.brand = key;
+    cfg = cfgRoot.brands[key];
+    return key;
+  }
+
   function readCfg() {
     try {
       const raw = fs.readFileSync(CONFIG_PATH, 'utf8');
       const parsed = JSON.parse(raw);
-      cfg = Object.assign({}, defaults, parsed, {
-        pushPath: parsed.pushPath || DEFAULT_PATHS.push,
-        resultsPath: parsed.resultsPath || DEFAULT_PATHS.results,
-        simStatusPath: parsed.simStatusPath || DEFAULT_PATHS.sim,
-        gatewayPort: clamp(parsed.gatewayPort, 1, 65535, defaults.gatewayPort),
-        httpTimeoutMs: clamp(parsed.httpTimeoutMs, 1000, 60000, defaults.httpTimeoutMs),
-        autoQueryResultIntervalSec: clamp(
-          parsed.autoQueryResultIntervalSec, 5, 600, defaults.autoQueryResultIntervalSec
-        ),
-        enabled: !!parsed.enabled,
-        autoPushOnAlarm: !!parsed.autoPushOnAlarm,
-        autoPushOnCancel: !!parsed.autoPushOnCancel,
-      });
-      // 历史遗留字段：旧版本曾写过 recipients / recipientIds，本版改由 NotifyModeID 解析
-      delete cfg.recipients;
-      delete cfg.recipientIds;
+      // 兼容三种写法：① 新结构 { brand, brands:{} }；② 老的扁平结构（迁移到 xinchuang）；③ 文件不存在
+      if (parsed && parsed.brands && typeof parsed.brands === 'object') {
+        cfgRoot = { brand: brandKeyOrFallback(parsed.brand), brands: {} };
+        Object.keys(parsed.brands).forEach(function (k) {
+          if (DRIVERS[k]) cfgRoot.brands[k] = normalizeBrandCfg(k, parsed.brands[k]);
+        });
+        if (!cfgRoot.brands[cfgRoot.brand]) cfgRoot.brands[cfgRoot.brand] = normalizeBrandCfg(cfgRoot.brand, {});
+      } else if (parsed && typeof parsed === 'object') {
+        // 旧扁平配置：整体迁移到 xinchuang
+        cfgRoot = { brand: 'xinchuang', brands: { xinchuang: normalizeBrandCfg('xinchuang', parsed) } };
+        appendLog('检测到旧版扁平配置，已迁移到 brands.xinchuang');
+      }
     } catch (_e) {
-      cfg = Object.assign({}, defaults);
+      cfgRoot = { brand: 'xinchuang', brands: { xinchuang: normalizeBrandCfg('xinchuang', {}) } };
     }
+    activateBrand(cfgRoot.brand);
+    enforceSingleEnabled(cfgRoot.brand);
   }
   function writeCfg() {
     try {
       fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
-      fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+      fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfgRoot, null, 2) + '\n', 'utf8');
     } catch (err) {
       console.error('[sms-push] 写配置失败:', err.message);
     }
@@ -2387,50 +4473,56 @@ wssTcp.on('connection', function (ws) {
     });
   }
 
-  async function callPush(payload) {
-    if (!cfg.gatewayHost) throw new Error('网关 IP 未配置');
+  // ===== 信创品牌的真实实现：填回 DRIVERS.xinchuang 的 callXxx =====
+  // 参数 pcfg 是该品牌当前的配置对象（不是全局 cfg），便于将来同时对多个品牌发起调用
+  DRIVERS.xinchuang.callPush = async function (pcfg, payload) {
+    if (!pcfg.gatewayHost) throw new Error('网关 IP 未配置');
     const data = Buffer.from(JSON.stringify(payload), 'utf8');
-    const resp = await httpRequest({
-      host: cfg.gatewayHost,
-      port: cfg.gatewayPort,
-      path: cfg.pushPath || DEFAULT_PATHS.push,
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json; charset=utf-8',
-        'Content-Length': data.length,
-      },
-      timeout: cfg.httpTimeoutMs,
+    return httpRequest({
+      host: pcfg.gatewayHost, port: pcfg.gatewayPort,
+      path: pcfg.pushPath || DEFAULT_PATHS.push, method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': data.length },
+      timeout: pcfg.httpTimeoutMs,
     }, data);
-    return resp;
-  }
-
-  async function callResults(ids) {
-    if (!cfg.gatewayHost) throw new Error('网关 IP 未配置');
+  };
+  DRIVERS.xinchuang.callResults = async function (pcfg, ids) {
+    if (!pcfg.gatewayHost) throw new Error('网关 IP 未配置');
     const data = Buffer.from(JSON.stringify(ids), 'utf8');
-    const resp = await httpRequest({
-      host: cfg.gatewayHost,
-      port: cfg.gatewayPort,
-      path: cfg.resultsPath || DEFAULT_PATHS.results,
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json; charset=utf-8',
-        'Content-Length': data.length,
-      },
-      timeout: cfg.httpTimeoutMs,
+    return httpRequest({
+      host: pcfg.gatewayHost, port: pcfg.gatewayPort,
+      path: pcfg.resultsPath || DEFAULT_PATHS.results, method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': data.length },
+      timeout: pcfg.httpTimeoutMs,
     }, data);
-    return resp;
-  }
-
-  async function callSimStatus() {
-    if (!cfg.gatewayHost) throw new Error('网关 IP 未配置');
-    const resp = await httpRequest({
-      host: cfg.gatewayHost,
-      port: cfg.gatewayPort,
-      path: cfg.simStatusPath || DEFAULT_PATHS.sim,
-      method: 'GET',
-      timeout: cfg.httpTimeoutMs,
+  };
+  DRIVERS.xinchuang.callSimStatus = async function (pcfg) {
+    if (!pcfg.gatewayHost) throw new Error('网关 IP 未配置');
+    return httpRequest({
+      host: pcfg.gatewayHost, port: pcfg.gatewayPort,
+      path: pcfg.simStatusPath || DEFAULT_PATHS.sim, method: 'GET',
+      timeout: pcfg.httpTimeoutMs,
     });
-    return resp;
+  };
+
+  // 通用入口：把当前激活品牌的 driver call 出去；新品牌只需补 DRIVERS.xxx.callXxx 即可
+  function activeDriver() {
+    return DRIVERS[cfgRoot.brand] || DRIVERS.xinchuang;
+  }
+  async function callPush(payload) {
+    const drv = activeDriver();
+    if (typeof drv.callPush !== 'function') throw new Error(drv.name + ' 暂未实现 callPush');
+    return drv.callPush(cfg, payload);
+  }
+  async function callResults(ids) {
+    const drv = activeDriver();
+    if (typeof drv.callResults !== 'function') throw new Error(drv.name + ' 暂未实现 callResults');
+    return drv.callResults(cfg, ids);
+  }
+  async function callSimStatus() {
+    const drv = activeDriver();
+    if (!drv.capabilities || !drv.capabilities.sim) throw new Error(drv.name + ' 不支持 SIM 卡查询');
+    if (typeof drv.callSimStatus !== 'function') throw new Error(drv.name + ' 暂未实现 callSimStatus');
+    return drv.callSimStatus(cfg);
   }
 
   function parseJsonSafe(buf) {
@@ -2543,6 +4635,9 @@ wssTcp.on('connection', function (ws) {
   function scheduleResultsTimer() {
     if (resultsTimer) { clearInterval(resultsTimer); resultsTimer = null; }
     if (!cfg.enabled) return;
+    // 没有结果回执能力的品牌不开启轮询
+    const drv = activeDriver();
+    if (!drv.capabilities || !drv.capabilities.results) return;
     const ms = Math.max(5000, cfg.autoQueryResultIntervalSec * 1000);
     resultsTimer = setInterval(function () {
       refreshResults().catch(function (err) { lastError = err.message; });
@@ -2550,10 +4645,17 @@ wssTcp.on('connection', function (ws) {
   }
 
   function publicState() {
+    const drv = activeDriver();
     return {
+      // 当前激活品牌
+      brand: cfgRoot.brand,
+      brandName: drv.name,
+      capabilities: Object.assign({}, drv.capabilities),
+      brands: listBrands(),    // [{key, name, capabilities}]
+      // 当前激活品牌的所有参数
       enabled: cfg.enabled,
-      autoPushOnAlarm: cfg.autoPushOnAlarm,
-      autoPushOnCancel: cfg.autoPushOnCancel,
+      autoPushOnAlarm: !!cfg.autoPushOnAlarm,
+      autoPushOnCancel: !!cfg.autoPushOnCancel,
       gatewayHost: cfg.gatewayHost,
       gatewayPort: cfg.gatewayPort,
       pushPath: cfg.pushPath,
@@ -2563,12 +4665,12 @@ wssTcp.on('connection', function (ws) {
       encoding: cfg.encoding,
       httpTimeoutMs: cfg.httpTimeoutMs,
       autoQueryResultIntervalSec: cfg.autoQueryResultIntervalSec,
+      // 全局
       historyCount: history.length,
       totalSent: totalSent,
       totalFailed: totalFailed,
       lastError: lastError,
       dbConnected: !!getDbPool(),
-      // 自动推送说明：收件人不再由配置维护，每条告警走 NotifyModeID → alarmnotifymode → person 解析
       recipientResolver: 'NotifyModeID -> dcim-alarmnotifymode -> dcim-person',
     };
   }
@@ -2680,24 +4782,51 @@ wssTcp.on('connection', function (ws) {
 
   app.put('/api/sms/push/config', function (req, res) {
     const body = req.body || {};
-    if ('enabled' in body) cfg.enabled = !!body.enabled;
-    if ('autoPushOnAlarm' in body) cfg.autoPushOnAlarm = !!body.autoPushOnAlarm;
-    if ('autoPushOnCancel' in body) cfg.autoPushOnCancel = !!body.autoPushOnCancel;
-    if ('gatewayHost' in body) cfg.gatewayHost = String(body.gatewayHost || '').trim() || cfg.gatewayHost;
-    if ('gatewayPort' in body) cfg.gatewayPort = clamp(body.gatewayPort, 1, 65535, cfg.gatewayPort);
-    if ('pushPath' in body) cfg.pushPath = String(body.pushPath || DEFAULT_PATHS.push).trim() || DEFAULT_PATHS.push;
-    if ('resultsPath' in body) cfg.resultsPath = String(body.resultsPath || DEFAULT_PATHS.results).trim() || DEFAULT_PATHS.results;
-    if ('simStatusPath' in body) cfg.simStatusPath = String(body.simStatusPath || DEFAULT_PATHS.sim).trim() || DEFAULT_PATHS.sim;
-    if ('type' in body && ['SMS', 'Call', 'All'].indexOf(body.type) >= 0) cfg.type = body.type;
-    if ('encoding' in body && ['UTF-8', 'ANSI'].indexOf(body.encoding) >= 0) cfg.encoding = body.encoding;
-    if ('httpTimeoutMs' in body) cfg.httpTimeoutMs = clamp(body.httpTimeoutMs, 1000, 60000, cfg.httpTimeoutMs);
+    // 允许 PUT 同时切换品牌：body.brand 指定要修改的品牌 key（默认改激活品牌）
+    const targetKey = body.brand && DRIVERS[body.brand] ? body.brand : cfgRoot.brand;
+    if (!cfgRoot.brands[targetKey]) cfgRoot.brands[targetKey] = normalizeBrandCfg(targetKey, {});
+    const target = cfgRoot.brands[targetKey];
+    const dft = (DRIVERS[targetKey].defaults) || defaults;
+
+    if ('enabled' in body) target.enabled = !!body.enabled;
+    if ('autoPushOnAlarm' in body) target.autoPushOnAlarm = !!body.autoPushOnAlarm;
+    if ('autoPushOnCancel' in body) target.autoPushOnCancel = !!body.autoPushOnCancel;
+    if ('gatewayHost' in body) target.gatewayHost = String(body.gatewayHost || '').trim() || target.gatewayHost;
+    if ('gatewayPort' in body) target.gatewayPort = clamp(body.gatewayPort, 1, 65535, target.gatewayPort);
+    if ('pushPath' in body) target.pushPath = String(body.pushPath || dft.pushPath || DEFAULT_PATHS.push).trim() || (dft.pushPath || DEFAULT_PATHS.push);
+    if ('resultsPath' in body) target.resultsPath = String(body.resultsPath || dft.resultsPath || DEFAULT_PATHS.results).trim() || (dft.resultsPath || DEFAULT_PATHS.results);
+    if ('simStatusPath' in body) target.simStatusPath = String(body.simStatusPath || dft.simStatusPath || DEFAULT_PATHS.sim).trim() || (dft.simStatusPath || DEFAULT_PATHS.sim);
+    if ('type' in body && ['SMS', 'Call', 'All'].indexOf(body.type) >= 0) target.type = body.type;
+    if ('encoding' in body && ['UTF-8', 'ANSI'].indexOf(body.encoding) >= 0) target.encoding = body.encoding;
+    if ('httpTimeoutMs' in body) target.httpTimeoutMs = clamp(body.httpTimeoutMs, 1000, 60000, target.httpTimeoutMs);
     if ('autoQueryResultIntervalSec' in body) {
-      cfg.autoQueryResultIntervalSec = clamp(body.autoQueryResultIntervalSec, 5, 600, cfg.autoQueryResultIntervalSec);
+      target.autoQueryResultIntervalSec = clamp(body.autoQueryResultIntervalSec, 5, 600, target.autoQueryResultIntervalSec);
     }
+    // 互斥：如果 PUT 把某个品牌 enabled 置 true，把其他品牌全部置 false
+    if (target.enabled) enforceSingleEnabled(targetKey);
+
     writeCfg();
     scheduleResultsTimer();
-    appendLog(`配置更新 enabled=${cfg.enabled} autoPush=${cfg.autoPushOnAlarm} autoCancel=${cfg.autoPushOnCancel} gw=${cfg.gatewayHost}:${cfg.gatewayPort}`);
+    appendLog(`配置更新[${targetKey}] enabled=${target.enabled} autoPush=${target.autoPushOnAlarm} autoCancel=${target.autoPushOnCancel} gw=${target.gatewayHost}:${target.gatewayPort}`);
     res.json(publicState());
+  });
+
+  // 列出全部支持的品牌（含 capabilities，前端做能力开关）
+  app.get('/api/sms/push/brands', function (_req, res) {
+    res.json({ ok: true, brand: cfgRoot.brand, brands: listBrands() });
+  });
+
+  // 切换激活品牌：参数已并存，不强制关闭其他品牌的 enabled。
+  // 互斥仍由 PUT 接口 + readCfg 启动时保证：任何时候真正发送的只可能是 cfgRoot.brand 这一个。
+  app.post('/api/sms/push/brand', function (req, res) {
+    const body = req.body || {};
+    const want = String(body.brand || '');
+    if (!DRIVERS[want]) return res.status(400).json({ ok: false, message: '未知品牌：' + want });
+    activateBrand(want);
+    writeCfg();
+    scheduleResultsTimer();
+    appendLog(`切换品牌 → ${want}（其他品牌参数保留）`);
+    res.json({ ok: true, state: publicState() });
   });
 
   // 列出 dcim-person（前端"收件人"按钮的只读视图，仅供查看，不再用于推送配置）
@@ -2970,7 +5099,7 @@ wssTcp.on('connection', function (ws) {
     const pool = getDbPool();
     if (!pool) throw new Error('数据库未连接');
     const [rows] = await pool.query(
-      'SELECT id, SmsOnhourAlarm, SmsContent, SmsCustomContent, SmsTargetPhone, SmsTime, LastSmsAlarmTime '
+      'SELECT id, SmsOnhourAlarm, SmsContent, SmsCustomContent, SmsTargetPhone, SmsTime, SmsParamId, LastSmsAlarmTime '
       + 'FROM `' + TABLE + '` ORDER BY id ASC LIMIT 1'
     );
     if (!rows || !rows.length) throw new Error(TABLE + ' 表为空，无可用配置');
@@ -3037,8 +5166,75 @@ wssTcp.on('connection', function (ws) {
     return { total: total, items: items, cursor: cursor };
   }
 
+  // SmsContent=4 用：解析 SmsParamId（JSON 数组 [{id, paramKey}, ...]），
+  // 按 dcim-paramcollectvalview 的 (DevId=id, AlarmKey=paramKey) 联合定位行，
+  // 从 LastReceiveData（Python dict 字符串："{'温度': '333.3(℃)', '湿度': '0.0(%)'}"）里抠出对应 paramKey 的值。
+  // 查不到的项静默跳过；返回 [{ devId, deviceName, paramKey, value }]
+  async function fetchParamValues(smsParamIdRaw) {
+    const pool = getDbPool();
+    if (!pool) throw new Error('数据库未连接');
+    let list;
+    try {
+      list = JSON.parse(String(smsParamIdRaw || '[]'));
+    } catch (_e) {
+      list = [];
+    }
+    if (!Array.isArray(list) || !list.length) return [];
+
+    // 一次性把所有需要的 (DevId, AlarmKey) 行拉回来，避免逐条查
+    const devIds = Array.from(new Set(list.map(function (it) { return Number(it && it.id); })
+      .filter(function (n) { return Number.isInteger(n) && n > 0; })));
+    if (!devIds.length) return [];
+    const placeholders = devIds.map(function () { return '?'; }).join(',');
+    const [rows] = await pool.query(
+      'SELECT DevId, AlarmKey, DeviceName, LastReceiveData '
+      + 'FROM `dcim-paramcollectvalview` '
+      + 'WHERE DevId IN (' + placeholders + ') AND status = 1',
+      devIds
+    );
+    // 按 (DevId, AlarmKey) 建索引：同一设备下不同 AlarmKey 的行其 LastReceiveData 通常一样，
+    // 但严格按行匹配能避免歧义
+    const idx = new Map();
+    (rows || []).forEach(function (r) {
+      const key = String(r.DevId) + '|' + String(r.AlarmKey || '');
+      idx.set(key, r);
+    });
+
+    // Python dict 风格 → JS：单引号转双引号，再 JSON.parse
+    function parsePyDict(raw) {
+      if (raw == null) return null;
+      const s = String(raw).trim();
+      if (!s) return null;
+      try { return JSON.parse(s.replace(/'/g, '"')); } catch (_e) { return null; }
+    }
+
+    const out = [];
+    for (const it of list) {
+      const devId = Number(it && it.id);
+      const paramKey = String(it && it.paramKey || '').trim();
+      if (!Number.isInteger(devId) || devId <= 0 || !paramKey) continue;
+      // 先按 (devId, paramKey) 精确找；如果同设备多行但 AlarmKey 不一样，退化为该设备任一行
+      let hit = idx.get(devId + '|' + paramKey);
+      if (!hit) {
+        for (const r of (rows || [])) {
+          if (Number(r.DevId) === devId) { hit = r; break; }
+        }
+      }
+      if (!hit) continue;       // 静默跳过：库里没有这个 DevId
+      const dict = parsePyDict(hit.LastReceiveData);
+      if (!dict || !(paramKey in dict)) continue;   // 静默跳过：dict 里没这个 paramKey
+      out.push({
+        devId: devId,
+        deviceName: String(hit.DeviceName || '').trim() || ('设备#' + devId),
+        paramKey: paramKey,
+        value: String(dict[paramKey]),
+      });
+    }
+    return out;
+  }
+
   // 按 SmsContent 类型生成短信文本
-  // 1 = 告警数量  2 = 详细告警  3 = 定制内容  4 = 参数（暂未实现，按 SmsCustomContent 兜底）
+  // 1 = 告警数量  2 = 详细告警  3 = 定制内容  4 = 参数
   async function buildContent(row) {
     const type = Number(row.SmsContent);
     const pad = function (n) { return String(n).padStart(2, '0'); };
@@ -3075,7 +5271,20 @@ wssTcp.on('connection', function (ws) {
       return head + body + '。';
     }
 
-    // 默认（含 type=3 / 未实现的 4）走定制内容
+    if (type === 4) {
+      const items = await fetchParamValues(row.SmsParamId);
+      if (!items.length) {
+        // SmsParamId 为空 / JSON 格式坏 / 全部查不到 → 兜底文案
+        return '《整点参数报告》截至' + stamp + '，本时段参数查询为空。';
+      }
+      // 拼成「设备名-参数名=值」用「; 」分隔
+      const body = items.map(function (it) {
+        return it.deviceName + '-' + it.paramKey + '=' + it.value;
+      }).join('; ');
+      return '《整点参数报告》截至' + stamp + '：' + body + '。';
+    }
+
+    // 默认（含 type=3 / 未实现的类型）走定制内容
     const text = String(row.SmsCustomContent || '').trim();
     if (!text) {
       throw new Error(type === 3
