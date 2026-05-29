@@ -819,6 +819,9 @@
     <div class="serial-view" id="protocolView">
       <iframe id="protocolFrame" title="协议助手" loading="lazy" src="about:blank"></iframe>
     </div>
+    <div class="serial-view" id="haView">
+      <iframe id="haFrame" title="双机热备" loading="lazy" src="about:blank"></iframe>
+    </div>
       </div>
     </div>
 
@@ -1644,6 +1647,8 @@
       smsFrame: document.getElementById('smsFrame'),
       protocolView: document.getElementById('protocolView'),
       protocolFrame: document.getElementById('protocolFrame'),
+      haView: document.getElementById('haView'),
+      haFrame: document.getElementById('haFrame'),
     };
 
     // 左侧功能菜单：后续新增功能直接在此数组追加一项即可
@@ -1651,6 +1656,7 @@
       { id: 'ssh', label: 'SSH 终端', icon: 'SSH', title: 'SSH 终端与文件管理' },
       { id: 'serial', label: '串口调试', icon: 'COM', title: '通过浏览器 WebSerial 连接本地串口设备' },
       { id: 'sms', label: '信创短信猫', icon: 'SMS', title: '数据库监测 + 短信猫推送' },
+      { id: 'ha', label: '双机热备', icon: 'HA', title: '主备服务器心跳监测与告警' },
       { id: 'protocol', label: '协议助手', icon: 'PRO', title: 'XLS 处理 / 故障码填充 / PDF 对照 / MBP 生成 / 协议批处理' },
     ];
     state.activeMenu = 'ssh';
@@ -3612,10 +3618,12 @@
       const isSerial = view === 'serial';
       const isSms = view === 'sms';
       const isProtocol = view === 'protocol';
+      const isHa = view === 'ha';
       el.sshView.style.display = isSsh ? '' : 'none';
       el.serialView.classList.toggle('active', isSerial);
       el.smsView.classList.toggle('active', isSms);
       if (el.protocolView) el.protocolView.classList.toggle('active', isProtocol);
+      if (el.haView) el.haView.classList.toggle('active', isHa);
       renderMenu();
       if (isSerial) {
         if (!el.serialFrame.dataset.loaded) {
@@ -3631,6 +3639,11 @@
         if (el.protocolFrame && !el.protocolFrame.dataset.loaded) {
           el.protocolFrame.src = '/protocol/';
           el.protocolFrame.dataset.loaded = '1';
+        }
+      } else if (isHa) {
+        if (el.haFrame && !el.haFrame.dataset.loaded) {
+          el.haFrame.src = './ha/index.html';
+          el.haFrame.dataset.loaded = '1';
         }
       } else {
         setTimeout(() => el.cmdInput?.focus(), 0);

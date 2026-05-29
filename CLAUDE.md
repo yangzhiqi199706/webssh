@@ -402,6 +402,21 @@ webssh 主壳用的旧版 Node（系统遗留），不要升。`http-proxy@1.18.
     `.offline-downloads/` 即可，文件名要保持 `cpython-*-x86_64-unknown-linux-gnu-install_only.tar.gz`
     格式（部署脚本按通配符找）。
 
+13. **跨版本 mysqldump 灌库报 `ERROR 3105 The value specified for generated column ... is not allowed`**：
+    宿主机自带的 `mysqldump` 可能是 MariaDB（如 0.22 上是 MariaDB 10.3.39），跟主库 MySQL 5.7
+    不兼容——MariaDB mysqldump 不会自动跳过 STORED 生成列的 INSERT，导入到 MySQL 5.7 时报错。
+    **铁律**：操作 dcim 容器里的 mysqld 时，所有客户端工具（mysqldump / mysql / mysqladmin 等）
+    一律走 `docker exec dcim <tool>`，跟主库版本对齐。
+    HA 同步功能里 `spawnLocalDump` 已经按这个原则改造，新增类似功能时照搬。
+
+14. **MySQL `Host '...' is blocked because of many connection errors`**：
+    `max_connect_errors` 默认 100，HA 模块旧版本固定 5s 重试 = 8 分 20 秒就拉黑。
+    现已两层防护：① HA DB 重试改成渐进退避（5s ×3 → 15s ×5 → 60s 封顶）；
+    ② dcim 容器内 `/etc/my.cnf` 已调到 `max_connect_errors = 100000`。
+    **新部署到其他机器时**：要么手动在容器内调 my.cnf 后重启 mysqld，要么去 webssh 的
+    「双机热备 → 连接信息 → MySQL 调优」一键调（按钮已实现）。
+    解锁命令（拉黑后救急）：`docker exec dcim systemctl restart mysqld`，会清空 host_cache。
+
 ------------------------------------------------------------
 
 ## 六、本仓库的开发节奏

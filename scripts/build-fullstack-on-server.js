@@ -128,8 +128,10 @@ async function main() {
 
     // ---------- 3. 主壳 ----------
     await exec(conn, `cp -a /opt/webssh/app/server.js /opt/webssh/app/index.html /opt/webssh/app/package.json /opt/webssh/app/package-lock.json ${STAGE_DIR}/app/`);
+    await exec(conn, `cp -a /opt/webssh/app/login.html ${STAGE_DIR}/app/ 2>/dev/null || true`);
     await exec(conn, `cp -a /opt/webssh/app/serial ${STAGE_DIR}/app/ 2>/dev/null || true`);
     await exec(conn, `cp -a /opt/webssh/app/sms ${STAGE_DIR}/app/ 2>/dev/null || true`);
+    await exec(conn, `cp -a /opt/webssh/app/ha ${STAGE_DIR}/app/ 2>/dev/null || true`);
     await exec(conn, `cp -a /opt/webssh/app/node_modules ${STAGE_DIR}/app/`);
     await exec(conn, `cp -a /opt/webssh/app/README.txt ${STAGE_DIR}/app/ 2>/dev/null || true`);
     await exec(conn, `cp -a /opt/webssh/runtime/node ${STAGE_DIR}/runtime/node`);

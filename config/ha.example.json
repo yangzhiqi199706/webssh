@@ -1,0 +1,59 @@
+{
+  "enabled": false,
+  "selfRole": "standby",
+  "primary": {
+    "ssh": {
+      "host": "192.168.0.22",
+      "port": 22,
+      "user": "root",
+      "password": "PUT_PASSWORD_HERE"
+    },
+    "db": {
+      "host": "192.168.0.22",
+      "port": 3306,
+      "database": "dcim",
+      "user": "dcim",
+      "password": "PUT_PASSWORD_HERE"
+    }
+  },
+  "standby": {
+    "ssh": {
+      "host": "127.0.0.1",
+      "port": 22,
+      "user": "root",
+      "password": "PUT_PASSWORD_HERE"
+    },
+    "db": {
+      "host": "127.0.0.1",
+      "port": 3306,
+      "database": "dcim",
+      "user": "dcim",
+      "password": "PUT_PASSWORD_HERE"
+    }
+  },
+  "syncSchedule": {
+    "enabled": false,
+    "preset": "daily-3am",
+    "cron": "0 3 * * *",
+    "skipIfPeerDown": true,
+    "applyStatusMinusOne": true,
+    "lastRunAt": "",
+    "lastRunResult": "",
+    "lastRunError": ""
+  },
+  "failover": {
+    "enabled": false,
+    "bufferSec": 15,
+    "bufferPreset": "30",
+    "judgeMode": "any",
+    "consecutiveFails": 2,
+    "takenOver": false,
+    "takenOverAt": "",
+    "takenOverError": "",
+    "lastFailCount": 0
+  },
+  "yielded": {
+    "yieldedToStandby": false,
+    "yieldedAt": ""
+  }
+}
