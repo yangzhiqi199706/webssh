@@ -822,6 +822,9 @@
     <div class="serial-view" id="haView">
       <iframe id="haFrame" title="双机热备" loading="lazy" src="about:blank"></iframe>
     </div>
+    <div class="serial-view" id="protoConvView">
+      <iframe id="protoConvFrame" title="协议转换" loading="lazy" src="about:blank"></iframe>
+    </div>
       </div>
     </div>
 
@@ -1649,6 +1652,8 @@
       protocolFrame: document.getElementById('protocolFrame'),
       haView: document.getElementById('haView'),
       haFrame: document.getElementById('haFrame'),
+      protoConvView: document.getElementById('protoConvView'),
+      protoConvFrame: document.getElementById('protoConvFrame'),
     };
 
     // 左侧功能菜单：后续新增功能直接在此数组追加一项即可
@@ -1657,6 +1662,7 @@
       { id: 'serial', label: '串口调试', icon: 'COM', title: '通过浏览器 WebSerial 连接本地串口设备' },
       { id: 'sms', label: '信创短信猫', icon: 'SMS', title: '数据库监测 + 短信猫推送' },
       { id: 'ha', label: '双机热备', icon: 'HA', title: '主备服务器心跳监测与告警' },
+      { id: 'proto-conv', label: '协议转换', icon: 'PC', title: '8082 接口可视化调用与协议转换' },
       { id: 'protocol', label: '协议助手', icon: 'PRO', title: 'XLS 处理 / 故障码填充 / PDF 对照 / MBP 生成 / 协议批处理' },
     ];
     state.activeMenu = 'ssh';
@@ -3619,11 +3625,13 @@
       const isSms = view === 'sms';
       const isProtocol = view === 'protocol';
       const isHa = view === 'ha';
+      const isProtoConv = view === 'proto-conv';
       el.sshView.style.display = isSsh ? '' : 'none';
       el.serialView.classList.toggle('active', isSerial);
       el.smsView.classList.toggle('active', isSms);
       if (el.protocolView) el.protocolView.classList.toggle('active', isProtocol);
       if (el.haView) el.haView.classList.toggle('active', isHa);
+      if (el.protoConvView) el.protoConvView.classList.toggle('active', isProtoConv);
       renderMenu();
       if (isSerial) {
         if (!el.serialFrame.dataset.loaded) {
@@ -3644,6 +3652,11 @@
         if (el.haFrame && !el.haFrame.dataset.loaded) {
           el.haFrame.src = './ha/index.html';
           el.haFrame.dataset.loaded = '1';
+        }
+      } else if (isProtoConv) {
+        if (el.protoConvFrame && !el.protoConvFrame.dataset.loaded) {
+          el.protoConvFrame.src = './proto-conv/index.html';
+          el.protoConvFrame.dataset.loaded = '1';
         }
       } else {
         setTimeout(() => el.cmdInput?.focus(), 0);

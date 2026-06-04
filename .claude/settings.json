@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s http://127.0.0.1:3010/api/proto-conv/config)",
+      "Bash(curl -s -X POST http://127.0.0.1:3010/api/proto-conv/test-connection)",
+      "Bash(curl -s -X PUT http://127.0.0.1:3010/api/proto-conv/config -H 'content-type: application/json' -d '{\"baseUrl\":\"https://192.168.0.50:8082\",\"userName\":\"admin\",\"passWord\":\"admin\",\"userLsh\":\"1\",\"timeoutMs\":5000,\"pathMap\":{}}')"
+    ]
+  }
+}

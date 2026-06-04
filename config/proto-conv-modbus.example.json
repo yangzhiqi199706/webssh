@@ -1,0 +1,6 @@
+{
+  "enabled": false,
+  "port": 5020,
+  "pollIntervalSec": 5,
+  "selectedDevices": []
+}

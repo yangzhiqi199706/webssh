@@ -132,6 +132,7 @@ async function main() {
     await exec(conn, `cp -a /opt/webssh/app/serial ${STAGE_DIR}/app/ 2>/dev/null || true`);
     await exec(conn, `cp -a /opt/webssh/app/sms ${STAGE_DIR}/app/ 2>/dev/null || true`);
     await exec(conn, `cp -a /opt/webssh/app/ha ${STAGE_DIR}/app/ 2>/dev/null || true`);
+    await exec(conn, `cp -a /opt/webssh/app/proto-conv ${STAGE_DIR}/app/ 2>/dev/null || true`);
     await exec(conn, `cp -a /opt/webssh/app/node_modules ${STAGE_DIR}/app/`);
     await exec(conn, `cp -a /opt/webssh/app/README.txt ${STAGE_DIR}/app/ 2>/dev/null || true`);
     await exec(conn, `cp -a /opt/webssh/runtime/node ${STAGE_DIR}/runtime/node`);

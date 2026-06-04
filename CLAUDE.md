@@ -69,6 +69,15 @@ protocol_app/                 # 协议助手 Flask 子站（2026-05-21 新增）
   module4_config/             # j2k2_format_config.json（必须保留）
   uploads/ outputs/ downloads/ module4_uploads/ module4_downloads/  # 运行时产物，部署时不打包
 
+proto-conv/                   # ★ 协议转换子站（2026-06-04 新增，8082 接口可视化调用）
+  index.html                  # 子站入口（左右双列布局，复用 ha 主题样式）
+  assets/js/
+    pc-bus.js                 # 极简事件总线
+    pc-monitor.js             # 右列实时消息（环形 200 条 + 暂停滚动）
+    pc-config.js              # 「连接信息」弹窗：baseUrl/账号/UserLsh/timeoutMs/pathMap
+    pc-endpoints.js           # 91 条接口元数据（10 业务分组，含 24 危险写入类）
+    pc-runner.js              # 按钮渲染 / 参数弹窗 / 调用代理 / 危险接口二次确认
+
 scripts/                      # 部署 / 安装 / 打包脚本
   install.sh                  # webssh 主壳一次性安装（被 deploy-fresh.js 调用）
   install-protocol.sh         # 协议助手一次性安装（被 deploy-protocol.js 调用）
@@ -114,7 +123,7 @@ node_modules/                 # 会被打进离线包一起上服务器
 2. 在 `showView(view)` 里加分支控制对应视图的显示/隐藏
 3. iframe 子页面：放到 `serial/`、`sms/` 平级（如果是 Flask 后端就走反代）
 
-当前菜单项：SSH 终端 / 串口调试 / 信创短信猫 / 协议助手（4 项）。
+当前菜单项：SSH 终端 / 串口调试 / 信创短信猫 / 双机热备 / 协议转换 / 协议助手（6 项）。
 
 ------------------------------------------------------------
 
@@ -594,4 +603,126 @@ node scripts/build-fullstack-on-server.js
 
 > 给运维同事的完整手册见仓库根的 [`安装与卸载手册.md`](安装与卸载手册.md)，
 > 包含端口冲突 / SELinux / 防火墙 / 历史备份管理等实操要点。
+
+------------------------------------------------------------
+
+## 九、协议转换板块（2026-06-04 新增）
+
+### 9.1 是什么
+左侧菜单第 5 项「协议转换」，把 dcim 后端 `https://192.168.0.50:8082`
+暴露的 91 条接口做成可视化调用面板。子站走 iframe 嵌入主壳，
+左操作（按业务分组的接口按钮卡片）+ 右实时消息（method/url/req/resp/状态码/耗时）。
+
+### 9.2 接口范围
+覆盖 `协议文档/8082接口完整测试报告_含接口业务.docx` 全部 91 条：
+10 业务分组（登录会话 / 告警 / 知识库图片 / 资产盘点 / 巡检维护维修 /
+区域设备控制 / IT 机房容量能效 / 工单值班 / 自定义参数 / 资管 GET R80–R91）。
+其中 24 条写入/控制类（CheckAlarmKey、SendControlCommandKey、CreateWorkOrderKey、
+ChangePwdKey 等）按钮加红 + ⚠ 图标，点击会弹 confirm 二次确认。
+
+### 9.3 配置文件
+`config/proto-conv.json`，由后端在「连接信息」弹窗保存时写入，权限 0600，
+**不入 git**（已加到 `.gitignore`）。schema：
+```json
+{
+  "baseUrl": "https://192.168.0.50:8082",
+  "userName": "admin",
+  "passWord": "admin",
+  "userLsh": "1",
+  "timeoutMs": 8000,
+  "pathMap": {}
+}
+```
+- `userName/passWord` 明文存盘，调 LoginKey 时 Node 后端自动 Base64 编码（与 dcim 约定一致）
+- `userLsh` 全局兜底；登录成功如果返回 UserLsh，会自动覆盖；接口调用时空字段也会自动用它兜底
+- `pathMap`：默认 URL 是 `/${Key}`，若实际路由不同，在这里以 JSON 覆盖，
+  比如 `{"LoginKey":"/api/Login"}`
+
+### 9.4 调用通道
+浏览器 → `/api/proto-conv/invoke` → Node `https` 模块 → 8082。
+- 自签名证书：`new https.Agent({ rejectUnauthorized: false })`
+- Cookie 维持：内存 `cookieJar` 按 baseUrl 维度合并 set-cookie（按 key 去重）
+- 401 自动续登：非 LoginKey 接口收到 401 时，后端自动调 LoginKey 一次再重试
+- 协议自适应：按 `URL.protocol` 选 `https/http` 模块（baseUrl 为 http 也能用）
+
+### 9.5 后端路由清单（`server.js` 末尾 `setupProtoConv()` IIFE）
+| 路由 | 用途 |
+| -- | -- |
+| `GET  /api/proto-conv/config` | 读配置（password 字段返 `***` + `hasPassword` 标志）|
+| `PUT  /api/proto-conv/config` | 保存；password=`***` 或空时不更新；写盘 chmod 0600，cookieJar 清空 |
+| `POST /api/proto-conv/login`  | 调 LoginKey；userName/passWord Base64；返回 set-cookie 写 jar；尝试解析 UserLsh 写回配置 |
+| `POST /api/proto-conv/test-connection` | TCP 探活 baseUrl |
+| `POST /api/proto-conv/invoke` | 核心代理；body `{key, method, body, query?, pathOverride?}`；返回 `{ok, status, data, message?}` |
+
+### 9.6 危险接口约定
+- 元数据 `pc-endpoints.js` 里 `danger:true` 共 24 条
+- 前端按钮：`.btn.danger` 红底 + `⚠` 前缀
+- 弹窗：顶部一条 `.danger-banner` 红色警示
+- 提交时：`window.confirm()` 拦一道，取消则不发
+
+### 9.7 验证
+```bash
+PORT=3010 node server.js
+# 浏览器 http://127.0.0.1:3010/ → 左侧第 5 项「协议转换」
+# 步骤：连接信息 → 登录 → 点 GetRealAlarmsKey 测一下 → 看右栏消息
+```
+日志：`logs/proto-conv.log`（每行一条 `[时间戳] method key status=xxx bodyLen=xxx`）。
+
+### 9.8 Modbus TCP 转发（2026-06-04 新增）
+
+把 `GetDeviceByGroupKey` 返回的设备实时数据转成 Modbus TCP holding registers，
+对外提供给第三方 SCADA / Modbus master 直接读取。
+
+**配置文件**：`config/proto-conv-modbus.json`，UI 写入，chmod 0600，**不入 git**。schema：
+```json
+{
+  "enabled": false,
+  "port": 5020,
+  "pollIntervalSec": 5,
+  "selectedDevices": [
+    { "deviceId": "1", "deviceName": "CIM1机房1#温湿度",
+      "groupId": "1", "groupName": "温湿度组",
+      "zonesubno": "2", "zonesubname": "CIM1机房",
+      "params": [ {"paraName":"温度","unit":"℃"}, ... ] }
+  ]
+}
+```
+
+**寄存器布局（紧凑排列，每设备 1 + 2N reg）**：
+- `Reg[base+0]`：DeviceStatus（INT16，"1"→1 在线 / "0"→0 离线 / 其它→-1）
+- 后续每参数 2 reg：`CurValue` FLOAT32 BE（占 2 reg）
+- 设备按 selectedDevices 数组顺序紧密排开，第一个设备从 Reg[0] 开始
+- 不再推送参数级 Status 字段（2026-06-04 调整）
+
+**轮询**：默认 5s，UI 可改 1-60s。按 groupId 去重批拉（同分组多设备一次接口拿全），降低 dcim QPS。
+失败时保留上一轮值，但 DeviceStatus 改 -1。dcim 没返回的已选设备：DeviceStatus -1 + 所有 CurValue NaN + Status -1。
+
+**复用**：`setupModbusBridge` 通过 `global.__protoConv.callUpstream` 复用 setupProtoConv 的 cookieJar 和登录态；不再单独维护 dcim session。
+
+**路由清单（server.js setupModbusBridge IIFE）**：
+| 路由 | 用途 |
+| -- | -- |
+| `GET  /api/proto-conv/modbus/config`  | 读配置 + 运行状态 |
+| `PUT  /api/proto-conv/modbus/config`  | 保存（含 selectedDevices）；改了自动重启 server |
+| `POST /api/proto-conv/modbus/start`   | 显式启动（写 enabled=true 并启动） |
+| `POST /api/proto-conv/modbus/stop`    | 显式停止（写 enabled=false 并停） |
+| `GET  /api/proto-conv/modbus/status`  | 实时状态（running / port / 设备数 / 寄存器数 / lastPollAt / lastError / missingDevices） |
+| `GET  /api/proto-conv/modbus/map.csv` | 映射表 CSV（带 UTF-8 BOM，Excel 可直接打开） |
+
+**UI 入口**：协议转换顶栏「Modbus 转发」按钮（紫色），LED 灯指示状态：灰未启用 / 绿运行中 / 红错误。
+弹窗里能扫描区域→分组→设备树，多选勾设备，实时显示总寄存器数（>60000 拒绝保存），下载映射 CSV。
+
+**端口**：默认 5020。改成 502 需 root 启动（webssh.service 已是 root，OK）。Linux 防火墙：
+```bash
+firewall-cmd --add-port=5020/tcp --permanent && firewall-cmd --reload
+```
+
+**日志**：`logs/proto-conv-modbus.log`。
+
+**验证**（用 mbpoll 或任意 Modbus master）：
+```bash
+mbpoll -m tcp -p 5020 -a 1 -t 4 -r 0 -c 20 127.0.0.1
+# 或 ModScan / Modbus Poll，FC=03，地址按映射 CSV
+```
+
 
