@@ -1,0 +1,462 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>协议转换 · Web SSH</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #020617;
+      --panel: #0f172a;
+      --panel-2: #111827;
+      --border: #1f2937;
+      --text: #e5e7eb;
+      --muted: #94a3b8;
+      --cyan: #22d3ee;
+      --green: #34d399;
+      --amber: #fbbf24;
+      --red: #f87171;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 13px;
+    }
+    #app { display: flex; flex-direction: column; height: 100vh; }
+    .top-bar {
+      height: 44px; flex-shrink: 0;
+      display: flex; align-items: center; gap: 10px;
+      padding: 0 14px;
+      background: #0f172a;
+      border-bottom: 1px solid var(--border);
+    }
+    .top-bar .title { font-weight: 700; color: var(--cyan); letter-spacing: .06em; }
+    .top-bar .subtitle { color: var(--muted); font-size: 12px; }
+    .top-bar .spacer { flex: 1; }
+
+    .btn {
+      border: 1px solid #334155;
+      background: #0b1220;
+      color: var(--text);
+      border-radius: 8px;
+      padding: 7px 12px;
+      font-size: 12px;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .btn:hover { border-color: #475569; background: #111827; }
+    .btn.primary { background: #06b6d4; color: #082f49; border-color: transparent; font-weight: 700; }
+    .btn.primary:hover { background: #22d3ee; }
+    .btn.danger { background: #7f1d1d; color: #fecaca; border-color: transparent; }
+    .btn.danger:hover { background: #991b1b; }
+    .btn:disabled { opacity: .5; cursor: not-allowed; }
+
+    .role-tag {
+      padding: 4px 10px; border-radius: 999px; border: 1px solid #334155;
+      background: #0b1220; font-size: 12px;
+    }
+    .role-tag.ok { color: #a7f3d0; border-color: rgba(52,211,153,.4); background: rgba(52,211,153,.08); }
+    .role-tag.err { color: #fca5a5; border-color: rgba(248,113,113,.4); background: rgba(248,113,113,.08); }
+    .role-tag.warn { color: #fcd34d; border-color: rgba(251,191,36,.35); background: rgba(251,191,36,.08); }
+
+    .main {
+      flex: 1; min-height: 0;
+      display: grid; grid-template-columns: 1fr 1fr;
+      gap: 10px; padding: 10px;
+    }
+    .column {
+      display: flex; flex-direction: column; min-height: 0; min-width: 0;
+      background: rgba(15, 23, 42, .92);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      overflow: hidden;
+    }
+    .column-head {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(2, 6, 23, .4);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .column-head h2 { margin: 0; font-size: 14px; font-weight: 700; color: #e2e8f0; }
+    .column-head .muted { color: var(--muted); font-size: 12px; }
+    .column-body { flex: 1; min-height: 0; overflow: auto; padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+
+    .card {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: rgba(2, 6, 23, .5);
+      padding: 14px;
+    }
+    .card-title {
+      font-size: 13px; font-weight: 700; color: #e2e8f0;
+      margin: 0 0 10px; display: flex; align-items: center; gap: 8px;
+    }
+    .card-title .count {
+      font-size: 11px; color: var(--muted); font-weight: 400;
+    }
+
+    .endpoint-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 6px;
+    }
+    .endpoint-grid .btn {
+      justify-content: flex-start; text-align: left;
+      font-family: ui-monospace, monospace; font-size: 11px;
+      padding: 6px 8px;
+      display: inline-flex; align-items: center; gap: 4px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .endpoint-grid .btn.danger::before { content: '⚠ '; color: #fcd34d; margin-right: 2px; }
+    .method-tag {
+      display: inline-block; min-width: 38px; padding: 0 4px; margin-right: 4px;
+      border-radius: 3px; font-size: 10px; font-weight: 700;
+      text-align: center;
+      background: rgba(34,211,238,.16); color: #67e8f9;
+    }
+    .method-tag.get { background: rgba(52,211,153,.16); color: #a7f3d0; }
+
+    .group-toggle {
+      cursor: pointer; user-select: none;
+    }
+    .group-toggle::after {
+      content: '▾'; margin-left: auto; font-size: 11px; color: var(--muted);
+      transition: transform .15s ease;
+    }
+    .card.collapsed .group-toggle::after { transform: rotate(-90deg); }
+    .card.collapsed .endpoint-grid { display: none; }
+
+    /* 实时消息窗口 */
+    .msg-list {
+      flex: 1; min-height: 200px;
+      overflow: auto;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: #0b1020;
+      padding: 8px 10px;
+      font-family: ui-monospace, monospace;
+      font-size: 12px;
+      line-height: 1.7;
+    }
+    .msg-item { padding: 2px 0; word-break: break-all; }
+    .msg-item .ts { color: #64748b; margin-right: 8px; }
+    .msg-item.lvl-info { color: #a7f3d0; }
+    .msg-item.lvl-warn { color: #fcd34d; }
+    .msg-item.lvl-error { color: #fca5a5; }
+    .msg-item .lvl-tag {
+      display: inline-block; min-width: 42px;
+      padding: 0 6px; margin-right: 8px; border-radius: 4px;
+      text-align: center; font-size: 10px; font-weight: 700;
+      background: rgba(148,163,184,.14); color: #cbd5e1;
+    }
+    .msg-item.lvl-info .lvl-tag { background: rgba(34,211,238,.16); color: #67e8f9; }
+    .msg-item.lvl-warn .lvl-tag { background: rgba(251,191,36,.16); color: #fcd34d; }
+    .msg-item.lvl-error .lvl-tag { background: rgba(248,113,113,.18); color: #fca5a5; }
+
+    /* 弹窗 */
+    .modal-mask {
+      position: fixed; inset: 0;
+      background: rgba(2, 6, 23, .72);
+      display: none; align-items: flex-start; justify-content: center;
+      padding: 24px 20px; z-index: 80;
+      overflow: auto;
+    }
+    .modal-mask.open { display: flex; }
+    .modal {
+      width: min(720px, 100%);
+      border: 1px solid #334155;
+      border-radius: 16px;
+      background: #0f172a;
+      box-shadow: 0 24px 80px rgba(2,6,23,.6);
+      overflow: hidden;
+      display: flex; flex-direction: column;
+    }
+    .modal-head {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .modal-head h3 { margin: 0; font-size: 14px; font-weight: 700; color: #e2e8f0; }
+    .modal-body { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+
+    .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; }
+    .field { display: flex; flex-direction: column; gap: 5px; font-size: 12px; }
+    .field.span-2 { grid-column: span 2; }
+    .field span { color: var(--muted); }
+    .field span .req { color: var(--red); margin-left: 2px; }
+    .field span .note { color: var(--muted); font-size: 11px; margin-left: 6px; opacity: .8; }
+    .field input, .field select, .field textarea {
+      font: inherit; font-size: 13px;
+      border-radius: 8px;
+      border: 1px solid #334155;
+      background: #020617;
+      color: var(--text);
+      padding: 8px 10px;
+      outline: none;
+      font-family: inherit;
+    }
+    .field textarea { font-family: ui-monospace, monospace; font-size: 12px; min-height: 80px; resize: vertical; }
+    .field input:focus, .field select:focus, .field textarea:focus {
+      border-color: rgba(34, 211, 238, .6);
+      box-shadow: 0 0 0 3px rgba(34, 211, 238, .12);
+    }
+    .field input:disabled { opacity: .6; background: #0b1220; }
+
+    .section-title {
+      font-size: 12px; font-weight: 700; color: #67e8f9;
+      letter-spacing: .04em; margin: 6px 0 0;
+      padding-bottom: 6px; border-bottom: 1px dashed #1e293b;
+    }
+    .actions { display: flex; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
+    .hint { font-size: 11px; color: var(--muted); }
+    .hint.ok { color: #a7f3d0; }
+    .hint.err { color: #fca5a5; }
+    .toolbar-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+    .danger-banner {
+      border: 1px solid rgba(248,113,113,.4);
+      background: rgba(248,113,113,.08);
+      color: #fecaca;
+      padding: 10px 12px; border-radius: 10px;
+      font-size: 12px; line-height: 1.7;
+    }
+    .desc-line { color: var(--muted); font-size: 12px; line-height: 1.6; }
+    code.k { color: #67e8f9; background: rgba(34,211,238,.08); padding: 1px 5px; border-radius: 4px; font-size: 11px; }
+
+    /* Modbus 转发面板 */
+    .top-bar .dot {
+      width: 8px; height: 8px; border-radius: 50%; background: #64748b;
+      display: inline-block; margin-right: 6px; vertical-align: middle;
+    }
+    .top-bar .dot.on   { background: var(--green); box-shadow: 0 0 0 3px rgba(52,211,153,.18); }
+    .top-bar .dot.off  { background: #64748b; }
+    .top-bar .dot.warn { background: var(--amber); box-shadow: 0 0 0 3px rgba(251,191,36,.18); }
+    .top-bar .dot.err  { background: var(--red); box-shadow: 0 0 0 3px rgba(248,113,113,.18); }
+    .btn.modbus { background: #6d28d9; color: #ede9fe; border-color: transparent; }
+    .btn.modbus:hover { background: #7c3aed; }
+
+    .mb-status-box {
+      padding: 10px 12px; border-radius: 10px;
+      border: 1px solid var(--border); background: #0b1220;
+      font-size: 12px; line-height: 1.7; color: #cbd5e1;
+    }
+    .mb-toolbar { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    .mb-toolbar .btn { padding: 5px 10px; font-size: 11px; }
+
+    .mb-tree {
+      max-height: 360px; overflow: auto;
+      border: 1px solid var(--border); border-radius: 10px;
+      background: #0b1020; padding: 8px;
+    }
+    .mb-zone { margin-bottom: 6px; }
+    .mb-zone-head { font-weight: 700; color: #67e8f9; cursor: pointer; padding: 4px 6px;
+                    border-radius: 6px; user-select: none; }
+    .mb-zone-head:hover { background: rgba(34,211,238,.06); }
+    .mb-zone-body { padding-left: 14px; margin-top: 4px; }
+    .mb-group { margin-bottom: 4px; }
+    .mb-group-head { color: #cbd5e1; cursor: pointer; padding: 2px 6px;
+                     border-radius: 6px; user-select: none; font-size: 12px; }
+    .mb-group-head:hover { background: rgba(148,163,184,.08); }
+    .mb-group-body { padding-left: 14px; margin-top: 2px; }
+    .mb-group-empty { color: var(--muted); font-size: 11px; padding: 2px 4px; }
+    .mb-tree-leaf { padding: 2px 0; }
+    .mb-tree-leaf label { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 12px; }
+    .mb-tree-leaf input[type=checkbox] { margin: 0; }
+    .mb-dev-name { color: #e5e7eb; font-family: ui-monospace, monospace; }
+    .mb-dev-meta { color: var(--muted); font-size: 11px; }
+    .mb-dev-path { color: #475569; font-size: 11px; margin-left: auto; }
+    .mb-summary {
+      padding: 6px 10px; border-radius: 8px; font-size: 12px;
+      background: rgba(34,211,238,.06); border: 1px solid rgba(34,211,238,.25);
+      color: #67e8f9;
+    }
+    .mb-summary.err {
+      background: rgba(248,113,113,.06); border-color: rgba(248,113,113,.4); color: #fca5a5;
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <header class="top-bar">
+      <div class="title">协议转换</div>
+      <div class="subtitle">8082 接口可视化调用</div>
+      <div class="spacer"></div>
+      <div class="role-tag" id="sessionTag">未登录</div>
+      <button class="btn modbus" id="btnOpenModbus" type="button"><span class="dot off" id="modbusDot"></span>Modbus 转发</button>
+      <button class="btn" id="btnLogin" type="button">登录</button>
+      <button class="btn" id="btnTest" type="button">连接测试</button>
+      <button class="btn primary" id="btnOpenConfig" type="button">连接信息</button>
+    </header>
+
+    <section class="main">
+      <div class="column" id="colGroup">
+        <div class="column-head">
+          <h2>接口分组</h2>
+          <div class="toolbar-row">
+            <span class="muted" id="endpointCountHint">载入中…</span>
+            <button class="btn" id="btnExpandAll" type="button" style="padding:4px 8px;font-size:11px">全部展开</button>
+            <button class="btn" id="btnCollapseAll" type="button" style="padding:4px 8px;font-size:11px">全部折叠</button>
+          </div>
+        </div>
+        <div class="column-body" id="groupContainer">
+          <div class="hint">正在加载接口元数据…</div>
+        </div>
+      </div>
+
+      <div class="column" id="colMsg">
+        <div class="column-head">
+          <h2>实时消息</h2>
+          <div class="toolbar-row">
+            <button class="btn" id="btnPauseScroll" type="button" style="padding:5px 10px">暂停滚动</button>
+            <button class="btn" id="btnClearMsg" type="button" style="padding:5px 10px">清空</button>
+          </div>
+        </div>
+        <div class="column-body" style="padding:10px">
+          <div class="msg-list" id="msgList"></div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- 连接信息弹窗 -->
+  <div class="modal-mask" id="configModal" aria-hidden="true">
+    <div class="modal" style="width:min(640px,100%)">
+      <div class="modal-head">
+        <h3>连接信息</h3>
+        <button class="btn" id="btnCloseConfig" type="button">关闭</button>
+      </div>
+      <div class="modal-body" style="max-height:80vh;overflow:auto">
+        <div class="section-title">基础</div>
+        <div class="form-grid">
+          <label class="field span-2">
+            <span>baseUrl<span class="note">8082 接口根地址（HTTPS 自签名 OK）</span></span>
+            <input id="cfgBaseUrl" type="text" placeholder="https://192.168.0.50:8082" />
+          </label>
+          <label class="field">
+            <span>登录账号<span class="req">*</span></span>
+            <input id="cfgUserName" type="text" placeholder="admin" autocomplete="off" />
+          </label>
+          <label class="field">
+            <span>登录密码<span class="note">留空保持原值</span></span>
+            <input id="cfgPassWord" type="password" placeholder="留空保持原值" autocomplete="new-password" />
+          </label>
+          <label class="field">
+            <span>UserLsh<span class="note">登录后由后端写入；也可手填覆盖</span></span>
+            <input id="cfgUserLsh" type="text" placeholder="1" />
+          </label>
+          <label class="field">
+            <span>超时时长（毫秒）</span>
+            <input id="cfgTimeoutMs" type="number" min="1000" max="120000" placeholder="8000" />
+          </label>
+        </div>
+
+        <div class="section-title">路径映射（pathMap）</div>
+        <div class="hint" style="margin-bottom:6px">默认按 <code class="k">/${Key 名}</code> 转发；若实际路径不同，在这里以 JSON 写覆盖。例如 <code class="k">{"LoginKey":"/api/Login"}</code>。</div>
+        <label class="field span-2">
+          <span>pathMap JSON</span>
+          <textarea id="cfgPathMap" placeholder='{}' rows="4"></textarea>
+        </label>
+
+        <div class="actions">
+          <button class="btn primary" id="btnCfgSave" type="button">保存并应用</button>
+          <button class="btn" id="btnCfgReload" type="button">重新加载</button>
+          <span class="hint" id="cfgSaveHint" style="margin-left:auto;align-self:center"></span>
+        </div>
+        <div class="hint" style="margin-top:6px">
+          密码字段在后端调 <code class="k">LoginKey</code> 时会自动 Base64 编码（与 dcim 后端约定一致）。配置文件保存到 <code class="k">config/proto-conv.json</code>，权限 0600。
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 接口参数弹窗（动态生成 fields） -->
+  <div class="modal-mask" id="paramModal" aria-hidden="true">
+    <div class="modal" style="width:min(680px,100%)">
+      <div class="modal-head">
+        <h3 id="paramModalTitle">调用接口</h3>
+        <button class="btn" id="btnCloseParam" type="button">关闭</button>
+      </div>
+      <div class="modal-body" style="max-height:80vh;overflow:auto">
+        <div id="paramDangerBanner" class="danger-banner" style="display:none">
+          ⚠ 该接口为<b>写入/控制类</b>，调用会改变业务数据或下发设备命令，提交前请确认。
+        </div>
+        <div class="desc-line" id="paramDesc"></div>
+        <div class="form-grid" id="paramFields"></div>
+        <div class="actions">
+          <button class="btn primary" id="btnInvoke" type="button">调用</button>
+          <button class="btn" id="btnFillSample" type="button">填示例</button>
+          <button class="btn" id="btnCancelParam" type="button">取消</button>
+          <span class="hint" id="paramHint" style="margin-left:auto;align-self:center"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modbus TCP 转发弹窗 -->
+  <div class="modal-mask" id="modbusModal" aria-hidden="true">
+    <div class="modal" style="width:min(820px,100%)">
+      <div class="modal-head">
+        <h3>Modbus TCP 转发</h3>
+        <button class="btn" id="btnCloseModbus" type="button">关闭</button>
+      </div>
+      <div class="modal-body" style="max-height:85vh;overflow:auto">
+        <div class="form-grid">
+          <label class="field">
+            <span>监听端口<span class="note">默认 5020，1-65535</span></span>
+            <input id="mbCfgPort" type="number" min="1" max="65535" placeholder="5020" />
+          </label>
+          <label class="field">
+            <span>轮询周期（秒）<span class="note">1-60</span></span>
+            <input id="mbCfgPoll" type="number" min="1" max="60" placeholder="5" />
+          </label>
+        </div>
+
+        <div class="mb-status-box">
+          <div id="mbStatusLine">状态加载中…</div>
+          <div class="hint" id="mbErrLine">最近错误: (无)</div>
+          <div class="hint" id="mbMissingLine"></div>
+        </div>
+
+        <div class="mb-toolbar">
+          <button class="btn primary" id="mbBtnScan" type="button">扫描设备</button>
+          <button class="btn" id="mbBtnSelectAll" type="button">全选</button>
+          <button class="btn" id="mbBtnSelectNone" type="button">清空</button>
+          <button class="btn" id="mbBtnExpandAll" type="button">全部展开</button>
+          <button class="btn" id="mbBtnDownloadCsv" type="button">下载映射 CSV</button>
+        </div>
+
+        <div id="mbTree" class="mb-tree">
+          <div class="hint">点「扫描设备」从 dcim 拉取最新区域 / 分组 / 设备列表，然后勾选要转发的设备。</div>
+        </div>
+
+        <div class="mb-summary" id="mbSummary">已选: 0 设备 · 0 参数 · 总 0 寄存器</div>
+
+        <div class="actions">
+          <button class="btn modbus" id="mbBtnEnable" type="button">启用并保存（重启后自动恢复）</button>
+          <button class="btn" id="mbBtnSave" type="button">仅保存（不改运行状态）</button>
+          <button class="btn danger" id="mbBtnDisable" type="button">停用</button>
+          <span class="hint" id="mbSaveHint" style="margin-left:auto;align-self:center"></span>
+        </div>
+
+        <div class="hint" style="margin-top:6px;line-height:1.7">
+          <b>寄存器布局（紧凑排列，每设备 1 + 2N 寄存器）</b>：
+          每设备 Reg[base+0] 是 DeviceStatus（INT16，1 在线 / 0 离线 / -1 未知）；
+          后续每参数占 2 reg，存 CurValue（FLOAT32 BE）。
+          Modbus master 用 FC=03 读 holding registers，字节序选 big-endian。
+          完整地址映射可点上面「下载映射 CSV」拿到。
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="./assets/js/pc-bus.js"></script>
+  <script src="./assets/js/pc-monitor.js"></script>
+  <script src="./assets/js/pc-config.js"></script>
+  <script src="./assets/js/pc-endpoints.js"></script>
+  <script src="./assets/js/pc-runner.js"></script>
+  <script src="./assets/js/pc-modbus.js"></script>
+</body>
+</html>

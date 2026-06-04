@@ -3859,11 +3859,21 @@ wssTcp.on('connection', function (ws) {
   const MIN_INTERVAL = 1;
   const MAX_INTERVAL = 3600;
   const MAX_BUFFER = 500;
-  // 新告警插入后 TextMessage 会由另一个进程异步填充，约 2-3 秒。
-  // 在此之前先不往前端推，挂在 pending 里每轮轮询复查；超过这个时长兜底推出。
-  const MAX_PENDING_SEC = 30;
+  // 新告警插入后 TextMessage 会由另一个进程异步填充。
+  // NotifyModeID > 0 路径通常 2-3 秒填好；NotifyModeID = 0 路径（兜底分支）经验上更慢。
+  // 两个上限都做成可配置，保留 30 / 120 作为安全默认值。
+  const MAX_PENDING_SEC = 30;       // NotifyModeID>0 路径默认上限
+  const MAX_PENDING_SEC_MODE0 = 120; // NotifyModeID=0 路径默认上限（更宽容）
+  const MIN_PENDING_SEC = 5;
+  const MAX_PENDING_SEC_LIMIT = 600;
 
-  const defaults = { enabled: true, intervalSec: 3, bufferSize: 200 };
+  const defaults = {
+    enabled: true,
+    intervalSec: 3,
+    bufferSize: 200,
+    maxPendingSec: MAX_PENDING_SEC,
+    maxPendingSecMode0: MAX_PENDING_SEC_MODE0,
+  };
   let cfg = Object.assign({}, defaults);
   let timer = null;
   let polling = false;
@@ -3930,6 +3940,8 @@ wssTcp.on('connection', function (ws) {
         enabled: Boolean(parsed.enabled),
         intervalSec: clamp(parsed.intervalSec, MIN_INTERVAL, MAX_INTERVAL, defaults.intervalSec),
         bufferSize: clamp(parsed.bufferSize, 10, MAX_BUFFER, defaults.bufferSize),
+        maxPendingSec: clamp(parsed.maxPendingSec, MIN_PENDING_SEC, MAX_PENDING_SEC_LIMIT, defaults.maxPendingSec),
+        maxPendingSecMode0: clamp(parsed.maxPendingSecMode0, MIN_PENDING_SEC, MAX_PENDING_SEC_LIMIT, defaults.maxPendingSecMode0),
       };
     } catch (_e) {
       cfg = Object.assign({}, defaults);
@@ -3999,6 +4011,7 @@ wssTcp.on('connection', function (ws) {
       }
 
       // 1.5) 复查 pending：TextMessage 已填或超时则 flush 进 alarmBuffer
+      // 超时阈值按当前 pending 行的 NotifyModeID 决定：>0 走 maxPendingSec，=0 走 maxPendingSecMode0
       if (pendingAlarms.size) {
         const ids = Array.from(pendingAlarms.keys());
         const placeholders = ids.map(function () { return '?'; }).join(',');
@@ -4014,13 +4027,16 @@ wssTcp.on('connection', function (ws) {
           const latest = byId.get(id) || p.row;
           const text = latest.TextMessage;
           const filled = text != null && String(text).trim() !== '';
-          const timeout = (nowMs - p.firstSeenMs) / 1000 >= MAX_PENDING_SEC;
+          const modeId = Number(latest && latest.NotifyModeID);
+          const isModeZero = !Number.isFinite(modeId) || modeId <= 0;
+          const limitSec = isModeZero ? cfg.maxPendingSecMode0 : cfg.maxPendingSec;
+          const timeout = (nowMs - p.firstSeenMs) / 1000 >= limitSec;
           if (filled || timeout) {
             alarmBuffer.push({ clientId: nextClientId++, row: latest });
             notifyAlarmListeners(latest);
             pendingAlarms.delete(id);
             if (timeout && !filled) {
-              appendLog(`id=${id} 等待 TextMessage 超时 ${MAX_PENDING_SEC}s，兜底放行`);
+              appendLog(`id=${id} 等待 TextMessage 超时 ${limitSec}s（NotifyModeID=${isModeZero ? 0 : modeId}），兜底放行`);
             }
           }
         }
@@ -4092,6 +4108,8 @@ wssTcp.on('connection', function (ws) {
       enabled: cfg.enabled,
       intervalSec: cfg.intervalSec,
       bufferSize: cfg.bufferSize,
+      maxPendingSec: cfg.maxPendingSec,
+      maxPendingSecMode0: cfg.maxPendingSecMode0,
       lastSeenId: lastSeenId,
       bufferCount: alarmBuffer.length,
       pendingCount: pendingAlarms.size,
@@ -4115,9 +4133,11 @@ wssTcp.on('connection', function (ws) {
     if ('enabled' in body) cfg.enabled = Boolean(body.enabled);
     if ('intervalSec' in body) cfg.intervalSec = clamp(body.intervalSec, MIN_INTERVAL, MAX_INTERVAL, cfg.intervalSec);
     if ('bufferSize' in body) cfg.bufferSize = clamp(body.bufferSize, 10, MAX_BUFFER, cfg.bufferSize);
+    if ('maxPendingSec' in body) cfg.maxPendingSec = clamp(body.maxPendingSec, MIN_PENDING_SEC, MAX_PENDING_SEC_LIMIT, cfg.maxPendingSec);
+    if ('maxPendingSecMode0' in body) cfg.maxPendingSecMode0 = clamp(body.maxPendingSecMode0, MIN_PENDING_SEC, MAX_PENDING_SEC_LIMIT, cfg.maxPendingSecMode0);
     writeCfg();
     scheduleTimer();
-    appendLog(`配置更新 enabled=${cfg.enabled} interval=${cfg.intervalSec}s buffer=${cfg.bufferSize}`);
+    appendLog(`配置更新 enabled=${cfg.enabled} interval=${cfg.intervalSec}s buffer=${cfg.bufferSize} maxPendingSec=${cfg.maxPendingSec} maxPendingSecMode0=${cfg.maxPendingSecMode0}`);
     res.json(publicState());
   });
 
@@ -4320,7 +4340,7 @@ wssTcp.on('connection', function (ws) {
   //      person.GroupId 实际样本是 ",1," 这种前后带逗号包围的格式，
   //      所以匹配条件统一加 ',' 包围两侧再 LIKE，兼容单值和 CSV
   // 返回 { mode, phoneNotify, smsNotify, userIds: string[], persons: [{id,name,phone,groupId}] }
-  // mode === null 表示 alarmnotifymode 里没有这个 id
+  // mode === null 表示 alarmnotifymode 里没有匹配
   async function resolveByNotifyMode(modeId) {
     const id = Number(modeId);
     if (!Number.isFinite(id) || id <= 0) return null;
@@ -4332,6 +4352,31 @@ wssTcp.on('connection', function (ws) {
     );
     const mode = rows && rows[0];
     if (!mode) return null;
+    return resolvePersonsFromMode(mode);
+  }
+
+  // 兜底：当 NotifyModeID=0 时按 (AlarmType, DevId) 反查 alarmnotifymode 取首条
+  // 返回结构与 resolveByNotifyMode 一致；未命中返回 null
+  async function resolveByAlarmTypeDev(alarmType, devId) {
+    if (alarmType == null || devId == null) return null;
+    const pool = getDbPool();
+    if (!pool) throw new Error('数据库未连接');
+    const [rows] = await pool.query(
+      'SELECT id, AlarmName, PhoneNotify, SMSNotify, UserID FROM `' + NOTIFY_MODE_TABLE + '`'
+      + ' WHERE AlarmType = ? AND DevId = ? AND status = 1'
+      + ' ORDER BY id ASC LIMIT 1',
+      [alarmType, devId]
+    );
+    const mode = rows && rows[0];
+    if (!mode) return null;
+    return resolvePersonsFromMode(mode);
+  }
+
+  // 私有：拿到 alarmnotifymode 行后解析 PhoneNotify / SMSNotify / UserID + 联表查 person
+  // 这是 resolveByNotifyMode 和 resolveByAlarmTypeDev 共享的核心逻辑，独立维护避免漂移
+  async function resolvePersonsFromMode(mode) {
+    const pool = getDbPool();
+    if (!pool) throw new Error('数据库未连接');
     const phoneNotify = Number(mode.PhoneNotify) === 1;
     const smsNotify = Number(mode.SMSNotify) === 1;
     const userIdRaw = String(mode.UserID == null ? '' : mode.UserID).trim();
@@ -4676,30 +4721,44 @@ wssTcp.on('connection', function (ws) {
   }
 
   // 订阅 monitor 模块的新告警事件，开关打开时按 NotifyModeID 自动解析收件人后推送
+  // NotifyModeID > 0 走原路径；NotifyModeID = 0 时按 (AlarmType, DevId) 兜底反查 alarmnotifymode 首条
   if (typeof global.__smsMonitorAddAlarmListener === 'function') {
     global.__smsMonitorAddAlarmListener(function (row) {
       if (!cfg.enabled || !cfg.autoPushOnAlarm) return;
       const alarmId = row && row.id;
       const modeId = Number(row && row.NotifyModeID);
-      if (!Number.isFinite(modeId) || modeId <= 0) {
-        appendLog(`告警 #${alarmId} 跳过：NotifyModeID 为空`);
-        return;
-      }
+      const alarmType = row && row.AlarmType;
+      const devId = row && row.DevId;
       (async function () {
         try {
-          const resolved = await resolveByNotifyMode(modeId);
-          if (!resolved) {
-            appendLog(`告警 #${alarmId} 跳过：alarmnotifymode 无 id=${modeId}`);
-            return;
+          let resolved;
+          if (Number.isFinite(modeId) && modeId > 0) {
+            resolved = await resolveByNotifyMode(modeId);
+            if (!resolved) {
+              appendLog(`告警 #${alarmId} 跳过：alarmnotifymode 无 id=${modeId}`);
+              return;
+            }
+          } else {
+            // NotifyModeID=0 兜底：按 AlarmType + DevId 反查
+            if (alarmType == null || devId == null) {
+              appendLog(`告警 #${alarmId} 跳过：NotifyModeID=0 且 AlarmType/DevId 缺失`);
+              return;
+            }
+            resolved = await resolveByAlarmTypeDev(alarmType, devId);
+            if (!resolved) {
+              appendLog(`告警 #${alarmId} 跳过：NotifyModeID=0，alarmnotifymode 无 AlarmType=${alarmType}+DevId=${devId} 匹配`);
+              return;
+            }
+            appendLog(`告警 #${alarmId} 走兜底分支：NotifyModeID=0 → AlarmType=${alarmType}+DevId=${devId} → mode #${resolved.mode.id}`);
           }
           const phoneNotify = resolved.phoneNotify;
           const smsNotify = resolved.smsNotify;
           if (!phoneNotify && !smsNotify) {
-            appendLog(`告警 #${alarmId} 跳过：mode=${modeId} PhoneNotify=0 SMSNotify=0`);
+            appendLog(`告警 #${alarmId} 跳过：mode=${resolved.mode.id} PhoneNotify=0 SMSNotify=0`);
             return;
           }
           if (!resolved.persons.length) {
-            appendLog(`告警 #${alarmId} 跳过：mode=${modeId} UserID=${resolved.mode.userId || '空'} 未匹配到任何 person`);
+            appendLog(`告警 #${alarmId} 跳过：mode=${resolved.mode.id} UserID=${resolved.mode.userId || '空'} 未匹配到任何 person`);
             return;
           }
           const text = (row && row.TextMessage && String(row.TextMessage).trim())
@@ -4724,30 +4783,44 @@ wssTcp.on('connection', function (ws) {
   }
 
   // 订阅 monitor 模块的告警解除事件，开关打开时按 NotifyModeID 自动推送"解除"消息
+  // NotifyModeID > 0 走原路径；NotifyModeID = 0 时按 (AlarmType, DevId) 兜底反查 alarmnotifymode 首条
   if (typeof global.__smsMonitorAddCancelListener === 'function') {
     global.__smsMonitorAddCancelListener(function (row) {
       if (!cfg.enabled || !cfg.autoPushOnCancel) return;
       const alarmId = row && row.id;
       const modeId = Number(row && row.NotifyModeID);
-      if (!Number.isFinite(modeId) || modeId <= 0) {
-        appendLog(`解除 #${alarmId} 跳过：NotifyModeID 为空`);
-        return;
-      }
+      const alarmType = row && row.AlarmType;
+      const devId = row && row.DevId;
       (async function () {
         try {
-          const resolved = await resolveByNotifyMode(modeId);
-          if (!resolved) {
-            appendLog(`解除 #${alarmId} 跳过：alarmnotifymode 无 id=${modeId}`);
-            return;
+          let resolved;
+          if (Number.isFinite(modeId) && modeId > 0) {
+            resolved = await resolveByNotifyMode(modeId);
+            if (!resolved) {
+              appendLog(`解除 #${alarmId} 跳过：alarmnotifymode 无 id=${modeId}`);
+              return;
+            }
+          } else {
+            // NotifyModeID=0 兜底：按 AlarmType + DevId 反查
+            if (alarmType == null || devId == null) {
+              appendLog(`解除 #${alarmId} 跳过：NotifyModeID=0 且 AlarmType/DevId 缺失`);
+              return;
+            }
+            resolved = await resolveByAlarmTypeDev(alarmType, devId);
+            if (!resolved) {
+              appendLog(`解除 #${alarmId} 跳过：NotifyModeID=0，alarmnotifymode 无 AlarmType=${alarmType}+DevId=${devId} 匹配`);
+              return;
+            }
+            appendLog(`解除 #${alarmId} 走兜底分支：NotifyModeID=0 → AlarmType=${alarmType}+DevId=${devId} → mode #${resolved.mode.id}`);
           }
           const phoneNotify = resolved.phoneNotify;
           const smsNotify = resolved.smsNotify;
           if (!phoneNotify && !smsNotify) {
-            appendLog(`解除 #${alarmId} 跳过：mode=${modeId} PhoneNotify=0 SMSNotify=0`);
+            appendLog(`解除 #${alarmId} 跳过：mode=${resolved.mode.id} PhoneNotify=0 SMSNotify=0`);
             return;
           }
           if (!resolved.persons.length) {
-            appendLog(`解除 #${alarmId} 跳过：mode=${modeId} UserID=${resolved.mode.userId || '空'} 未匹配到任何 person`);
+            appendLog(`解除 #${alarmId} 跳过：mode=${resolved.mode.id} UserID=${resolved.mode.userId || '空'} 未匹配到任何 person`);
             return;
           }
           const baseText = (row && row.TextMessage && String(row.TextMessage).trim())
@@ -5462,6 +5535,694 @@ wssTcp.on('connection', function (ws) {
 
   scheduleTimer();
   appendLog(`定时短信调度启动：每 ${POLL_MS / 1000}s 评估一次，按整点小时去重`);
+})();
+
+// ===== 协议转换：8082 接口可视化调用 =====
+// 浏览器 → /api/proto-conv/* → Node https → 8082（自签名 OK，cookieJar 维持会话，401 自动续登）
+(function setupProtoConv() {
+  const path = require('path');
+  const https = require('https');
+  const httpMod = require('http');
+
+  const CONFIG_PATH = process.env.PROTOCONV_CONFIG || path.join(__dirname, 'config', 'proto-conv.json');
+  const LOG_PATH = process.env.PROTOCONV_LOG || path.join(__dirname, 'logs', 'proto-conv.log');
+
+  const defaults = {
+    baseUrl: 'https://192.168.0.50:8082',
+    userName: 'admin',
+    passWord: 'admin',
+    userLsh: '1',
+    timeoutMs: 8000,
+    pathMap: {},
+  };
+
+  function deepMerge(target, src) {
+    const out = Object.assign({}, target);
+    for (const k of Object.keys(src || {})) {
+      if (src[k] && typeof src[k] === 'object' && !Array.isArray(src[k])) {
+        out[k] = deepMerge(target[k] || {}, src[k]);
+      } else {
+        out[k] = src[k];
+      }
+    }
+    return out;
+  }
+
+  let cfg = JSON.parse(JSON.stringify(defaults));
+  function readCfg() {
+    try {
+      const raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+      cfg = deepMerge(defaults, raw);
+    } catch (_e) {
+      cfg = JSON.parse(JSON.stringify(defaults));
+    }
+  }
+  function writeCfg() {
+    try {
+      fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
+      fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+      try { fs.chmodSync(CONFIG_PATH, 0o600); } catch (_e) {}
+    } catch (err) {
+      console.error('[proto-conv] 写配置失败:', err.message);
+    }
+  }
+  function redactCfg() {
+    return {
+      baseUrl: cfg.baseUrl,
+      userName: cfg.userName,
+      passWord: '***',
+      hasPassword: !!(cfg.passWord && cfg.passWord !== ''),
+      userLsh: cfg.userLsh,
+      timeoutMs: cfg.timeoutMs,
+      pathMap: cfg.pathMap || {},
+    };
+  }
+  readCfg();
+
+  function localStamp() {
+    const d = new Date();
+    const pad = (n) => (n < 10 ? '0' + n : '' + n);
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' +
+      pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+  }
+  function appendLog(line) {
+    try {
+      fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true });
+      fs.appendFileSync(LOG_PATH, '[' + localStamp() + '] ' + line + '\n', 'utf8');
+    } catch (_e) {}
+  }
+
+  // cookie jar：baseUrl -> "k=v; k2=v2"
+  const cookieJar = new Map();
+  const httpsAgent = new https.Agent({ keepAlive: true, rejectUnauthorized: false });
+  const httpAgent = new httpMod.Agent({ keepAlive: true });
+
+  function pickAgent(urlObj) {
+    return urlObj.protocol === 'https:' ? httpsAgent : httpAgent;
+  }
+  function pickModule(urlObj) {
+    return urlObj.protocol === 'https:' ? https : httpMod;
+  }
+
+  function mergeSetCookie(baseUrl, setCookieArr) {
+    if (!Array.isArray(setCookieArr) || !setCookieArr.length) return;
+    const cur = cookieJar.get(baseUrl) || '';
+    const dict = {};
+    cur.split(';').forEach(function (s) {
+      const t = s.trim();
+      if (!t) return;
+      const i = t.indexOf('=');
+      if (i > 0) dict[t.slice(0, i)] = t.slice(i + 1);
+    });
+    setCookieArr.forEach(function (s) {
+      const head = String(s || '').split(';')[0].trim();
+      const i = head.indexOf('=');
+      if (i > 0) dict[head.slice(0, i)] = head.slice(i + 1);
+    });
+    const merged = Object.keys(dict).map(function (k) { return k + '=' + dict[k]; }).join('; ');
+    cookieJar.set(baseUrl, merged);
+  }
+
+  function callUpstream(opts) {
+    // opts: { key, method, body, query, pathOverride, retried }
+    return new Promise(function (resolve) {
+      let urlObj;
+      try {
+        const explicitPath = opts.pathOverride || (cfg.pathMap && cfg.pathMap[opts.key]) || ('/' + opts.key);
+        urlObj = new URL(explicitPath, cfg.baseUrl);
+      } catch (e) {
+        return resolve({ ok: false, status: 0, message: 'URL 构造失败：' + e.message });
+      }
+      if (opts.method === 'GET' && opts.query && typeof opts.query === 'object') {
+        Object.keys(opts.query).forEach(function (k) {
+          if (opts.query[k] != null && opts.query[k] !== '') {
+            urlObj.searchParams.set(k, String(opts.query[k]));
+          }
+        });
+      }
+
+      const buf = (opts.method === 'GET' || opts.body == null)
+        ? Buffer.alloc(0)
+        : Buffer.from(JSON.stringify(opts.body || {}), 'utf8');
+
+      const headers = { 'cookie': cookieJar.get(cfg.baseUrl) || '' };
+      if (opts.method !== 'GET') {
+        headers['content-type'] = 'application/json;charset=utf-8';
+        headers['content-length'] = buf.length;
+      }
+
+      const reqOptions = {
+        method: opts.method,
+        hostname: urlObj.hostname,
+        port: urlObj.port || (urlObj.protocol === 'https:' ? 443 : 80),
+        path: urlObj.pathname + (urlObj.search || ''),
+        agent: pickAgent(urlObj),
+        timeout: cfg.timeoutMs || 8000,
+        headers: headers,
+      };
+
+      const req = pickModule(urlObj).request(reqOptions, function (res) {
+        const sc = res.headers['set-cookie'];
+        if (sc) mergeSetCookie(cfg.baseUrl, sc);
+        const chunks = [];
+        res.on('data', function (d) { chunks.push(d); });
+        res.on('end', async function () {
+          const text = Buffer.concat(chunks).toString('utf8');
+          let data;
+          try { data = JSON.parse(text); } catch (_e) { data = text; }
+          // 401 自动续登一次（LoginKey 自身不重试）
+          if (res.statusCode === 401 && !opts.retried && opts.key !== 'LoginKey') {
+            appendLog('401 重试，先调 LoginKey 续登 key=' + opts.key);
+            await loginUpstream();
+            return resolve(await callUpstream(Object.assign({}, opts, { retried: true })));
+          }
+          appendLog(opts.method + ' ' + opts.key + ' status=' + res.statusCode +
+            ' bodyLen=' + (text ? text.length : 0));
+          resolve({ ok: res.statusCode >= 200 && res.statusCode < 400, status: res.statusCode, data: data });
+        });
+      });
+      req.on('timeout', function () {
+        try { req.destroy(new Error('timeout ' + (cfg.timeoutMs || 8000) + 'ms')); } catch (_e) {}
+      });
+      req.on('error', function (err) {
+        appendLog('请求异常 key=' + opts.key + ' err=' + err.message);
+        resolve({ ok: false, status: 0, message: err.message });
+      });
+      if (buf.length) req.write(buf);
+      req.end();
+    });
+  }
+
+  async function loginUpstream() {
+    const body = {
+      userName: Buffer.from(cfg.userName || '', 'utf8').toString('base64'),
+      passWord: Buffer.from(cfg.passWord || '', 'utf8').toString('base64'),
+    };
+    const r = await callUpstream({ key: 'LoginKey', method: 'POST', body: body, retried: true });
+    appendLog('[login] ok=' + r.ok + ' status=' + r.status);
+    return r;
+  }
+
+  // ===== 路由 =====
+  app.get('/api/proto-conv/config', function (_req, res) {
+    res.json({ ok: true, config: redactCfg() });
+  });
+
+  app.put('/api/proto-conv/config', function (req, res) {
+    const b = req.body || {};
+    const next = JSON.parse(JSON.stringify(cfg));
+    if (typeof b.baseUrl === 'string')  next.baseUrl  = b.baseUrl.trim();
+    if (typeof b.userName === 'string') next.userName = b.userName.trim();
+    if (typeof b.userLsh === 'string')  next.userLsh  = b.userLsh.trim();
+    if (b.timeoutMs != null) next.timeoutMs = Math.max(1000, Math.min(120000, Number(b.timeoutMs) || 8000));
+    if (b.pathMap && typeof b.pathMap === 'object' && !Array.isArray(b.pathMap)) {
+      next.pathMap = b.pathMap;
+    }
+    if (typeof b.passWord === 'string' && b.passWord !== '' && b.passWord !== '***') {
+      next.passWord = b.passWord;
+    }
+    if (!next.baseUrl) return res.status(400).json({ ok: false, message: 'baseUrl 必填' });
+    if (!next.userName) return res.status(400).json({ ok: false, message: 'userName 必填' });
+    try { new URL(next.baseUrl); }
+    catch (e) { return res.status(400).json({ ok: false, message: 'baseUrl 非法：' + e.message }); }
+
+    cfg = next;
+    writeCfg();
+    cookieJar.delete(cfg.baseUrl); // 配置变更，旧 cookie 作废
+    appendLog('配置已更新 baseUrl=' + cfg.baseUrl + ' user=' + cfg.userName);
+    res.json({ ok: true, config: redactCfg() });
+  });
+
+  app.post('/api/proto-conv/login', async function (_req, res) {
+    try {
+      const r = await loginUpstream();
+      // dcim 后端登录成功通常返回 true / { ok:true } / { UserLsh:... } 等几种
+      let userLsh = null;
+      if (r.data && typeof r.data === 'object') {
+        userLsh = r.data.UserLsh || r.data.userLsh || r.data.userlsh || null;
+        if (userLsh != null) {
+          cfg.userLsh = String(userLsh);
+          writeCfg();
+        }
+      }
+      res.json({ ok: r.ok, status: r.status, data: r.data, message: r.message || '', userLsh: userLsh });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: err.message });
+    }
+  });
+
+  app.post('/api/proto-conv/test-connection', async function (_req, res) {
+    let urlObj;
+    try { urlObj = new URL(cfg.baseUrl); }
+    catch (e) { return res.json({ ok: false, message: 'baseUrl 非法：' + e.message }); }
+
+    const port = Number(urlObj.port) || (urlObj.protocol === 'https:' ? 443 : 80);
+    const sock = net.createConnection({ host: urlObj.hostname, port: port });
+    let done = false;
+    const finish = function (ok, message) {
+      if (done) return; done = true;
+      try { sock.destroy(); } catch (_e) {}
+      res.json({ ok: ok, message: message });
+    };
+    sock.setTimeout(5000);
+    sock.on('connect', function () { finish(true, urlObj.hostname + ':' + port + ' TCP 连通'); });
+    sock.on('timeout', function () { finish(false, urlObj.hostname + ':' + port + ' 连接超时'); });
+    sock.on('error', function (err) { finish(false, urlObj.hostname + ':' + port + ' ' + err.message); });
+  });
+
+  app.post('/api/proto-conv/invoke', async function (req, res) {
+    const b = req.body || {};
+    const key = String(b.key || '').trim();
+    if (!key) return res.status(400).json({ ok: false, message: 'key 必填' });
+    const method = (String(b.method || 'POST').toUpperCase() === 'GET') ? 'GET' : 'POST';
+    let body = b.body;
+    if (body && typeof body === 'object' && cfg.userLsh) {
+      // UserLsh 字段为空时，自动用全局 userLsh 兜底
+      if (Object.prototype.hasOwnProperty.call(body, 'UserLsh') &&
+          (body.UserLsh === '' || body.UserLsh == null)) {
+        body.UserLsh = cfg.userLsh;
+      }
+    }
+    let query = b.query;
+    if (query && typeof query === 'object' && cfg.userLsh) {
+      if (Object.prototype.hasOwnProperty.call(query, 'UserLsh') &&
+          (query.UserLsh === '' || query.UserLsh == null)) {
+        query.UserLsh = cfg.userLsh;
+      }
+    }
+    try {
+      const r = await callUpstream({
+        key: key,
+        method: method,
+        body: body,
+        query: query,
+        pathOverride: b.pathOverride || null,
+      });
+      res.json(r);
+    } catch (err) {
+      res.status(500).json({ ok: false, status: 0, message: err.message });
+    }
+  });
+
+  appendLog('协议转换模块就绪 baseUrl=' + cfg.baseUrl + ' user=' + cfg.userName);
+
+  // 暴露给同进程内其他子模块（如 setupModbusBridge）共享 dcim 会话
+  global.__protoConv = {
+    callUpstream: callUpstream,
+    loginUpstream: loginUpstream,
+    getCfg: function () { return cfg; },
+    appendLog: appendLog,
+  };
+})();
+
+// ===== 协议转换 → Modbus TCP 转发 =====
+// 把 GetDeviceByGroupKey 的设备实时数据（DeviceStatus + 每参数 CurValue + Status）
+// 转换成 Modbus TCP holding registers，对外提供给第三方 SCADA / Modbus master。
+// 紧凑布局：每设备 1 + 3N 寄存器（DeviceStatus INT16 + 每参数 CurValue FLOAT32BE + Status INT16）
+(function setupModbusBridge() {
+  const path = require('path');
+  let Modbus;
+  try { Modbus = require('jsmodbus'); }
+  catch (_e) { console.error('[modbus] jsmodbus 未安装，Modbus 转发功能不可用'); return; }
+
+  const CONFIG_PATH = process.env.MODBUS_CONFIG || path.join(__dirname, 'config', 'proto-conv-modbus.json');
+  const LOG_PATH = process.env.MODBUS_LOG || path.join(__dirname, 'logs', 'proto-conv-modbus.log');
+
+  const defaults = {
+    enabled: false,
+    port: 5020,
+    pollIntervalSec: 5,
+    selectedDevices: [],
+  };
+
+  let cfg = JSON.parse(JSON.stringify(defaults));
+  function readCfg() {
+    try {
+      const raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+      cfg = Object.assign({}, defaults, raw);
+      if (!Array.isArray(cfg.selectedDevices)) cfg.selectedDevices = [];
+    } catch (_e) {
+      cfg = JSON.parse(JSON.stringify(defaults));
+    }
+  }
+  function writeCfg() {
+    try {
+      fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
+      fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+      try { fs.chmodSync(CONFIG_PATH, 0o600); } catch (_e) {}
+    } catch (err) { console.error('[modbus] 写配置失败:', err.message); }
+  }
+  readCfg();
+
+  function localStamp() {
+    const d = new Date();
+    const pad = (n) => (n < 10 ? '0' + n : '' + n);
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' +
+      pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+  }
+  function appendLog(line) {
+    try {
+      fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true });
+      fs.appendFileSync(LOG_PATH, '[' + localStamp() + '] ' + line + '\n', 'utf8');
+    } catch (_e) {}
+  }
+
+  // 运行时
+  let netServer = null;
+  let mbServer = null;
+  let holding = null;
+  let mappingTable = []; // [{deviceId, deviceName, kind, paraName, addr, len, type, unit}]
+  let pollTimer = null;
+  let polling = false;
+  const status = {
+    running: false,
+    port: 0,
+    deviceCount: 0,
+    regCount: 0,
+    lastPollAt: '',
+    lastError: '',
+    missingDevices: [],
+  };
+
+  // ----- 寄存器映射构建 -----
+  function buildMapping() {
+    mappingTable = [];
+    let addr = 0;
+    (cfg.selectedDevices || []).forEach(function (dev) {
+      const params = Array.isArray(dev.params) ? dev.params : [];
+      mappingTable.push({
+        deviceId: dev.deviceId, deviceName: dev.deviceName,
+        kind: 'DeviceStatus', paraName: '', addr: addr, len: 1, type: 'INT16', unit: '',
+      });
+      addr += 1;
+      params.forEach(function (p) {
+        mappingTable.push({
+          deviceId: dev.deviceId, deviceName: dev.deviceName,
+          kind: 'CurValue', paraName: p.paraName || '', addr: addr, len: 2, type: 'FLOAT32 BE', unit: p.unit || '',
+        });
+        addr += 2;
+      });
+    });
+    return addr; // 总寄存器数
+  }
+
+  function regsForDevice(dev) {
+    const n = (dev.params || []).length;
+    return 1 + 2 * n;
+  }
+
+  function writeInt16(buf, regAddr, val) {
+    const v = (Number.isFinite(val) ? Math.max(-32768, Math.min(32767, val | 0)) : -1);
+    if ((regAddr + 1) * 2 > buf.length) return;
+    buf.writeInt16BE(v, regAddr * 2);
+  }
+  function writeFloat32BE(buf, regAddr, val) {
+    if (typeof val !== 'number' || !Number.isFinite(val)) val = NaN;
+    if ((regAddr + 2) * 2 > buf.length) return;
+    buf.writeFloatBE(val, regAddr * 2);
+  }
+  function parseFloatLoose(s) {
+    if (s == null) return NaN;
+    const t = String(s).trim();
+    if (t === '' || t === '--' || t === 'NaN' || t === 'null') return NaN;
+    const v = parseFloat(t);
+    return Number.isFinite(v) ? v : NaN;
+  }
+  function parseDeviceStatus(s) {
+    if (s == null) return -1;
+    const t = String(s).trim();
+    if (t === '1') return 1;
+    if (t === '0') return 0;
+    const v = parseInt(t, 10);
+    return Number.isInteger(v) ? v : -1;
+  }
+
+  // ----- 启停 -----
+  function stopServer() {
+    if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+    if (mbServer) { try { mbServer = null; } catch (_e) {} }
+    if (netServer) {
+      try { netServer.close(); } catch (_e) {}
+      netServer = null;
+    }
+    status.running = false;
+    status.port = 0;
+    appendLog('Modbus server stopped');
+  }
+
+  function startServer() {
+    if (netServer) stopServer();
+    if (!cfg.enabled) return;
+    if (!Array.isArray(cfg.selectedDevices) || cfg.selectedDevices.length === 0) {
+      status.lastError = '未选择设备';
+      appendLog('启动失败：未选择设备');
+      return;
+    }
+    const totalReg = buildMapping();
+    if (totalReg <= 0) {
+      status.lastError = '寄存器映射为空';
+      return;
+    }
+    holding = Buffer.alloc(Math.max(totalReg, 1) * 2);
+    netServer = new net.Server();
+    try {
+      mbServer = new Modbus.server.TCP(netServer, { holding: holding });
+    } catch (e) {
+      status.lastError = '构造 Modbus server 失败：' + e.message;
+      appendLog(status.lastError);
+      return;
+    }
+    netServer.on('error', function (err) {
+      status.lastError = err.message;
+      status.running = false;
+      appendLog('netServer error: ' + err.message);
+    });
+    netServer.listen(cfg.port, '0.0.0.0', function () {
+      status.running = true;
+      status.port = cfg.port;
+      status.regCount = totalReg;
+      status.deviceCount = cfg.selectedDevices.length;
+      status.lastError = '';
+      appendLog('Modbus TCP server listening on 0.0.0.0:' + cfg.port +
+        ' devices=' + status.deviceCount + ' regs=' + totalReg);
+      schedulePoll();
+    });
+  }
+
+  function schedulePoll() {
+    if (pollTimer) clearTimeout(pollTimer);
+    if (!cfg.enabled || !status.running) return;
+    const tick = async function () {
+      if (polling) {
+        pollTimer = setTimeout(tick, 1000);
+        return;
+      }
+      polling = true;
+      try {
+        await pollOnce();
+        status.lastError = '';
+      } catch (e) {
+        status.lastError = e.message;
+        appendLog('poll err: ' + e.message);
+      } finally {
+        status.lastPollAt = localStamp();
+        polling = false;
+        if (cfg.enabled && status.running) {
+          pollTimer = setTimeout(tick, Math.max(1, cfg.pollIntervalSec || 5) * 1000);
+        }
+      }
+    };
+    pollTimer = setTimeout(tick, 100);
+  }
+
+  async function pollOnce() {
+    const helper = global.__protoConv;
+    if (!helper || !helper.callUpstream) throw new Error('proto-conv 模块未就绪');
+    // 按 groupId 分组：同一组所有设备一次接口拿全
+    const byGroup = {};
+    (cfg.selectedDevices || []).forEach(function (d) {
+      const gid = String(d.groupId == null ? '' : d.groupId);
+      if (!gid) return;
+      (byGroup[gid] = byGroup[gid] || []).push(d);
+    });
+    const groupIds = Object.keys(byGroup);
+    if (groupIds.length === 0) return;
+
+    const userLsh = (helper.getCfg() && helper.getCfg().userLsh) || '1';
+    const fetchedById = {}; // deviceId -> upstream device row
+    for (const gid of groupIds) {
+      let r;
+      try {
+        r = await helper.callUpstream({
+          key: 'GetDeviceByGroupKey',
+          method: 'POST',
+          body: { UserLsh: userLsh, GroupId: gid },
+        });
+      } catch (e) {
+        appendLog('GroupId=' + gid + ' 拉取异常 ' + e.message);
+        continue;
+      }
+      if (!r || !r.ok || !r.data) {
+        appendLog('GroupId=' + gid + ' 响应异常 status=' + (r && r.status));
+        continue;
+      }
+      const list = (r.data && r.data.data) || [];
+      list.forEach(function (dev) {
+        if (dev && dev.DeviceId != null) {
+          fetchedById[String(dev.DeviceId)] = dev;
+        }
+      });
+    }
+
+    // 按 mappingTable 写 holding buffer
+    const missing = [];
+    (cfg.selectedDevices || []).forEach(function (selDev) {
+      const did = String(selDev.deviceId);
+      const upDev = fetchedById[did];
+      const baseAddr = devBaseAddr(selDev.deviceId);
+      if (baseAddr < 0) return;
+      if (!upDev) {
+        // 接口里没返回这个设备 → DeviceStatus = -1，参数全 NaN/-1
+        missing.push(selDev.deviceName);
+        writeInt16(holding, baseAddr, -1);
+        let off = baseAddr + 1;
+        (selDev.params || []).forEach(function () {
+          writeFloat32BE(holding, off, NaN); off += 2;
+        });
+        return;
+      }
+      writeInt16(holding, baseAddr, parseDeviceStatus(upDev.DeviceStatus));
+      // 把上游 ParaList 按 paraName 索引
+      const upParas = {};
+      (upDev.ParaList || []).forEach(function (p) {
+        if (p && p.ParaName != null) upParas[String(p.ParaName)] = p;
+      });
+      let off = baseAddr + 1;
+      (selDev.params || []).forEach(function (sp) {
+        const up = upParas[sp.paraName];
+        const cur = up ? parseFloatLoose(up.CurValue) : NaN;
+        writeFloat32BE(holding, off, cur); off += 2;
+      });
+    });
+    status.missingDevices = missing;
+  }
+
+  function devBaseAddr(deviceId) {
+    let addr = 0;
+    const sel = cfg.selectedDevices || [];
+    for (let i = 0; i < sel.length; i++) {
+      if (String(sel[i].deviceId) === String(deviceId)) return addr;
+      addr += regsForDevice(sel[i]);
+    }
+    return -1;
+  }
+
+  // ----- 路由 -----
+  app.get('/api/proto-conv/modbus/config', function (_req, res) {
+    res.json({ ok: true, config: cfg, status: status });
+  });
+
+  app.put('/api/proto-conv/modbus/config', function (req, res) {
+    const b = req.body || {};
+    const next = JSON.parse(JSON.stringify(cfg));
+    if (typeof b.enabled === 'boolean') next.enabled = b.enabled;
+    if (b.port != null) {
+      const p = Number(b.port) | 0;
+      if (p < 1 || p > 65535) return res.status(400).json({ ok: false, message: 'port 范围 1-65535' });
+      next.port = p;
+    }
+    if (b.pollIntervalSec != null) {
+      const s = Number(b.pollIntervalSec) | 0;
+      if (s < 1 || s > 60) return res.status(400).json({ ok: false, message: 'pollIntervalSec 范围 1-60' });
+      next.pollIntervalSec = s;
+    }
+    if (Array.isArray(b.selectedDevices)) {
+      // 验证寄存器总数 ≤ 60000
+      let totalReg = 0;
+      b.selectedDevices.forEach(function (d) {
+        if (!d || !d.deviceId) return;
+        totalReg += 1 + 2 * ((d.params || []).length);
+      });
+      if (totalReg > 60000) {
+        return res.status(400).json({ ok: false, message: '寄存器总数 ' + totalReg + ' 超过 60000 上限' });
+      }
+      next.selectedDevices = b.selectedDevices.map(function (d) {
+        return {
+          deviceId: String(d.deviceId == null ? '' : d.deviceId),
+          deviceName: String(d.deviceName == null ? '' : d.deviceName),
+          groupId: String(d.groupId == null ? '' : d.groupId),
+          groupName: String(d.groupName == null ? '' : d.groupName),
+          zonesubno: String(d.zonesubno == null ? '' : d.zonesubno),
+          zonesubname: String(d.zonesubname == null ? '' : d.zonesubname),
+          params: Array.isArray(d.params) ? d.params.map(function (p) {
+            return { paraName: String(p.paraName == null ? '' : p.paraName), unit: String(p.unit == null ? '' : p.unit) };
+          }) : [],
+        };
+      });
+    }
+
+    cfg = next;
+    writeCfg();
+    appendLog('配置已更新 enabled=' + cfg.enabled + ' port=' + cfg.port +
+      ' poll=' + cfg.pollIntervalSec + 's devices=' + cfg.selectedDevices.length);
+    // 自动重启 server
+    stopServer();
+    if (cfg.enabled) startServer();
+    res.json({ ok: true, config: cfg, status: status });
+  });
+
+  app.post('/api/proto-conv/modbus/start', function (_req, res) {
+    cfg.enabled = true; writeCfg();
+    stopServer(); startServer();
+    res.json({ ok: status.running, status: status, message: status.lastError || '' });
+  });
+
+  app.post('/api/proto-conv/modbus/stop', function (_req, res) {
+    cfg.enabled = false; writeCfg();
+    stopServer();
+    res.json({ ok: true, status: status });
+  });
+
+  app.get('/api/proto-conv/modbus/status', function (_req, res) {
+    res.json({
+      ok: true,
+      status: Object.assign({}, status, { enabled: !!cfg.enabled }),
+      mappingCount: mappingTable.length,
+    });
+  });
+
+  app.get('/api/proto-conv/modbus/map.csv', function (_req, res) {
+    if (!mappingTable.length) buildMapping();
+    const lines = ['设备ID,设备名称,字段,参数名,寄存器地址,长度,数据类型,单位'];
+    mappingTable.forEach(function (m) {
+      // 范围地址（如 1-2）会被 Excel 识别成日期，用 ="..." 公式语法强制文本格式
+      const addrStr = m.len === 1
+        ? String(m.addr)
+        : '="' + m.addr + '-' + (m.addr + m.len - 1) + '"';
+      const csvEsc = function (s) {
+        s = String(s == null ? '' : s);
+        if (/[",\n]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+        return s;
+      };
+      lines.push([
+        csvEsc(m.deviceId), csvEsc(m.deviceName), csvEsc(m.kind), csvEsc(m.paraName),
+        csvEsc(addrStr), csvEsc(m.len), csvEsc(m.type), csvEsc(m.unit),
+      ].join(','));
+    });
+    const buf = Buffer.from('﻿' + lines.join('\r\n'), 'utf8'); // BOM 让 Excel 识别 UTF-8
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="modbus-map.csv"');
+    res.end(buf);
+  });
+
+  // 启动后如果已启用，自动起 server（等 setupProtoConv 就绪）
+  setTimeout(function () {
+    if (cfg.enabled) {
+      try { startServer(); } catch (e) { appendLog('自启失败：' + e.message); }
+    }
+    appendLog('Modbus 转发模块就绪 enabled=' + cfg.enabled + ' port=' + cfg.port +
+      ' devices=' + (cfg.selectedDevices || []).length);
+  }, 500);
 })();
 
 const port = Number(process.env.PORT || 3000);

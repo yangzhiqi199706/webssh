@@ -607,6 +607,14 @@
             <span>前端缓冲条数（10-500）</span>
             <input id="monBuffer" type="number" min="10" max="500" step="10" />
           </label>
+          <label class="field">
+            <span>TextMessage 等待（秒，5-600）<br><span style="font-weight:normal;color:#94a3b8;font-size:11px">NotifyModeID&gt;0 路径，默认 30</span></span>
+            <input id="monPendingSec" type="number" min="5" max="600" step="1" />
+          </label>
+          <label class="field">
+            <span>TextMessage 等待（秒，5-600）<br><span style="font-weight:normal;color:#94a3b8;font-size:11px">NotifyModeID=0 兜底路径，默认 120</span></span>
+            <input id="monPendingSecMode0" type="number" min="5" max="600" step="1" />
+          </label>
         </div>
         <div class="actions">
           <button class="btn primary" id="btnMonSave" type="button">保存</button>

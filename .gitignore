@@ -22,3 +22,6 @@ protocol_app/__pycache__/
 config/sms-db.json
 config/sms-push.json
 config/ha.json
+config/proto-conv.json
+config/proto-conv-modbus.json
+config/proto-conv-modbus-map.csv

@@ -8,6 +8,8 @@
     monEnabled: $('monEnabled'),
     monInterval: $('monInterval'),
     monBuffer: $('monBuffer'),
+    monPendingSec: $('monPendingSec'),
+    monPendingSecMode0: $('monPendingSecMode0'),
     btnMonSave: $('btnMonSave'),
     btnMonClear: $('btnMonClear'),
     monSaveHint: $('monSaveHint'),
@@ -86,7 +88,9 @@
     var lines = [];
     lines.push('表：`' + s.table + '`');
     lines.push('最后 id：' + s.lastSeenId + '  ·  新增 ' + s.totalFetched + '  ·  缓冲 ' + s.bufferCount + '/' + s.bufferSize);
-    lines.push('等待 TextMessage 填充：' + (s.pendingCount || 0) + ' 条');
+    lines.push('等待 TextMessage 填充：' + (s.pendingCount || 0) + ' 条'
+      + '（NotifyModeID>0 上限 ' + (s.maxPendingSec || 30) + 's'
+      + '；=0 上限 ' + (s.maxPendingSecMode0 || 120) + 's）');
     lines.push('解除总计：' + (s.totalCancelled || 0) + '  ·  解除缓冲 ' + (s.cancelBufferCount || 0));
     if (s.lastPollAt) lines.push('上次轮询：' + s.lastPollAt);
     if (s.lastError) lines.push('错误：' + s.lastError);
@@ -99,6 +103,8 @@
     el.monEnabled.value = s.enabled ? '1' : '0';
     el.monInterval.value = String(s.intervalSec);
     el.monBuffer.value = String(s.bufferSize);
+    if (el.monPendingSec) el.monPendingSec.value = String(s.maxPendingSec || 30);
+    if (el.monPendingSecMode0) el.monPendingSecMode0.value = String(s.maxPendingSecMode0 || 120);
   }
 
   function esc(v) {
@@ -383,6 +389,8 @@
       enabled: el.monEnabled.value === '1',
       intervalSec: Number(el.monInterval.value) || 3,
       bufferSize: Number(el.monBuffer.value) || 200,
+      maxPendingSec: Number(el.monPendingSec && el.monPendingSec.value) || 30,
+      maxPendingSecMode0: Number(el.monPendingSecMode0 && el.monPendingSecMode0.value) || 120,
     };
     el.btnMonSave.disabled = true;
     hint('保存中…');

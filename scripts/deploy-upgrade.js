@@ -34,7 +34,7 @@ if (!PASSWORD) {
 }
 
 // 需要同步到远端 /opt/webssh/app/ 的条目（相对项目根路径）
-// 完整部署：包含 server.js、package*.json、完整 node_modules、index.html、serial/、sms/、ha/
+// 完整部署：包含 server.js、package*.json、完整 node_modules、index.html、serial/、sms/、ha/、proto-conv/
 const PAYLOAD_ENTRIES = [
   'server.js',
   'index.html',
@@ -44,6 +44,7 @@ const PAYLOAD_ENTRIES = [
   'serial',
   'sms',
   'ha',
+  'proto-conv',
   'node_modules',
 ];
 
