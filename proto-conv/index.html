@@ -286,6 +286,8 @@
       <div class="spacer"></div>
       <div class="role-tag" id="sessionTag">未登录</div>
       <button class="btn modbus" id="btnOpenModbus" type="button"><span class="dot off" id="modbusDot"></span>Modbus 转发</button>
+      <button class="btn modbus" id="btnOpenModbusControl" type="button"><span class="dot off" id="modbusCtrlDot"></span>Modbus 控制转换</button>
+      <button class="btn modbus" id="btnOpenSnmp" type="button"><span class="dot off" id="snmpDot"></span>SNMP 转发</button>
       <button class="btn" id="btnLogin" type="button">登录</button>
       <button class="btn" id="btnTest" type="button">连接测试</button>
       <button class="btn primary" id="btnOpenConfig" type="button">连接信息</button>
@@ -452,11 +454,136 @@
     </div>
   </div>
 
+  <!-- Modbus TCP 控制转换弹窗 -->
+  <div class="modal-mask" id="modbusControlModal" aria-hidden="true">
+    <div class="modal" style="width:min(820px,100%)">
+      <div class="modal-head">
+        <h3>Modbus TCP 控制转换（master 写寄存器 → 触发 dcim 控制下发）</h3>
+        <button class="btn" id="btnCloseModbusControl" type="button">关闭</button>
+      </div>
+      <div class="modal-body" style="max-height:85vh;overflow:auto">
+        <div class="form-grid">
+          <label class="field">
+            <span>同命令去重秒数<span class="note">同一 controlId N 秒内只触发 1 次</span></span>
+            <input id="mbcCfgDebounce" type="number" min="0" max="60" placeholder="2" />
+          </label>
+          <div class="field">
+            <span>监听端口</span>
+            <div class="hint" style="padding:8px 0">与「Modbus 转发」共用 <code class="k">5020</code>，控制段紧接数据段后面排列。</div>
+          </div>
+        </div>
+
+        <div class="mb-status-box">
+          <div id="mbcStatusLine">状态加载中…</div>
+          <div class="hint" id="mbcErrLine">最近错误: (无)</div>
+        </div>
+
+        <div class="mb-toolbar">
+          <button class="btn primary" id="mbcBtnScan" type="button">扫描控制命令</button>
+          <button class="btn" id="mbcBtnSelectAll" type="button">全选</button>
+          <button class="btn" id="mbcBtnSelectNone" type="button">清空</button>
+          <button class="btn" id="mbcBtnExpandAll" type="button">全部展开</button>
+          <button class="btn" id="mbcBtnDownloadCsv" type="button">下载映射 CSV</button>
+        </div>
+
+        <div id="mbcTree" class="mb-tree">
+          <div class="hint">点「扫描控制命令」从 dcim 拉取每个设备的控制命令列表，然后勾选要暴露给 Modbus master 的控制项。</div>
+        </div>
+
+        <div class="mb-summary" id="mbcSummary">已选: 0 命令</div>
+
+        <div class="actions">
+          <button class="btn modbus" id="mbcBtnEnable" type="button">启用并保存（重启后自动恢复）</button>
+          <button class="btn" id="mbcBtnSave" type="button">仅保存（不改运行状态）</button>
+          <button class="btn danger" id="mbcBtnDisable" type="button">停用</button>
+          <span class="hint" id="mbcSaveHint" style="margin-left:auto;align-self:center"></span>
+        </div>
+
+        <div id="mbcFireBox" style="margin-top:6px">
+          <div class="hint">尚无触发记录</div>
+        </div>
+
+        <div class="hint" style="margin-top:6px;line-height:1.7">
+          <b>用法</b>：master 用 <code class="k">FC=06 Write Single Register</code> 写 <code class="k">value=1</code> 到映射的寄存器地址即可触发。
+          控制段紧接数据段后面：起始地址 = 数据段总寄存器数（即 Modbus 转发已选设备占的寄存器数）；
+          第 i 个控制项映射到 <code class="k">起始地址 + i</code>。具体地址看上方状态条或下载映射 CSV。
+          写其他值忽略；同一命令 <code class="k">debounceSec</code> 秒内重写只触发 1 次；触发后 server 自动把寄存器清回 0（边沿触发）。
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SNMP v2c 转发弹窗 -->
+  <div class="modal-mask" id="snmpModal" aria-hidden="true">
+    <div class="modal" style="width:min(680px,100%)">
+      <div class="modal-head">
+        <h3>SNMP v2c 转发（master GET 监控数据 / SET 触发控制）</h3>
+        <button class="btn" id="btnCloseSnmp" type="button">关闭</button>
+      </div>
+      <div class="modal-body" style="max-height:85vh;overflow:auto">
+        <div class="form-grid">
+          <label class="field">
+            <span>监听端口（UDP）<span class="note">默认 16162（避开标准 161）</span></span>
+            <input id="snCfgPort" type="number" min="1" max="65535" placeholder="16162" />
+          </label>
+          <label class="field">
+            <span>启用 SET 写</span>
+            <label style="display:flex;align-items:center;gap:6px;padding:8px 0">
+              <input id="snCfgEnableSet" type="checkbox" /> 允许 SET 触发控制（master 写 OID = INTEGER 1）
+            </label>
+          </label>
+          <label class="field">
+            <span>读 community<span class="note">SCADA 用此 community 做 GET</span></span>
+            <input id="snCfgRead" type="text" placeholder="public" />
+          </label>
+          <label class="field">
+            <span>写 community<span class="note">仅 SET 时使用</span></span>
+            <input id="snCfgWrite" type="text" placeholder="private" />
+          </label>
+          <label class="field span-2">
+            <span>IP 白名单<span class="note">逗号或空格分隔，留空 = 不限制</span></span>
+            <input id="snCfgWhitelist" type="text" placeholder="例如: 192.168.0.50, 192.168.0.100" />
+          </label>
+        </div>
+
+        <div class="mb-status-box">
+          <div id="snStatusLine">状态加载中…</div>
+          <div class="hint" id="snErrLine">最近错误: (无)</div>
+        </div>
+
+        <div class="mb-summary" id="snSummaryLine">数据来源加载中…</div>
+
+        <div class="actions">
+          <button class="btn modbus" id="snBtnEnable" type="button">启用并保存（重启后自动恢复）</button>
+          <button class="btn" id="snBtnSave" type="button">仅保存（不改运行状态）</button>
+          <button class="btn danger" id="snBtnDisable" type="button">停用</button>
+          <button class="btn" id="snBtnDownloadCsv" type="button">下载 OID 映射 CSV</button>
+          <span class="hint" id="snSaveHint" style="margin-left:auto;align-self:center"></span>
+        </div>
+
+        <div class="hint" style="margin-top:6px;line-height:1.7">
+          <b>说明</b>：
+          <ul style="margin:4px 0;padding-left:18px;line-height:1.7">
+            <li>SNMP 暴露的设备数据 = <b>「Modbus 转发」</b>已选设备（不重复维护）</li>
+            <li>SNMP 暴露的控制项 = <b>「Modbus 控制转换」</b>已选控制项</li>
+            <li>OID 树前缀: <code class="k">1.3.6.1.4.1.99999</code></li>
+            <li>数据值: <code class="k">CurValue × 10</code> → INTEGER（master 端除 10 还原）</li>
+            <li>示例 GET: <code class="k">snmpwalk -v2c -c public &lt;host&gt;:16162 .1.3.6.1.4.1.99999.1</code></li>
+            <li>示例 SET: <code class="k">snmpset -v2c -c private &lt;host&gt;:16162 .1.3.6.1.4.1.99999.2.1.0 i 1</code></li>
+            <li>具体 OID 列表请点上面「下载 OID 映射 CSV」</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script src="./assets/js/pc-bus.js"></script>
   <script src="./assets/js/pc-monitor.js"></script>
   <script src="./assets/js/pc-config.js"></script>
   <script src="./assets/js/pc-endpoints.js"></script>
   <script src="./assets/js/pc-runner.js"></script>
   <script src="./assets/js/pc-modbus.js"></script>
+  <script src="./assets/js/pc-modbus-control.js"></script>
+  <script src="./assets/js/pc-snmp.js"></script>
 </body>
 </html>

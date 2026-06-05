@@ -25,3 +25,11 @@ config/ha.json
 config/proto-conv.json
 config/proto-conv-modbus.json
 config/proto-conv-modbus-map.csv
+config/proto-conv-modbus-control.json
+config/proto-conv-snmp.json
+
+# 临时调试脚本
+.tmp-*.js
+
+# 协议文档解压目录（保留 .rar 原始包即可）
+协议文档/离线麒麟系统主机获取SNMP(1)/

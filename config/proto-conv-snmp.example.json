@@ -1,0 +1,8 @@
+{
+  "enabled": false,
+  "port": 16162,
+  "readCommunity": "public",
+  "writeCommunity": "private",
+  "enableSet": true,
+  "ipWhitelist": []
+}
