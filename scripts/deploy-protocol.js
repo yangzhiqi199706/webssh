@@ -159,6 +159,16 @@ function buildPackage() {
         copyDirFiltered(src, dst, () => true);
       }
     }
+    // snmp-bundle：跟着主壳一起推到 /opt/webssh/app/snmp-bundle/，
+    // 后端「snmp 服务」按钮需要从这里读取 rpm 文件
+    const snmpBundleSrc = path.join(ROOT, 'snmp-bundle');
+    if (fs.existsSync(snmpBundleSrc)) {
+      copyDirFiltered(
+        snmpBundleSrc,
+        path.join(releaseDir, 'main-sync', 'snmp-bundle'),
+        () => true,
+      );
+    }
   }
 
   // 7) 打 tar.gz
@@ -335,6 +345,9 @@ async function main() {
       // 拷 http-proxy + 它的依赖到 app/node_modules
       await exec(conn, `cp -a ${mainSync}/node_modules/. ${INSTALL_DIR}/app/node_modules/`);
       await exec(conn, `ls ${INSTALL_DIR}/app/node_modules/http-proxy/package.json && ${INSTALL_DIR}/runtime/node/bin/node -e "console.log('http-proxy', require('/opt/webssh/app/node_modules/http-proxy/package.json').version)"`);
+
+      // snmp-bundle：覆盖到 /opt/webssh/app/snmp-bundle/（不存在则跳过）
+      await exec(conn, `if [ -d ${mainSync}/snmp-bundle ]; then rm -rf ${INSTALL_DIR}/app/snmp-bundle && cp -a ${mainSync}/snmp-bundle ${INSTALL_DIR}/app/snmp-bundle && ls -la ${INSTALL_DIR}/app/snmp-bundle | head -20; else echo "main-sync 内无 snmp-bundle，跳过"; fi`, { allowNonZero: true });
 
       // 重启主服务
       log(`重启 ${SERVICE} ...`);

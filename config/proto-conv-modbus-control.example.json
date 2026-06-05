@@ -1,0 +1,6 @@
+{
+  "enabled": false,
+  "port": 5021,
+  "debounceSec": 2,
+  "selectedCommands": []
+}

@@ -360,6 +360,8 @@
     .shortcut { text-align: left; }
     .shortcut.exec { border-color: rgba(34, 211, 238, .45); color: #cffafe; }
     .shortcut.exec:hover { background: rgba(34, 211, 238, .15); }
+    .shortcut.danger { border-color: rgba(239, 68, 68, .55); color: #fecaca; }
+    .shortcut.danger:hover { background: rgba(239, 68, 68, .18); border-color: rgba(239, 68, 68, .8); }
     .shortcut-groups { display: flex; flex-direction: column; gap: 8px; }
     .shortcut-group { border: 1px solid var(--border); border-radius: 10px; background: rgba(15, 23, 42, .6); overflow: hidden; }
     .shortcut-group-header {
@@ -373,6 +375,9 @@
     .shortcut-group-count { color: #64748b; font-size: 12px; }
     .shortcut-group-body { display: none; padding: 8px 10px 10px 10px; border-top: 1px solid var(--border); }
     .shortcut-group.open .shortcut-group-body { display: grid; }
+    .shortcut-group-note { display: none; padding: 8px 12px 10px 12px; font-size: 12px; line-height: 1.55;
+      color: #94a3b8; border-top: 1px dashed var(--border); background: rgba(15,23,42,.35); }
+    .shortcut-group.open .shortcut-group-note { display: block; }
     .kv { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; padding: 7px 0; }
     .file-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
     .file-toolbar-actions { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -1501,6 +1506,20 @@
           { label: 'prune 未用数据卷', commands: ['docker volume prune -f'], exec: true, confirm: '⚠ 将删除所有未挂载的数据卷，可能导致数据丢失。是否继续？' },
         ],
       },
+      {
+        id: 'deploy',
+        title: '系统部署',
+        note: '感谢李汶峰对本功能的大力支持，想要获得官方授权，请写一封申请书，表达感谢',
+        items: [
+          {
+            label: 'snmp 服务',
+            kind: 'snmp-deploy',
+            danger: true,
+            confirm: '将上传 net-snmp rpm 到目标主机 /root/webssh-snmp/ 并完成：\n  1) rpm -ivh *.rpm --nodeps --force\n  2) 写入 snmpd.conf（端口 16161，标记块幂等覆盖）\n  3) semanage 放行 SELinux 端口（如可用）\n  4) systemctl enable snmpd（开机自启）\n  5) systemctl restart snmpd 并验证\n\n仅支持麒麟 / 兼容 RHEL 系发行版。是否继续？',
+          },
+          { label: '测试 snmp', commands: ['snmpwalk -v 2c -c public 127.0.0.1:16161'], exec: true },
+        ],
+      },
     ];
     // 兼容旧代码：保留扁平数组形式
     const shortcuts = shortcutGroups.flatMap((g) => g.items);
@@ -1519,7 +1538,7 @@
       ws: null,
       connected: false,
       sidePanel: 'shortcuts',
-      shortcutGroupsOpen: { view: true, dcim: true, clean: false },
+      shortcutGroupsOpen: { view: true, dcim: true, clean: false, deploy: true },
       sftpReady: false,
       fileLoading: false,
       fileError: '',
@@ -1546,6 +1565,8 @@
       mkdirPending: false,
       dragUploadActive: false,
       editorMode: 'text/plain',
+      snmpDeploying: false,
+      snmpRequestId: '',
     };
 
     let codeEditor = null;
@@ -1939,9 +1960,15 @@
         const open = state.shortcutGroupsOpen[g.id] !== false;
         const btns = g.items.map((sc) => {
           const idx = shortcuts.indexOf(sc);
-          const title = sc.exec ? `连续执行：${sc.commands.join(' ; ')}` : '点击填充到输入框';
-          const cls = sc.exec ? 'btn shortcut exec' : 'btn shortcut';
-          return `<button class="${cls}" data-shortcut-idx="${idx}" title="${esc(title)}">${esc(sc.label)}</button>`;
+          let title;
+          if (sc.kind === 'snmp-deploy') title = '一键部署本机 SNMP 服务（端口 16161，自动启用开机自启）';
+          else if (sc.exec) title = `连续执行：${sc.commands.join(' ; ')}`;
+          else title = '点击填充到输入框';
+          const cls = ['btn', 'shortcut'];
+          if (sc.exec || sc.kind) cls.push('exec');
+          if (sc.danger) cls.push('danger');
+          const label = sc.danger ? `⚠ ${sc.label}` : sc.label;
+          return `<button class="${cls.join(' ')}" data-shortcut-idx="${idx}" title="${esc(title)}">${esc(label)}</button>`;
         }).join('');
         return `
           <div class="shortcut-group ${open ? 'open' : ''}">
@@ -1951,6 +1978,7 @@
               <span class="shortcut-group-count">${g.items.length}</span>
             </button>
             <div class="shortcut-grid shortcut-group-body">${btns}</div>
+            ${g.note ? `<div class="shortcut-group-note">${esc(g.note)}</div>` : ''}
           </div>
         `;
       }).join('');
@@ -2084,7 +2112,9 @@
           const idx = Number(node.dataset.shortcutIdx);
           const sc = shortcuts[idx];
           if (!sc) return;
-          if (sc.exec) {
+          if (sc.kind === 'snmp-deploy') {
+            runSnmpDeployShortcut(sc);
+          } else if (sc.exec) {
             runShortcutSequence(sc);
           } else {
             state.input = sc.commands[0] || '';
@@ -2257,6 +2287,27 @@
       };
       tick();
       renderTerminal();
+    }
+
+    // SNMP 一键部署：复用 ws 把 rpm + 安装步骤交给后端，后端通过 snmp:log / snmp:done 回推
+    function runSnmpDeployShortcut(sc) {
+      if (!state.connected || state.ws?.readyState !== WebSocket.OPEN) {
+        alert('请先连接 SSH 再部署 SNMP。');
+        return;
+      }
+      if (state.snmpDeploying) {
+        alert('SNMP 部署正在进行中，请等待当前任务结束。');
+        return;
+      }
+      if (sc.confirm && !window.confirm(sc.confirm)) return;
+      state.snmpDeploying = true;
+      state.snmpRequestId = 'snmp-' + Date.now().toString(36);
+      state.lines.push({ kind: 'system', text: '── SNMP 一键部署开始（端口 16161，自动启用开机自启）──' });
+      renderTerminal();
+      sendWs({
+        type: 'snmp:deploy',
+        payload: { requestId: state.snmpRequestId, port: 16161 },
+      });
     }
 
     function insertText(text) {
@@ -3298,6 +3349,35 @@
             state.transferStatus = `已保存 ${state.editorFileName || '文件'}`;
             syncEditorView();
             loadFileList(state.fileCwd);
+            return;
+          }
+
+          if (msg.type === 'snmp:log') {
+            const stream = msg.payload?.stream || 'stdout';
+            const text = String(msg.payload?.text || '');
+            if (!text) return;
+            const lines = text.replace(/\r\n/g, '\n').split('\n');
+            // 末尾换行会产生空串，剔除掉避免多一行空白
+            if (lines.length && lines[lines.length - 1] === '') lines.pop();
+            lines.forEach((line) => {
+              const kind = stream === 'step' ? 'system' : 'output';
+              state.lines.push({ kind, text: line });
+            });
+            renderTerminal();
+            return;
+          }
+
+          if (msg.type === 'snmp:done') {
+            state.snmpDeploying = false;
+            const ok = !!msg.payload?.ok;
+            const summary = msg.payload?.summary || '';
+            const message = msg.payload?.message || '';
+            if (ok) {
+              state.lines.push({ kind: 'system', text: `── SNMP 部署完成 ✅ ${summary} ──` });
+            } else {
+              state.lines.push({ kind: 'system', text: `── SNMP 部署失败 ❌ ${message || summary || '未知错误'} ──` });
+            }
+            renderTerminal();
             return;
           }
 

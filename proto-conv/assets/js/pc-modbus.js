@@ -116,6 +116,11 @@
     el.btnScan.disabled = true;
     el.treeBox.innerHTML = '<div class="hint">扫描中…</div>';
     Mon.info('Modbus → 扫描设备开始');
+    // 切换 dcim 连接后旧设备 ID 可能在新 dcim 不存在 → 重置 deviceMeta，
+    // 仅保留扫描完后实际存在的设备的勾选状态。
+    var oldChecked = Object.assign({}, checkedKey);
+    deviceMeta = {};
+    checkedKey = {};
     try {
       // 1. 区域
       var rArea = await invokePc('GetNewAllAreasKey', { UserLsh: '1' });
@@ -157,8 +162,18 @@
         }
         treeData.push(gNode);
       }
+      // 仅恢复那些"扫描后仍存在"的设备的勾选状态；旧 dcim 的孤儿设备被自动丢弃
+      var droppedCount = 0;
+      Object.keys(oldChecked).forEach(function (k) {
+        if (oldChecked[k]) {
+          if (deviceMeta[k]) checkedKey[k] = true;
+          else droppedCount += 1;
+        }
+      });
       renderTree();
-      Mon.info('Modbus → 扫描完成，' + areas.length + ' 区域');
+      var hint = '扫描完成，' + areas.length + ' 区域';
+      if (droppedCount > 0) hint += '；丢弃 ' + droppedCount + ' 个旧 dcim 孤儿设备（不在当前连接里）';
+      Mon.info('Modbus → ' + hint);
     } catch (err) {
       el.treeBox.innerHTML = '<div class="hint err">扫描失败：' + escHtml(err.message) + '</div>';
       Mon.error('Modbus 扫描失败：' + err.message);
@@ -250,10 +265,10 @@
     var totalReg = 0, totalParam = 0;
     sel.forEach(function (d) { totalParam += (d.params || []).length; totalReg += regsForDevice(d); });
     var msg = '已选: ' + sel.length + ' 设备 · ' + totalParam + ' 参数 · 总 ' + totalReg + ' 寄存器';
-    if (totalReg > 60000) msg += '  ⚠ 超过 60000 上限，无法保存';
+    if (totalReg > 59000) msg += '  ⚠ 超过 59000 上限（控制段固定从 60000 起），无法保存';
     el.summary.textContent = msg;
-    el.summary.className = 'mb-summary' + (totalReg > 60000 ? ' err' : '');
-    el.btnSave.disabled = (totalReg > 60000);
+    el.summary.className = 'mb-summary' + (totalReg > 59000 ? ' err' : '');
+    el.btnSave.disabled = (totalReg > 59000);
   }
 
   // ---- 状态刷新 ----

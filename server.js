@@ -384,6 +384,170 @@ function runRemoteCommand(sshClient, cmd, callback) {
   }
 }
 
+// SNMP 一键部署：复用 ws 会话已有的 ssh2.Client + ensureSftp，把仓库里 snmp-bundle/ 的
+// rpm 推到目标机 /root/webssh-snmp/，然后顺序执行：rpm 安装 → 写 snmpd.conf →
+// SELinux 放行 → 开机自启 → 启动服务 → 验证。每一步把 stdout/stderr 通过
+// ws 推回前端实时显示，最终发 snmp:done。
+function runSnmpDeploy(payload, send, ssh, ensureSftp, sshReady) {
+  const fs = require('fs');
+  const path = require('path');
+  const requestId = payload.requestId || '';
+  const port = Number(payload.port) || 16161;
+
+  function sendLog(streamKind, text) {
+    if (!text) return;
+    send('snmp:log', { requestId: requestId, stream: streamKind, text: String(text) });
+  }
+  function sendStep(text) {
+    send('snmp:log', { requestId: requestId, stream: 'step', text: String(text) });
+  }
+  function done(ok, summary, err) {
+    send('snmp:done', {
+      requestId: requestId,
+      ok: !!ok,
+      summary: summary || '',
+      message: err ? String(err.message || err) : '',
+    });
+  }
+
+  if (!sshReady) {
+    done(false, '', new Error('SSH 尚未就绪，请先连接主机再执行 SNMP 部署'));
+    return;
+  }
+
+  const bundleDir = path.join(__dirname, 'snmp-bundle');
+  let rpmFiles = [];
+  try {
+    rpmFiles = fs.readdirSync(bundleDir).filter(function (n) {
+      return n.toLowerCase().endsWith('.rpm');
+    }).sort();
+  } catch (_e) {
+    done(false, '', new Error('找不到 snmp-bundle 目录：' + bundleDir));
+    return;
+  }
+  if (!rpmFiles.length) {
+    done(false, '', new Error('snmp-bundle 目录里没有 rpm 文件'));
+    return;
+  }
+
+  const remoteDir = '/root/webssh-snmp';
+
+  function execRemote(cmd, opts) {
+    const allowNonZero = !!(opts && opts.allowNonZero);
+    return new Promise(function (resolve) {
+      sendStep('$ ' + cmd);
+      runRemoteCommand(ssh, cmd, function (err, result) {
+        if (err) {
+          sendLog('stderr', '执行异常：' + err.message + '\n');
+          resolve({ code: -1, stdout: '', stderr: err.message });
+          return;
+        }
+        if (result.stdout) sendLog('stdout', result.stdout);
+        if (result.stderr) sendLog('stderr', result.stderr);
+        if (result.code !== 0 && !allowNonZero) {
+          sendLog('stderr', '\n[exit ' + result.code + ']\n');
+        }
+        resolve(result);
+      });
+    });
+  }
+
+  function sftpPut(remotePath, buffer, label) {
+    return new Promise(function (resolve, reject) {
+      ensureSftp(function (err, sftpClient) {
+        if (err) return reject(err);
+        sendStep((label || '上传') + ' → ' + remotePath + '（' + (buffer.length / 1024).toFixed(0) + ' KB）');
+        uploadBuffer(sftpClient, remotePath, buffer, function (writeErr) {
+          if (writeErr) return reject(writeErr);
+          resolve();
+        });
+      });
+    });
+  }
+
+  // snmpd.conf 写入策略：直接全量覆盖为最小可用配置（避免与已有 conf 中的 com2sec/group
+  // /access 重名导致 snmpd 启动失败）。首次部署时把原 conf 备份到 .webssh.bak，便于回滚。
+  // rocommunity public default 已经隐式生成 com2sec/group/access/view，无需再手写这些行。
+  const confScript = [
+    '#!/bin/bash',
+    'set -e',
+    'CONF=/etc/snmp/snmpd.conf',
+    'if [ ! -f "$CONF" ]; then echo "缺少 $CONF，请确认 net-snmp 已安装" >&2; exit 1; fi',
+    '[ -f "${CONF}.webssh.bak" ] || cp -a "$CONF" "${CONF}.webssh.bak"',
+    'cat > "$CONF" <<\'__WEBSSH_SNMP_EOF__\'',
+    '# Managed by webssh SNMP one-click deploy',
+    '# 原 snmpd.conf 已备份到 /etc/snmp/snmpd.conf.webssh.bak（如需还原：mv 回去 + systemctl restart snmpd）',
+    'agentAddress udp:' + port + ',tcp:' + port,
+    'rocommunity public default',
+    'syslocation "Beijing, China"',
+    'syscontact admin@example.com',
+    '__WEBSSH_SNMP_EOF__',
+    'chmod 600 "$CONF"',
+    'echo "snmpd.conf 已重写（端口 ' + port + '，原 conf 备份在 .webssh.bak）"',
+  ].join('\n');
+
+  (async function () {
+    try {
+      sendStep('开始部署 SNMP（端口 ' + port + '，将设置开机自启）');
+      await execRemote('mkdir -p ' + remoteDir);
+
+      // 上传 rpm
+      for (let i = 0; i < rpmFiles.length; i++) {
+        const name = rpmFiles[i];
+        const buf = fs.readFileSync(path.join(bundleDir, name));
+        await sftpPut(remoteDir + '/' + name, buf, '上传 rpm');
+      }
+      sendStep('已上传 ' + rpmFiles.length + ' 个 rpm 到 ' + remoteDir);
+
+      // 上传配置脚本
+      await sftpPut(remoteDir + '/_webssh_snmp_conf.sh', Buffer.from(confScript, 'utf8'), '上传 snmpd.conf 写入脚本');
+
+      // 1. rpm 安装（已存在的包会非零退出，但只要 net-snmp 已就位就继续）
+      const r1 = await execRemote('cd ' + remoteDir + ' && rpm -ivh *.rpm --nodeps --force', { allowNonZero: true });
+      if (r1.code !== 0) {
+        const q = await execRemote('rpm -q net-snmp', { allowNonZero: true });
+        if (q.code !== 0) throw new Error('rpm 安装失败 (exit=' + r1.code + ')');
+        sendStep('部分 rpm 提示已存在，net-snmp 已安装，继续');
+      }
+
+      // 2. 写 snmpd.conf
+      await execRemote('bash ' + remoteDir + '/_webssh_snmp_conf.sh');
+
+      // 3. SELinux 放行（无 semanage 自动跳过；端口已存在用 -m 修改）
+      const semaUdp = 'command -v semanage >/dev/null 2>&1 && (semanage port -a -t snmp_port_t -p udp ' + port +
+        ' 2>/dev/null || semanage port -m -t snmp_port_t -p udp ' + port + ' 2>/dev/null || true) || echo "semanage 未安装，跳过 SELinux 端口配置"';
+      const semaTcp = 'command -v semanage >/dev/null 2>&1 && (semanage port -a -t snmp_port_t -p tcp ' + port +
+        ' 2>/dev/null || semanage port -m -t snmp_port_t -p tcp ' + port + ' 2>/dev/null || true) || true';
+      await execRemote(semaUdp, { allowNonZero: true });
+      await execRemote(semaTcp, { allowNonZero: true });
+      await execRemote('command -v semanage >/dev/null 2>&1 && semanage port -l 2>/dev/null | grep snmp_port_t || true', { allowNonZero: true });
+
+      // 4. 开机自启
+      await execRemote('systemctl enable snmpd', { allowNonZero: true });
+
+      // 5. 重启服务（首次也等价于 start）
+      await execRemote('systemctl restart snmpd');
+
+      // 6. 验证
+      const active = await execRemote('systemctl is-active snmpd', { allowNonZero: true });
+      const enabled = await execRemote('systemctl is-enabled snmpd', { allowNonZero: true });
+      await execRemote('ss -lnup 2>/dev/null | grep :' + port + ' || true', { allowNonZero: true });
+      await execRemote('ss -lntp 2>/dev/null | grep :' + port + ' || true', { allowNonZero: true });
+
+      const isActive = (active.stdout || '').trim() === 'active';
+      const isEnabled = (enabled.stdout || '').trim() === 'enabled';
+      const summary = 'snmpd: ' + (isActive ? '运行中' : '未运行') +
+        ' ｜ 开机自启: ' + (isEnabled ? '已启用' : '未启用') +
+        ' ｜ 端口: ' + port;
+      sendStep((isActive ? '✅ ' : '⚠ ') + summary);
+      done(isActive, summary);
+    } catch (e) {
+      sendStep('❌ 部署中断：' + (e.message || e));
+      done(false, '', e);
+    }
+  })();
+}
+
 wss.on('connection', function (ws) {
   const ssh = new Client();
   let stream = null;
@@ -1019,6 +1183,11 @@ wss.on('connection', function (ws) {
           });
         });
       });
+      return;
+    }
+
+    if (msg.type === 'snmp:deploy') {
+      runSnmpDeploy(payload || {}, send, ssh, ensureSftp, sshReady);
       return;
     }
 
@@ -5899,31 +6068,59 @@ wssTcp.on('connection', function (ws) {
     port: 0,
     deviceCount: 0,
     regCount: 0,
+    dataRegCount: 0,
+    controlBaseAddr: 0,
+    controlRegCount: 0,
     lastPollAt: '',
     lastError: '',
     missingDevices: [],
   };
 
   // ----- 寄存器映射构建 -----
+  // 数据段（来自 selectedDevices）从 Reg[0] 起紧凑排列
+  // 控制段（来自 global.__modbusControl 注册的命令）固定从 Reg[60000] 起，与数据段地址解耦
+  const CONTROL_BASE_ADDR = 60000;
   function buildMapping() {
     mappingTable = [];
     let addr = 0;
     (cfg.selectedDevices || []).forEach(function (dev) {
       const params = Array.isArray(dev.params) ? dev.params : [];
       mappingTable.push({
+        segment: 'data',
         deviceId: dev.deviceId, deviceName: dev.deviceName,
         kind: 'DeviceStatus', paraName: '', addr: addr, len: 1, type: 'INT16', unit: '',
       });
       addr += 1;
       params.forEach(function (p) {
         mappingTable.push({
+          segment: 'data',
           deviceId: dev.deviceId, deviceName: dev.deviceName,
           kind: 'CurValue', paraName: p.paraName || '', addr: addr, len: 2, type: 'FLOAT32 BE', unit: p.unit || '',
         });
         addr += 2;
       });
     });
-    return addr; // 总寄存器数
+    const dataRegEnd = addr; // 数据段结束位置
+
+    // 控制段：固定起始地址 60000
+    const ctrlList = (global.__modbusControl && global.__modbusControl.getCommands())
+      ? global.__modbusControl.getCommands() : [];
+    ctrlList.forEach(function (c, idx) {
+      mappingTable.push({
+        segment: 'control',
+        deviceId: c.deviceId, deviceName: c.deviceName,
+        kind: 'ControlTrigger', paraName: c.commandName || '',
+        addr: CONTROL_BASE_ADDR + idx, len: 1, type: 'INT16',
+        unit: '',
+        controlId: c.controlId, controlIndex: idx,
+      });
+    });
+
+    status.dataRegCount = dataRegEnd;
+    status.controlBaseAddr = CONTROL_BASE_ADDR;
+    status.controlRegCount = ctrlList.length;
+    // 总 buffer 大小：覆盖到 max(数据段末尾, 控制段末尾)
+    return Math.max(dataRegEnd, CONTROL_BASE_ADDR + ctrlList.length);
   }
 
   function regsForDevice(dev) {
@@ -5972,10 +6169,14 @@ wssTcp.on('connection', function (ws) {
 
   function startServer() {
     if (netServer) stopServer();
-    if (!cfg.enabled) return;
-    if (!Array.isArray(cfg.selectedDevices) || cfg.selectedDevices.length === 0) {
-      status.lastError = '未选择设备';
-      appendLog('启动失败：未选择设备');
+    const ctrlEnabled = !!(global.__modbusControl && global.__modbusControl.isEnabled && global.__modbusControl.isEnabled());
+    // 任一模块启用即启动 server（共享同一端口）
+    if (!cfg.enabled && !ctrlEnabled) return;
+    const hasData = Array.isArray(cfg.selectedDevices) && cfg.selectedDevices.length > 0;
+    const hasCtrl = ctrlEnabled && global.__modbusControl.getCommands().length > 0;
+    if (!hasData && !hasCtrl) {
+      status.lastError = '未选择设备且无控制命令';
+      appendLog('启动失败：未选择设备且无控制命令');
       return;
     }
     const totalReg = buildMapping();
@@ -5992,6 +6193,23 @@ wssTcp.on('connection', function (ws) {
       appendLog(status.lastError);
       return;
     }
+
+    // 监听 master FC=06 / FC=16 写入：地址落在控制段（addr >= CONTROL_BASE_ADDR）就调控制模块
+    mbServer.on('postWriteSingleRegister', function (req) {
+      try {
+        const addr = req && req.body && req.body.address;
+        const val = req && req.body && req.body.value;
+        if (typeof addr !== 'number' || typeof val !== 'number') return;
+        if (addr < CONTROL_BASE_ADDR) return; // 数据段 / 保留段写入忽略
+        const ctrlIdx = addr - CONTROL_BASE_ADDR;
+        if (global.__modbusControl && global.__modbusControl.handleWrite) {
+          global.__modbusControl.handleWrite(ctrlIdx, val, addr, holding);
+        }
+      } catch (e) {
+        appendLog('postWriteSingleRegister 异常: ' + e.message);
+      }
+    });
+
     netServer.on('error', function (err) {
       status.lastError = err.message;
       status.running = false;
@@ -6004,7 +6222,8 @@ wssTcp.on('connection', function (ws) {
       status.deviceCount = cfg.selectedDevices.length;
       status.lastError = '';
       appendLog('Modbus TCP server listening on 0.0.0.0:' + cfg.port +
-        ' devices=' + status.deviceCount + ' regs=' + totalReg);
+        ' devices=' + status.deviceCount + ' dataReg=' + status.dataRegCount +
+        ' controlReg=' + status.controlRegCount + ' total=' + totalReg);
       schedulePoll();
     });
   }
@@ -6012,6 +6231,8 @@ wssTcp.on('connection', function (ws) {
   function schedulePoll() {
     if (pollTimer) clearTimeout(pollTimer);
     if (!cfg.enabled || !status.running) return;
+    // 没有数据设备时跳过轮询（仅控制功能不需要 dcim 周期拉取）
+    if (!Array.isArray(cfg.selectedDevices) || cfg.selectedDevices.length === 0) return;
     const tick = async function () {
       if (polling) {
         pollTimer = setTimeout(tick, 1000);
@@ -6105,6 +6326,10 @@ wssTcp.on('connection', function (ws) {
       });
     });
     status.missingDevices = missing;
+    // 通知 SNMP 模块把最新数据同步到 OID 树
+    if (global.__snmp && global.__snmp.syncFromHolding) {
+      try { global.__snmp.syncFromHolding(); } catch (_e) {}
+    }
   }
 
   function devBaseAddr(deviceId) {
@@ -6137,14 +6362,14 @@ wssTcp.on('connection', function (ws) {
       next.pollIntervalSec = s;
     }
     if (Array.isArray(b.selectedDevices)) {
-      // 验证寄存器总数 ≤ 60000
+      // 验证寄存器总数 ≤ 59000（控制段固定从 60000 起，留出余量避免重叠）
       let totalReg = 0;
       b.selectedDevices.forEach(function (d) {
         if (!d || !d.deviceId) return;
         totalReg += 1 + 2 * ((d.params || []).length);
       });
-      if (totalReg > 60000) {
-        return res.status(400).json({ ok: false, message: '寄存器总数 ' + totalReg + ' 超过 60000 上限' });
+      if (totalReg > 59000) {
+        return res.status(400).json({ ok: false, message: '数据段寄存器总数 ' + totalReg + ' 超过 59000 上限（控制段固定从 60000 起）' });
       }
       next.selectedDevices = b.selectedDevices.map(function (d) {
         return {
@@ -6168,6 +6393,10 @@ wssTcp.on('connection', function (ws) {
     // 自动重启 server
     stopServer();
     if (cfg.enabled) startServer();
+    // 通知 SNMP 重建 OID 树（设备列表变了，SNMP 那边的 oidList 也要跟着变）
+    if (global.__snmp && global.__snmp.rebuild) {
+      try { global.__snmp.rebuild(); } catch (_e) {}
+    }
     res.json({ ok: true, config: cfg, status: status });
   });
 
@@ -6215,14 +6444,627 @@ wssTcp.on('connection', function (ws) {
     res.end(buf);
   });
 
-  // 启动后如果已启用，自动起 server（等 setupProtoConv 就绪）
+  // 启动后如果已启用（或控制模块已启用），自动起 server
   setTimeout(function () {
-    if (cfg.enabled) {
+    const ctrlEnabled = !!(global.__modbusControl && global.__modbusControl.isEnabled && global.__modbusControl.isEnabled());
+    if (cfg.enabled || ctrlEnabled) {
       try { startServer(); } catch (e) { appendLog('自启失败：' + e.message); }
     }
     appendLog('Modbus 转发模块就绪 enabled=' + cfg.enabled + ' port=' + cfg.port +
-      ' devices=' + (cfg.selectedDevices || []).length);
-  }, 500);
+      ' devices=' + (cfg.selectedDevices || []).length + ' ctrlEnabled=' + ctrlEnabled);
+  }, 800);
+
+  // 暴露给控制转换 / SNMP 等子模块共享数据
+  global.__modbus = {
+    rebuild: function () {
+      try { stopServer(); startServer(); } catch (_e) {}
+    },
+    getStatus: function () { return status; },
+    getHolding: function () { return holding; },
+    getDataRegCount: function () { return status.dataRegCount || 0; },
+    getPort: function () { return cfg.port; },
+    getCfg: function () { return cfg; },               // SNMP 同步需要 selectedDevices
+    getMapping: function () { return mappingTable; },  // SNMP 用映射反查 holding 地址
+  };
+})();
+
+// ===== 协议转换 → Modbus TCP 控制转换 =====
+// 共用数据推送的 5020 server（不再独立监听）；控制段紧接数据段后面排列
+// master 用 FC=06 写 value=1 到映射地址 → 后端触发 SendControlCommandKey 下发到 dcim
+(function setupModbusControlBridge() {
+  const path = require('path');
+
+  const CONFIG_PATH = process.env.MODBUS_CTRL_CONFIG || path.join(__dirname, 'config', 'proto-conv-modbus-control.json');
+  const LOG_PATH = process.env.MODBUS_CTRL_LOG || path.join(__dirname, 'logs', 'proto-conv-modbus-control.log');
+
+  const defaults = {
+    enabled: false,
+    debounceSec: 2,
+    selectedCommands: [],
+  };
+
+  let cfg = JSON.parse(JSON.stringify(defaults));
+  function readCfg() {
+    try {
+      const raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+      cfg = Object.assign({}, defaults, raw);
+      if (!Array.isArray(cfg.selectedCommands)) cfg.selectedCommands = [];
+    } catch (_e) {
+      cfg = JSON.parse(JSON.stringify(defaults));
+    }
+    // 去掉历史遗留字段
+    delete cfg.port;
+  }
+  function writeCfg() {
+    try {
+      fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
+      const out = { enabled: !!cfg.enabled, debounceSec: cfg.debounceSec || 2, selectedCommands: cfg.selectedCommands || [] };
+      fs.writeFileSync(CONFIG_PATH, JSON.stringify(out, null, 2) + '\n', 'utf8');
+      try { fs.chmodSync(CONFIG_PATH, 0o600); } catch (_e) {}
+    } catch (err) { console.error('[modbus-ctrl] 写配置失败:', err.message); }
+  }
+  readCfg();
+
+  function localStamp() {
+    const d = new Date();
+    const pad = (n) => (n < 10 ? '0' + n : '' + n);
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' +
+      pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+  }
+  function appendLog(line) {
+    try {
+      fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true });
+      fs.appendFileSync(LOG_PATH, '[' + localStamp() + '] ' + line + '\n', 'utf8');
+    } catch (_e) {}
+  }
+
+  // 运行时
+  const lastFireMs = new Map();
+  const recentFires = [];
+  const status = {
+    commandCount: 0,
+    totalFires: 0,
+    debouncedCount: 0,
+    lastFireAt: '',
+    lastError: '',
+  };
+
+  // ----- 触发处理（由 setupModbusBridge 在 master 写入控制段时调用）-----
+  // ctrlIdx: 控制段内索引（从 0 开始）；fullAddr: 在 holding 里的真实地址；holding: data 模块的 holding buffer
+  function handleWrite(ctrlIdx, val, fullAddr, holding) {
+    try {
+      if (val !== 1) {
+        appendLog('ignore addr=' + fullAddr + ' val=' + val + '（非 1 写入）');
+        return;
+      }
+      const cmd = (cfg.selectedCommands || [])[ctrlIdx];
+      if (!cmd) {
+        appendLog('ignore addr=' + fullAddr + '（控制段索引 ' + ctrlIdx + ' 越界）');
+        return;
+      }
+      // 边沿清 0
+      if (holding && (fullAddr * 2 + 2) <= holding.length) {
+        holding.writeUInt16BE(0, fullAddr * 2);
+      }
+      // 去重
+      const now = Date.now();
+      const last = lastFireMs.get(cmd.controlId) || 0;
+      if (now - last < (cfg.debounceSec || 2) * 1000) {
+        status.debouncedCount += 1;
+        appendLog('DEBOUNCE addr=' + fullAddr + ' controlId=' + cmd.controlId);
+        return;
+      }
+      lastFireMs.set(cmd.controlId, now);
+      fireControl(cmd, fullAddr).catch(function (e) {
+        appendLog('fireControl 异常: ' + e.message);
+      });
+    } catch (e) {
+      appendLog('handleWrite 异常: ' + e.message);
+    }
+  }
+
+  async function fireControl(cmd, addr) {
+    const helper = global.__protoConv;
+    if (!helper || !helper.callUpstream) {
+      appendLog('FIRE addr=' + addr + ' fail: proto-conv 模块未就绪');
+      pushFire({ addr: addr, cmd: cmd, ok: false, status: 0, message: 'proto-conv 模块未就绪' });
+      return;
+    }
+    const userLsh = (helper.getCfg() && helper.getCfg().userLsh) || '1';
+    let r;
+    try {
+      r = await helper.callUpstream({
+        key: 'SendControlCommandKey',
+        method: 'POST',
+        body: { UserLsh: userLsh, DeviceId: cmd.deviceId, controlId: cmd.controlId },
+      });
+    } catch (e) {
+      r = { ok: false, status: 0, message: e.message };
+    }
+    pushFire({ addr: addr, cmd: cmd, ok: !!r.ok, status: r.status, message: r.message || '' });
+    appendLog('FIRE addr=' + addr + ' devId=' + cmd.deviceId +
+      ' controlId=' + cmd.controlId + ' ok=' + r.ok + ' httpStatus=' + r.status);
+  }
+
+  function pushFire(rec) {
+    status.totalFires += 1;
+    status.lastFireAt = localStamp();
+    recentFires.unshift({
+      ts: status.lastFireAt,
+      addr: rec.addr,
+      deviceId: rec.cmd.deviceId,
+      deviceName: rec.cmd.deviceName,
+      controlId: rec.cmd.controlId,
+      commandName: rec.cmd.commandName,
+      ok: rec.ok,
+      httpStatus: rec.status || 0,
+      message: rec.message || '',
+    });
+    if (recentFires.length > 20) recentFires.pop();
+  }
+
+  // status 聚合：合并自身 + setupModbusBridge 的 server 状态
+  function aggregateStatus() {
+    const dataStat = (global.__modbus && global.__modbus.getStatus && global.__modbus.getStatus()) || {};
+    return Object.assign({}, status, {
+      enabled: !!cfg.enabled,
+      running: !!dataStat.running,
+      port: dataStat.port || 0,
+      commandCount: (cfg.selectedCommands || []).length,
+      controlBaseAddr: dataStat.controlBaseAddr || 0,
+    });
+  }
+
+  // ----- 路由 -----
+  app.get('/api/proto-conv/modbus-control/config', function (_req, res) {
+    res.json({ ok: true, config: cfg, status: aggregateStatus(), recentFires: recentFires });
+  });
+
+  app.put('/api/proto-conv/modbus-control/config', function (req, res) {
+    const b = req.body || {};
+    const next = JSON.parse(JSON.stringify(cfg));
+    if (typeof b.enabled === 'boolean') next.enabled = b.enabled;
+    if (b.debounceSec != null) {
+      const s = Number(b.debounceSec) | 0;
+      if (s < 0 || s > 60) return res.status(400).json({ ok: false, message: 'debounceSec 范围 0-60' });
+      next.debounceSec = s;
+    }
+    if (Array.isArray(b.selectedCommands)) {
+      // 控制段地址空间：60000..65535，最多 5500 个命令
+      if (b.selectedCommands.length > 5500) {
+        return res.status(400).json({ ok: false, message: '命令总数 ' + b.selectedCommands.length + ' 超过 5500 上限（控制段地址空间 60000..65535）' });
+      }
+      next.selectedCommands = b.selectedCommands.map(function (d) {
+        return {
+          deviceId: String(d.deviceId == null ? '' : d.deviceId),
+          deviceName: String(d.deviceName == null ? '' : d.deviceName),
+          controlId: String(d.controlId == null ? '' : d.controlId),
+          commandName: String(d.commandName == null ? '' : d.commandName),
+          groupId: String(d.groupId == null ? '' : d.groupId),
+          groupName: String(d.groupName == null ? '' : d.groupName),
+          zonesubno: String(d.zonesubno == null ? '' : d.zonesubno),
+          zonesubname: String(d.zonesubname == null ? '' : d.zonesubname),
+        };
+      });
+    }
+    cfg = next;
+    writeCfg();
+    appendLog('配置已更新 enabled=' + cfg.enabled +
+      ' debounce=' + cfg.debounceSec + 's commands=' + cfg.selectedCommands.length);
+    // 通知 setupModbusBridge 重建 holding 大小 + 重新映射控制段
+    if (global.__modbus && global.__modbus.rebuild) global.__modbus.rebuild();
+    // 通知 SNMP 重建 OID 树（控制项变了，控制段 OID 也要跟着变）
+    if (global.__snmp && global.__snmp.rebuild) global.__snmp.rebuild();
+    res.json({ ok: true, config: cfg, status: aggregateStatus() });
+  });
+
+  app.post('/api/proto-conv/modbus-control/start', function (_req, res) {
+    cfg.enabled = true; writeCfg();
+    if (global.__modbus && global.__modbus.rebuild) global.__modbus.rebuild();
+    if (global.__snmp && global.__snmp.rebuild) global.__snmp.rebuild();
+    res.json({ ok: true, status: aggregateStatus(), message: status.lastError || '' });
+  });
+
+  app.post('/api/proto-conv/modbus-control/stop', function (_req, res) {
+    cfg.enabled = false; writeCfg();
+    if (global.__modbus && global.__modbus.rebuild) global.__modbus.rebuild();
+    if (global.__snmp && global.__snmp.rebuild) global.__snmp.rebuild();
+    res.json({ ok: true, status: aggregateStatus() });
+  });
+
+  app.get('/api/proto-conv/modbus-control/status', function (_req, res) {
+    res.json({ ok: true, status: aggregateStatus(), recentFires: recentFires });
+  });
+
+  app.get('/api/proto-conv/modbus-control/map.csv', function (_req, res) {
+    const dataStat = (global.__modbus && global.__modbus.getStatus && global.__modbus.getStatus()) || {};
+    const baseAddr = dataStat.controlBaseAddr || 0;
+    const lines = ['序号,寄存器地址,区域,分组,设备名称,控制项名称,controlId,DeviceId'];
+    const csvEsc = function (s) {
+      s = String(s == null ? '' : s);
+      if (/[",\n]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+      return s;
+    };
+    (cfg.selectedCommands || []).forEach(function (c, i) {
+      lines.push([
+        csvEsc(i + 1), csvEsc(baseAddr + i),
+        csvEsc(c.zonesubname), csvEsc(c.groupName),
+        csvEsc(c.deviceName), csvEsc(c.commandName),
+        csvEsc(c.controlId), csvEsc(c.deviceId),
+      ].join(','));
+    });
+    const buf = Buffer.from('﻿' + lines.join('\r\n'), 'utf8');
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="modbus-control-map.csv"');
+    res.end(buf);
+  });
+
+  // 暴露给 setupModbusBridge 使用
+  global.__modbusControl = {
+    isEnabled: function () { return !!cfg.enabled; },
+    getCommands: function () { return cfg.selectedCommands || []; },
+    getDebounceSec: function () { return cfg.debounceSec || 2; },
+    handleWrite: handleWrite,
+    getStatus: function () { return status; },
+  };
+
+  appendLog('Modbus 控制转换模块就绪 enabled=' + cfg.enabled +
+    ' commands=' + (cfg.selectedCommands || []).length);
+})();
+
+// ===== 协议转换 → SNMP v2c 转发 =====
+// 把 dcim 设备数据 + 控制项暴露成 SNMP OID 树
+// 数据来源复用 setupModbusBridge.cfg.selectedDevices；控制 SET 复用 setupModbusControlBridge.handleWrite
+// 数据更新由 setupModbusBridge.pollOnce 末尾调 global.__snmp.syncFromHolding() 触发
+(function setupSnmpAgent() {
+  const path = require('path');
+  let snmp;
+  try { snmp = require('net-snmp'); }
+  catch (_e) { console.error('[snmp] net-snmp 未安装，SNMP 转发功能不可用'); return; }
+
+  const ENTERPRISE = '1.3.6.1.4.1.99999';
+  const CONFIG_PATH = process.env.SNMP_CONFIG || path.join(__dirname, 'config', 'proto-conv-snmp.json');
+  const LOG_PATH = process.env.SNMP_LOG || path.join(__dirname, 'logs', 'proto-conv-snmp.log');
+
+  const defaults = {
+    enabled: false,
+    port: 16162,
+    readCommunity: 'public',
+    writeCommunity: 'private',
+    enableSet: true,
+    ipWhitelist: [],
+  };
+
+  let cfg = JSON.parse(JSON.stringify(defaults));
+  function readCfg() {
+    try {
+      const raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+      cfg = Object.assign({}, defaults, raw);
+      if (!Array.isArray(cfg.ipWhitelist)) cfg.ipWhitelist = [];
+    } catch (_e) {
+      cfg = JSON.parse(JSON.stringify(defaults));
+    }
+  }
+  function writeCfg() {
+    try {
+      fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
+      fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+      try { fs.chmodSync(CONFIG_PATH, 0o600); } catch (_e) {}
+    } catch (err) { console.error('[snmp] 写配置失败:', err.message); }
+  }
+  readCfg();
+
+  function localStamp() {
+    const d = new Date();
+    const pad = (n) => (n < 10 ? '0' + n : '' + n);
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' +
+      pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+  }
+  function appendLog(line) {
+    try {
+      fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true });
+      fs.appendFileSync(LOG_PATH, '[' + localStamp() + '] ' + line + '\n', 'utf8');
+    } catch (_e) {}
+  }
+
+  // 运行时
+  let agent = null;
+  let mib = null;
+  let oidList = []; // [{ oid, type:'Integer'|'OctetString', kind, deviceId, deviceName, paraName, unit, controlIndex? }]
+  const status = {
+    running: false,
+    port: 0,
+    oidCount: 0,
+    deviceCount: 0,
+    commandCount: 0,
+    setCount: 0,
+    lastSyncAt: '',
+    lastSetAt: '',
+    lastError: '',
+  };
+
+  function provName(oid) { return 'oid_' + oid.replace(/\./g, '_'); }
+
+  // ----- OID 树构建 -----
+  function buildOidTree() {
+    oidList = [];
+    const mbCfg = (global.__modbus && global.__modbus.getCfg && global.__modbus.getCfg()) || {};
+    const ctrlCmds = (global.__modbusControl && global.__modbusControl.getCommands && global.__modbusControl.getCommands()) || [];
+    const devices = mbCfg.selectedDevices || [];
+
+    devices.forEach(function (dev, di) {
+      const idx = di + 1;
+      oidList.push({
+        oid: ENTERPRISE + '.1.' + idx + '.0.0',
+        type: 'Integer', kind: 'DeviceStatus',
+        deviceId: dev.deviceId, deviceName: dev.deviceName, paraName: '',
+      });
+      (dev.params || []).forEach(function (p, pi) {
+        const pidx = pi + 1;
+        oidList.push({
+          oid: ENTERPRISE + '.1.' + idx + '.2.' + pidx + '.0',
+          type: 'Integer', kind: 'CurValueX10',
+          deviceId: dev.deviceId, deviceName: dev.deviceName, paraName: p.paraName, unit: p.unit || '',
+        });
+      });
+    });
+    ctrlCmds.forEach(function (c, ci) {
+      const idx = ci + 1;
+      oidList.push({
+        oid: ENTERPRISE + '.2.' + idx + '.0',
+        type: 'Integer', kind: 'ControlTrigger',
+        deviceId: c.deviceId, deviceName: c.deviceName,
+        paraName: c.commandName, controlId: c.controlId, controlIndex: idx,
+      });
+    });
+    status.oidCount = oidList.length;
+    status.deviceCount = devices.length;
+    status.commandCount = ctrlCmds.length;
+  }
+
+  // ----- 启停 -----
+  function stopAgent() {
+    if (agent) {
+      try { agent.close(); } catch (_e) {}
+      agent = null;
+      mib = null;
+    }
+    status.running = false;
+    status.port = 0;
+    appendLog('SNMP agent stopped');
+  }
+
+  function startAgent() {
+    if (agent) stopAgent();
+    if (!cfg.enabled) return;
+    buildOidTree();
+    if (oidList.length === 0) {
+      status.lastError = '无可暴露的 OID（未在 Modbus 转发选设备 + 未在 Modbus 控制转换选命令）';
+      appendLog('启动失败：' + status.lastError);
+      return;
+    }
+
+    try {
+      agent = snmp.createAgent({
+        port: cfg.port, address: '0.0.0.0', transport: 'udp4',
+        disableAuthorization: false,
+        accessControlModelType: snmp.AccessControlModelType.Simple,
+      }, function (err, data) {
+        if (err) {
+          status.lastError = err.message;
+          appendLog('agent error: ' + err.message);
+          return;
+        }
+        // IP 白名单（应用层兜底，正式靠防火墙）
+        if (cfg.ipWhitelist && cfg.ipWhitelist.length) {
+          const srcIp = data && data.rinfo && data.rinfo.address;
+          if (cfg.ipWhitelist.indexOf(srcIp) < 0) {
+            appendLog('IP 拦截 src=' + srcIp);
+            return; // 不回包
+          }
+        }
+      }, snmp.createMib());
+    } catch (e) {
+      status.lastError = '构造 SNMP agent 失败：' + e.message;
+      appendLog(status.lastError);
+      return;
+    }
+
+    // community + 权限（注意：addCommunity 默认 ReadOnly，必须 setCommunityAccess 覆盖）
+    const auth = agent.getAuthorizer();
+    auth.addCommunity(cfg.readCommunity);
+    if (cfg.enableSet && cfg.writeCommunity && cfg.writeCommunity !== cfg.readCommunity) {
+      auth.addCommunity(cfg.writeCommunity);
+      auth.getAccessControlModel().setCommunityAccess(cfg.writeCommunity, snmp.AccessLevel.ReadWrite);
+    }
+
+    mib = agent.getMib();
+    oidList.forEach(function (item) {
+      const provOid = item.oid.replace(/\.0$/, '');
+      const name = provName(item.oid);
+
+      if (item.kind === 'ControlTrigger') {
+        if (!cfg.enableSet) return; // 关 SET 时不注册控制 OID
+        mib.registerProvider({
+          name: name,
+          type: snmp.MibProviderType.Scalar,
+          oid: provOid,
+          scalarType: snmp.ObjectType.Integer,
+          maxAccess: snmp.MaxAccess['read-write'],
+          handler: function (req) {
+            try {
+              if (req.operation === snmp.PduType.SetRequest) {
+                const v = req.setValue;
+                status.lastSetAt = localStamp();
+                status.setCount += 1;
+                appendLog('SET oid=' + item.oid + ' value=' + v + ' commandName=' + item.paraName);
+                if (v === 1 && global.__modbusControl && global.__modbusControl.handleWrite) {
+                  // 复用 modbus 控制的 handleWrite：addr 用 -1 表示来自 SNMP
+                  global.__modbusControl.handleWrite(item.controlIndex - 1, 1, -1, null);
+                }
+              }
+            } catch (e) { appendLog('SET handler 异常: ' + e.message); }
+            req.done();
+          },
+        });
+        mib.setScalarValue(name, 0);
+      } else {
+        const isInt = item.type === 'Integer';
+        mib.registerProvider({
+          name: name,
+          type: snmp.MibProviderType.Scalar,
+          oid: provOid,
+          scalarType: isInt ? snmp.ObjectType.Integer : snmp.ObjectType.OctetString,
+          maxAccess: snmp.MaxAccess['read-only'],
+        });
+        const initVal = isInt ? 0
+          : (item.kind === 'DeviceName' ? (item.deviceName || '') : (item.paraName || ''));
+        mib.setScalarValue(name, initVal);
+      }
+    });
+
+    status.running = true;
+    status.port = cfg.port;
+    status.lastError = '';
+    appendLog('SNMP agent listening on udp/' + cfg.port + ' oids=' + oidList.length +
+      ' devices=' + status.deviceCount + ' controls=' + status.commandCount);
+    syncFromHolding();
+  }
+
+  // ----- 数据同步（被 setupModbusBridge.pollOnce 末尾调用）-----
+  function syncFromHolding() {
+    if (!agent || !mib) return;
+    const holding = global.__modbus && global.__modbus.getHolding && global.__modbus.getHolding();
+    const mapping = global.__modbus && global.__modbus.getMapping && global.__modbus.getMapping();
+    const mbCfg = global.__modbus && global.__modbus.getCfg && global.__modbus.getCfg();
+    if (!holding || !mapping || !mbCfg) return;
+
+    // 按 deviceId 把 mapping 数据段条目分组，便于关联到 OID 索引
+    const dataByDevice = {};
+    mapping.forEach(function (m) {
+      if (m.segment !== 'data') return;
+      (dataByDevice[m.deviceId] = dataByDevice[m.deviceId] || []).push(m);
+    });
+
+    (mbCfg.selectedDevices || []).forEach(function (dev, di) {
+      const idx = di + 1;
+      const items = dataByDevice[dev.deviceId] || [];
+      items.forEach(function (m) {
+        if (m.kind === 'DeviceStatus') {
+          if ((m.addr + 1) * 2 > holding.length) return;
+          const v = holding.readInt16BE(m.addr * 2);
+          setOidInt(ENTERPRISE + '.1.' + idx + '.0.0', v);
+        } else if (m.kind === 'CurValue') {
+          if ((m.addr + 2) * 2 > holding.length) return;
+          const f = holding.readFloatBE(m.addr * 2);
+          const intVal = Number.isFinite(f) ? Math.round(f * 10) : -1;
+          // 通过 paraName 反查在 dev.params 里的下标
+          const pi = (dev.params || []).findIndex(function (p) { return p.paraName === m.paraName; });
+          if (pi >= 0) setOidInt(ENTERPRISE + '.1.' + idx + '.2.' + (pi + 1) + '.0', intVal);
+        }
+      });
+    });
+    status.lastSyncAt = localStamp();
+  }
+  function setOidInt(oid, val) {
+    if (!mib) return;
+    const name = provName(oid);
+    try {
+      const clamped = Math.max(-2147483648, Math.min(2147483647, val | 0));
+      mib.setScalarValue(name, clamped);
+    } catch (_e) {}
+  }
+
+  // ----- 状态聚合 -----
+  function aggregateStatus() {
+    return Object.assign({}, status, { enabled: !!cfg.enabled });
+  }
+
+  // ----- 路由 -----
+  app.get('/api/proto-conv/snmp/config', function (_req, res) {
+    res.json({ ok: true, config: cfg, status: aggregateStatus() });
+  });
+
+  app.put('/api/proto-conv/snmp/config', function (req, res) {
+    const b = req.body || {};
+    const next = JSON.parse(JSON.stringify(cfg));
+    if (typeof b.enabled === 'boolean') next.enabled = b.enabled;
+    if (typeof b.enableSet === 'boolean') next.enableSet = b.enableSet;
+    if (b.port != null) {
+      const p = Number(b.port) | 0;
+      if (p < 1 || p > 65535) return res.status(400).json({ ok: false, message: 'port 范围 1-65535' });
+      next.port = p;
+    }
+    if (typeof b.readCommunity === 'string') next.readCommunity = b.readCommunity.trim() || 'public';
+    if (typeof b.writeCommunity === 'string') next.writeCommunity = b.writeCommunity.trim() || 'private';
+    if (Array.isArray(b.ipWhitelist)) {
+      next.ipWhitelist = b.ipWhitelist
+        .map(function (s) { return String(s == null ? '' : s).trim(); })
+        .filter(Boolean);
+    }
+    cfg = next;
+    writeCfg();
+    appendLog('配置已更新 enabled=' + cfg.enabled + ' port=' + cfg.port +
+      ' read=' + cfg.readCommunity + ' write=' + cfg.writeCommunity +
+      ' enableSet=' + cfg.enableSet + ' whitelist=' + cfg.ipWhitelist.length);
+    stopAgent();
+    if (cfg.enabled) startAgent();
+    res.json({ ok: true, config: cfg, status: aggregateStatus() });
+  });
+
+  app.post('/api/proto-conv/snmp/start', function (_req, res) {
+    cfg.enabled = true; writeCfg();
+    stopAgent(); startAgent();
+    res.json({ ok: status.running, status: aggregateStatus(), message: status.lastError || '' });
+  });
+
+  app.post('/api/proto-conv/snmp/stop', function (_req, res) {
+    cfg.enabled = false; writeCfg();
+    stopAgent();
+    res.json({ ok: true, status: aggregateStatus() });
+  });
+
+  app.get('/api/proto-conv/snmp/status', function (_req, res) {
+    res.json({ ok: true, status: aggregateStatus() });
+  });
+
+  app.get('/api/proto-conv/snmp/map.csv', function (_req, res) {
+    // 总是基于当前 modbus.selectedDevices 重建，避免 modbus 改了设备但 SNMP CSV 还显示旧的
+    buildOidTree();
+    const lines = ['OID,类型,字段,设备名称,参数名,单位,controlId'];
+    const csvEsc = function (s) {
+      s = String(s == null ? '' : s);
+      if (/[",\n]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+      return s;
+    };
+    oidList.forEach(function (o) {
+      lines.push([
+        csvEsc(o.oid), csvEsc(o.type), csvEsc(o.kind),
+        csvEsc(o.deviceName), csvEsc(o.paraName), csvEsc(o.unit || ''),
+        csvEsc(o.controlId || ''),
+      ].join(','));
+    });
+    const buf = Buffer.from('﻿' + lines.join('\r\n'), 'utf8');
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="snmp-oid-map.csv"');
+    res.end(buf);
+  });
+
+  // 自启（等 modbus / modbusControl 先就绪）
+  setTimeout(function () {
+    if (cfg.enabled) {
+      try { startAgent(); } catch (e) { appendLog('自启失败: ' + e.message); }
+    }
+    appendLog('SNMP 模块就绪 enabled=' + cfg.enabled + ' port=' + cfg.port);
+  }, 1200);
+
+  global.__snmp = {
+    syncFromHolding: syncFromHolding,
+    isEnabled: function () { return !!cfg.enabled; },
+    rebuild: function () {
+      try { stopAgent(); if (cfg.enabled) startAgent(); } catch (_e) {}
+    },
+  };
 })();
 
 const port = Number(process.env.PORT || 3000);

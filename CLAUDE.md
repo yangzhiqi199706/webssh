@@ -725,4 +725,126 @@ mbpoll -m tcp -p 5020 -a 1 -t 4 -r 0 -c 20 127.0.0.1
 # 或 ModScan / Modbus Poll，FC=03，地址按映射 CSV
 ```
 
+### 9.9 Modbus TCP 控制转换（2026-06-04 新增）
+
+把 dcim 8082 的 `SendControlCommandKey` 反向暴露成 Modbus TCP 写寄存器接口：
+master 用 FC=06 写 `value=1` 到映射地址 → 后端触发对应 controlId 下发到 dcim。
+
+**端口**：与「Modbus 转发」**共用 5020**（不再独立监听 5021）。上位机一个 TCP 连接同时读数据 + 写控制。
+
+**配置文件**：`config/proto-conv-modbus-control.json`，UI 写入，chmod 0600，**不入 git**。schema：
+```json
+{
+  "enabled": false,
+  "debounceSec": 2,
+  "selectedCommands": [
+    { "deviceId": "1", "deviceName": "CIM1机房1#温湿度",
+      "controlId": "2182", "commandName": "CIM1机房1#温湿度温度控制",
+      "groupId": "1", "groupName": "温湿度组",
+      "zonesubno": "2", "zonesubname": "CIM1机房" }
+  ]
+}
+```
+
+**寄存器布局（控制段固定起始地址 60000）**：
+- 数据段从 `Reg[0]` 起紧凑排列（数据模块所有已选设备的总寄存器数 ≤ 59000）
+- 控制段固定从 `Reg[60000]` 起：`selectedCommands[i]` → `Reg[60000+i]`
+- 数据段与控制段地址完全解耦：master 端的控制地址不受数据段大小变化影响
+- 中间未用区域（`Reg[N..59999]`）在 holding buffer 里全 0，master 读到 0
+- master 写 `value=1` 触发；写其他值忽略；触发后 server 立即清回 0（边沿触发）
+- 同一 controlId 在 `debounceSec` 秒内重复触发被忽略
+
+**地址空间预算**：
+- 数据段上限 59000 寄存器
+- 控制段从 60000 起，到 65535，最多 5500 个控制命令
+
+**两个模块协同（同一进程内）**：
+- `setupModbusBridge`（数据）持有唯一的 jsmodbus server + holding buffer，listen 5020
+- `setupModbusControlBridge`（控制）暴露 `global.__modbusControl`：`isEnabled / getCommands / handleWrite`
+- 数据模块 `buildMapping()` 把控制段 append 进 holding；启动后注册 `postWriteSingleRegister` 监听器
+- master 写控制段地址时，数据模块 dispatch 到 `global.__modbusControl.handleWrite(ctrlIdx, val, fullAddr, holding)`
+- 控制模块 PUT 配置后调 `global.__modbus.rebuild()` 重启 server，让 holding 大小匹配新映射
+- 任一模块 enabled=true 即启动 5020 server；都 disabled 时 server 关闭
+
+**复用**：通过 `global.__protoConv.callUpstream` 共用 setupProtoConv 的 cookieJar 和登录态。
+
+**路由清单（server.js setupModbusControlBridge IIFE）**：
+| 路由 | 用途 |
+| -- | -- |
+| `GET  /api/proto-conv/modbus-control/config`  | 读配置 + 聚合状态（含 controlBaseAddr）+ 最近 20 条触发记录 |
+| `PUT  /api/proto-conv/modbus-control/config`  | 保存（含 selectedCommands）；自动调 `__modbus.rebuild()` |
+| `POST /api/proto-conv/modbus-control/start`   | 显式启用，rebuild server |
+| `POST /api/proto-conv/modbus-control/stop`    | 显式停用，rebuild server |
+| `GET  /api/proto-conv/modbus-control/status`  | 实时状态（enabled / running / port / controlBaseAddr / commandCount / totalFires / debouncedCount / lastFireAt / lastError）+ recentFires |
+| `GET  /api/proto-conv/modbus-control/map.csv` | 映射表 CSV，地址 = controlBaseAddr + i |
+
+**字段名注意**：dcim 后端 `SendControlCommandKey` 字段是 `controlId`（小写 c）。
+
+**日志**：`logs/proto-conv-modbus-control.log`。
+
+**验证**（用 jsmodbus client，先 GET status 拿到 controlBaseAddr）：
+```js
+const r = await client.writeSingleRegister(controlBaseAddr, 1);  // 触发第 1 个控制命令
+```
+
+### 9.10 SNMP v2c 转发（2026-06-05 新增）
+
+把 dcim 8082 设备数据 + 控制项暴露成 SNMP v2c OID 树：master 用 GET 周期查温湿度等参数，用 SET 触发控制下发。
+
+- **库**：`net-snmp@3.9.7`（**注意：不能用 3.10+/4.x，它们用了 ES2020 `?.` `??` 语法，Node 12.22.12 SyntaxError**）
+- **协议**：仅 v2c；不做 v1/v3/trap
+- **端口**：默认 udp/16162（UI 可改；161 需 root）
+- **配置**：`config/proto-conv-snmp.json`（chmod 0600，不入 git）
+- **数据来源**：复用 `setupModbusBridge.cfg.selectedDevices`（不重复维护）
+- **控制 SET**：复用 `setupModbusControlBridge.handleWrite`（共享 2 秒去重 + 触发记录，addr 字段填 -1 表示来自 SNMP）
+
+**OID 树**（前缀 `1.3.6.1.4.1.99999`）：
+```
+.1.<deviceIdx>.0.0          INTEGER       DeviceStatus (1=在线 / 0=离线 / -1=未知)
+.1.<deviceIdx>.1.0          OCTET STRING  设备名（调试用）
+.1.<deviceIdx>.2.<paraIdx>.0  INTEGER     CurValue × 10（master 除 10 还原；NaN→-1）
+.1.<deviceIdx>.3.<paraIdx>.0  OCTET STRING 参数名（调试用）
+.2.<cmdIdx>.0               INTEGER       ControlTrigger（写 1 触发 controlId）
+```
+
+**数据更新流**：`setupModbusBridge.pollOnce` 末尾调 `global.__snmp.syncFromHolding()` → SNMP 模块从 modbus 的 holding buffer 读 INT16/FLOAT32 转 INTEGER×10 → `mib.setScalarValue()` 写入 OID 树。
+
+**鉴权关键点（坑过一次）**：net-snmp 3.9.7 的 `Authorizer.addCommunity(name)` **永远初始化 ReadOnly**，不接 accessLevel 参数。要给 community 写权限必须**显式覆盖**：
+```js
+auth.addCommunity('private');  // 先注册（ReadOnly）
+auth.getAccessControlModel().setCommunityAccess('private', snmp.AccessLevel.ReadWrite);  // ★ 覆盖为 RW
+```
+provider 注册必须显式给 `maxAccess`，否则默认 not-accessible 连 GET 都失败。
+
+**IP 白名单**：UI 配置数组，空 = 不限制。后端在 createAgent 的 callback 中读 `data.rinfo.address` 校验，不在白名单不回包（应用层兜底，正式靠 firewalld）。
+
+**路由清单（server.js setupSnmpAgent IIFE）**：
+| 路由 | 用途 |
+| -- | -- |
+| `GET  /api/proto-conv/snmp/config`  | 读配置 + 状态 |
+| `PUT  /api/proto-conv/snmp/config`  | 保存（含 enabled/port/community/whitelist）；自动重启 agent |
+| `POST /api/proto-conv/snmp/start`   | 显式启用 |
+| `POST /api/proto-conv/snmp/stop`    | 显式停用 |
+| `GET  /api/proto-conv/snmp/status`  | enabled / running / port / oidCount / setCount / lastSyncAt / lastSetAt / lastError |
+| `GET  /api/proto-conv/snmp/map.csv` | OID 映射 CSV：OID / 类型 / 字段 / 设备 / 参数 / 单位 / controlId |
+
+**日志**：`logs/proto-conv-snmp.log`。
+
+**验证**（snmpwalk / snmpset）：
+```bash
+# 读所有数据
+snmpwalk -v2c -c public 127.0.0.1:16162 .1.3.6.1.4.1.99999.1
+
+# 读单个 OID
+snmpget -v2c -c public 127.0.0.1:16162 .1.3.6.1.4.1.99999.1.1.0.0
+
+# SET 触发控制
+snmpset -v2c -c private 127.0.0.1:16162 .1.3.6.1.4.1.99999.2.1.0 i 1
+```
+或用 net-snmp client：
+```js
+const session = snmp.createSession('127.0.0.1', 'public', { port: 16162, version: snmp.Version2c });
+session.subtree('1.3.6.1.4.1.99999', vbs => console.log(vbs), () => session.close());
+```
+
 
