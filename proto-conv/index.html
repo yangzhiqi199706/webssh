@@ -290,6 +290,7 @@
       <button class="btn modbus" id="btnOpenSnmp" type="button"><span class="dot off" id="snmpDot"></span>SNMP 转发</button>
       <button class="btn" id="btnLogin" type="button">登录</button>
       <button class="btn" id="btnTest" type="button">连接测试</button>
+      <button class="btn" id="btnToggleProtocol" type="button" title="切换 baseUrl 的协议头（HTTPS ↔ HTTP）">协议: ?</button>
       <button class="btn primary" id="btnOpenConfig" type="button">连接信息</button>
     </header>
 
@@ -361,6 +362,16 @@
           <span>pathMap JSON</span>
           <textarea id="cfgPathMap" placeholder='{}' rows="4"></textarea>
         </label>
+
+        <div class="section-title">dcim 数据库（可选，用于补全区域名）</div>
+        <div class="hint" style="margin-bottom:6px">填写后扫描设备时会直接读 <code class="k">dcim-area</code> 表，避免 GetNewAllAreasKey 接口返回不全导致的「未知区域」。留空则仅使用接口返回。</div>
+        <div class="form-grid">
+          <label class="field"><span>主机</span><input id="cfgDbHost" type="text" placeholder="192.168.10.110" /></label>
+          <label class="field"><span>端口</span><input id="cfgDbPort" type="number" min="1" max="65535" placeholder="3333" /></label>
+          <label class="field"><span>账号</span><input id="cfgDbUser" type="text" placeholder="root" autocomplete="off" /></label>
+          <label class="field"><span>密码<span class="note">留空保持原值</span></span><input id="cfgDbPwd" type="password" placeholder="留空保持原值" autocomplete="new-password" /></label>
+          <label class="field span-2"><span>数据库名</span><input id="cfgDbName" type="text" placeholder="dcim" /></label>
+        </div>
 
         <div class="actions">
           <button class="btn primary" id="btnCfgSave" type="button">保存并应用</button>

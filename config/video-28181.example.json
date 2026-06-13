@@ -1,0 +1,20 @@
+{
+  "sip": {
+    "serverId": "34020000002000000001",
+    "serverDomain": "3402000000",
+    "localPort": 5060,
+    "transport": "UDP",
+    "authPwd": "12345678",
+    "keepaliveInterval": 60,
+    "keepaliveTimeout": 3,
+    "registerExpires": 3600,
+    "protocolVersion": "GB/T28181-2016",
+    "streamIndex": "main",
+    "whitelist": []
+  },
+  "zlm": {
+    "apiBase": "http://127.0.0.1:8000",
+    "secret": "",
+    "publicHost": ""
+  }
+}
