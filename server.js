@@ -105,7 +105,7 @@ function isAuthed(req) {
   return exp && exp > Date.now();
 }
 
-app.use(express.json({ limit: '32kb' }));
+app.use(express.json({ limit: '16mb' }));
 
 app.post('/api/auth/login', function (req, res) {
   const body = req.body || {};
@@ -1697,7 +1697,7 @@ wssTcp.on('connection', function (ws) {
     };
   }
 
-  app.use(express.json({ limit: '32kb' }));
+  app.use(express.json({ limit: '16mb' }));
 
   app.get('/api/docker-restart/config', function (_req, res) {
     res.json(publicState());
@@ -5712,6 +5712,8 @@ wssTcp.on('connection', function (ws) {
   const path = require('path');
   const https = require('https');
   const httpMod = require('http');
+  let mysql2;
+  try { mysql2 = require('mysql2/promise'); } catch (_e) { mysql2 = null; }
 
   const CONFIG_PATH = process.env.PROTOCONV_CONFIG || path.join(__dirname, 'config', 'proto-conv.json');
   const LOG_PATH = process.env.PROTOCONV_LOG || path.join(__dirname, 'logs', 'proto-conv.log');
@@ -5723,6 +5725,10 @@ wssTcp.on('connection', function (ws) {
     userLsh: '1',
     timeoutMs: 8000,
     pathMap: {},
+    // 可选：dcim 数据库直查区域名（兜底，因 GetNewAllAreasKey 接口在某些 dcim 版本返回不全）
+    dcimDb: {
+      host: '', port: 3333, user: '', password: '', database: 'dcim',
+    },
   };
 
   function deepMerge(target, src) {
@@ -5756,6 +5762,7 @@ wssTcp.on('connection', function (ws) {
     }
   }
   function redactCfg() {
+    const db = cfg.dcimDb || {};
     return {
       baseUrl: cfg.baseUrl,
       userName: cfg.userName,
@@ -5764,6 +5771,14 @@ wssTcp.on('connection', function (ws) {
       userLsh: cfg.userLsh,
       timeoutMs: cfg.timeoutMs,
       pathMap: cfg.pathMap || {},
+      dcimDb: {
+        host: db.host || '',
+        port: db.port || 3333,
+        user: db.user || '',
+        password: '***',
+        hasPassword: !!(db.password && db.password !== ''),
+        database: db.database || 'dcim',
+      },
     };
   }
   readCfg();
@@ -5910,6 +5925,17 @@ wssTcp.on('connection', function (ws) {
     if (typeof b.passWord === 'string' && b.passWord !== '' && b.passWord !== '***') {
       next.passWord = b.passWord;
     }
+    // dcimDb 可选配置
+    if (b.dcimDb && typeof b.dcimDb === 'object') {
+      next.dcimDb = next.dcimDb || {};
+      if (typeof b.dcimDb.host === 'string')     next.dcimDb.host = b.dcimDb.host.trim();
+      if (b.dcimDb.port != null)                 next.dcimDb.port = Math.max(1, Math.min(65535, Number(b.dcimDb.port) || 3333));
+      if (typeof b.dcimDb.user === 'string')     next.dcimDb.user = b.dcimDb.user.trim();
+      if (typeof b.dcimDb.database === 'string') next.dcimDb.database = b.dcimDb.database.trim() || 'dcim';
+      if (typeof b.dcimDb.password === 'string' && b.dcimDb.password !== '' && b.dcimDb.password !== '***') {
+        next.dcimDb.password = b.dcimDb.password;
+      }
+    }
     if (!next.baseUrl) return res.status(400).json({ ok: false, message: 'baseUrl 必填' });
     if (!next.userName) return res.status(400).json({ ok: false, message: 'userName 必填' });
     try { new URL(next.baseUrl); }
@@ -5957,6 +5983,36 @@ wssTcp.on('connection', function (ws) {
     sock.on('connect', function () { finish(true, urlObj.hostname + ':' + port + ' TCP 连通'); });
     sock.on('timeout', function () { finish(false, urlObj.hostname + ':' + port + ' 连接超时'); });
     sock.on('error', function (err) { finish(false, urlObj.hostname + ':' + port + ' ' + err.message); });
+  });
+
+  // 直连 dcim 数据库读 dcim-area 表，作为 Zonesubno → Zonesubname 的兜底（GetNewAllAreasKey 接口在某些 dcim 版本返回不全）
+  app.get('/api/proto-conv/area-map', async function (_req, res) {
+    const db = cfg.dcimDb || {};
+    if (!db.host || !db.user || !db.password) {
+      return res.json({ ok: true, source: 'none', map: {}, message: 'dcim 数据库未配置' });
+    }
+    if (!mysql2) {
+      return res.json({ ok: false, source: 'none', map: {}, message: 'mysql2 模块未安装' });
+    }
+    let conn;
+    try {
+      conn = await mysql2.createConnection({
+        host: db.host, port: Number(db.port) || 3333,
+        user: db.user, password: db.password,
+        database: db.database || 'dcim',
+        connectTimeout: 5000,
+      });
+      const [rows] = await conn.query('SELECT id, AreaName FROM `dcim-area` WHERE status=1 ORDER BY id');
+      const map = {};
+      rows.forEach(function (r) { map[String(r.id)] = String(r.AreaName == null ? '' : r.AreaName); });
+      appendLog('area-map: 从 dcim-area 表读到 ' + rows.length + ' 个区域');
+      res.json({ ok: true, source: 'db', map: map, count: rows.length });
+    } catch (e) {
+      appendLog('area-map: dcim 数据库查询失败 ' + e.message);
+      res.json({ ok: false, source: 'db', map: {}, message: e.message });
+    } finally {
+      try { if (conn) await conn.end(); } catch (_e) {}
+    }
   });
 
   app.post('/api/proto-conv/invoke', async function (req, res) {
@@ -6380,7 +6436,11 @@ wssTcp.on('connection', function (ws) {
           zonesubno: String(d.zonesubno == null ? '' : d.zonesubno),
           zonesubname: String(d.zonesubname == null ? '' : d.zonesubname),
           params: Array.isArray(d.params) ? d.params.map(function (p) {
-            return { paraName: String(p.paraName == null ? '' : p.paraName), unit: String(p.unit == null ? '' : p.unit) };
+            return {
+              paraName: String(p.paraName == null ? '' : p.paraName),
+              unit: String(p.unit == null ? '' : p.unit),
+              dataType: String(p.dataType == null ? '' : p.dataType),
+            };
           }) : [],
         };
       });
@@ -6801,10 +6861,15 @@ wssTcp.on('connection', function (ws) {
       });
       (dev.params || []).forEach(function (p, pi) {
         const pidx = pi + 1;
+        // 数值缩放：开关量保持原值（×1，整数），模拟量 ×100（保留 2 位小数 → INTEGER）
+        const dataType = String(p.dataType == null ? '' : p.dataType);
+        const scale = (dataType === '开关量') ? 1 : 100;
         oidList.push({
           oid: ENTERPRISE + '.1.' + idx + '.2.' + pidx + '.0',
-          type: 'Integer', kind: 'CurValueX10',
-          deviceId: dev.deviceId, deviceName: dev.deviceName, paraName: p.paraName, unit: p.unit || '',
+          type: 'Integer', kind: scale === 1 ? 'CurValue' : 'CurValueX' + scale,
+          deviceId: dev.deviceId, deviceName: dev.deviceName,
+          paraName: p.paraName, unit: p.unit || '',
+          dataType: dataType, scale: scale,
         });
       });
     });
@@ -6957,10 +7022,14 @@ wssTcp.on('connection', function (ws) {
         } else if (m.kind === 'CurValue') {
           if ((m.addr + 2) * 2 > holding.length) return;
           const f = holding.readFloatBE(m.addr * 2);
-          const intVal = Number.isFinite(f) ? Math.round(f * 10) : -1;
-          // 通过 paraName 反查在 dev.params 里的下标
+          // 通过 paraName 反查在 dev.params 里的下标，再按 dataType 决定缩放
           const pi = (dev.params || []).findIndex(function (p) { return p.paraName === m.paraName; });
-          if (pi >= 0) setOidInt(ENTERPRISE + '.1.' + idx + '.2.' + (pi + 1) + '.0', intVal);
+          if (pi < 0) return;
+          const param = dev.params[pi];
+          const dataType = String(param.dataType == null ? '' : param.dataType);
+          const scale = (dataType === '开关量') ? 1 : 100;
+          const intVal = Number.isFinite(f) ? Math.round(f * scale) : -1;
+          setOidInt(ENTERPRISE + '.1.' + idx + '.2.' + (pi + 1) + '.0', intVal);
         }
       });
     });
@@ -7031,7 +7100,7 @@ wssTcp.on('connection', function (ws) {
   app.get('/api/proto-conv/snmp/map.csv', function (_req, res) {
     // 总是基于当前 modbus.selectedDevices 重建，避免 modbus 改了设备但 SNMP CSV 还显示旧的
     buildOidTree();
-    const lines = ['OID,类型,字段,设备名称,参数名,单位,controlId'];
+    const lines = ['OID,类型,字段,设备名称,参数名,单位,数据类型,缩放,controlId'];
     const csvEsc = function (s) {
       s = String(s == null ? '' : s);
       if (/[",\n]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
@@ -7041,6 +7110,7 @@ wssTcp.on('connection', function (ws) {
       lines.push([
         csvEsc(o.oid), csvEsc(o.type), csvEsc(o.kind),
         csvEsc(o.deviceName), csvEsc(o.paraName), csvEsc(o.unit || ''),
+        csvEsc(o.dataType || ''), csvEsc(o.scale == null ? '' : ('×' + o.scale)),
         csvEsc(o.controlId || ''),
       ].join(','));
     });
@@ -7065,6 +7135,1452 @@ wssTcp.on('connection', function (ws) {
       try { stopAgent(); if (cfg.enabled) startAgent(); } catch (_e) {}
     },
   };
+})();
+
+// ===== 防火墙管理模块（firewalld）=====
+// 目的：在设置面板里给运维同事提供 1panel 风格的防火墙管理：
+//   - 端口规则：允许/禁止 端口（支持指定源 IP，accept 走 --add-port，deny / 带源 IP 走 rich-rule）
+//   - 端口转发：本机端口转到本机/远端的另一端口（--add-forward-port）
+//   - IP 规则：黑/白名单（rich-rule address accept/drop）
+//   - 状态总控：firewalld 服务的 active 状态、开启/关闭/重启、ICMP 禁 ping 开关
+// 所有改动均使用 --permanent + --reload，重启不丢失。仅支持 firewalld（目标机 Kylin V10 默认就是它）。
+(function setupFirewall() {
+  const path = require('path');
+  const LOG_PATH = process.env.FIREWALL_LOG || path.join(__dirname, '..', 'logs', 'firewall.log');
+  const DEFAULT_ZONE = process.env.FIREWALL_ZONE || 'public';
+
+  function localStamp(d) {
+    d = d || new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
+      + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+  }
+  function appendLog(line) {
+    try {
+      fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true });
+      fs.appendFileSync(LOG_PATH, `[${localStamp()}] ${line}\n`, 'utf8');
+    } catch (_e) {}
+  }
+
+  // 不走 shell，所有参数当成 argv 数组传，避免命令注入
+  function run(cmd, args, opts) {
+    return new Promise(function (resolve) {
+      const child = spawn(cmd, args || [], opts || {});
+      let stdout = '', stderr = '';
+      child.stdout && child.stdout.on('data', (b) => { stdout += b.toString('utf8'); });
+      child.stderr && child.stderr.on('data', (b) => { stderr += b.toString('utf8'); });
+      child.on('close', (code) => resolve({ ok: code === 0, code, stdout: stdout.trim(), stderr: stderr.trim() }));
+      child.on('error', (err) => resolve({ ok: false, code: null, stdout: '', stderr: 'spawn error: ' + err.message }));
+    });
+  }
+  function fwcmd(args) { return run('firewall-cmd', args); }
+  function systemctl(args) { return run('systemctl', args); }
+
+  function isLinux() { return process.platform === 'linux'; }
+
+  // 校验输入：端口号(单端口/范围)、协议、IPv4/IPv6 地址
+  const PROTO_RE = /^(tcp|udp)$/;
+  const PORT_RE = /^\d{1,5}(-\d{1,5})?$/;
+  // 简单 IP 校验：允许 v4 / v4-CIDR / v6 / v6-CIDR；不要求严格 RFC，挡掉明显非法字符即可
+  const IP_RE = /^[0-9a-fA-F.:/]+$/;
+
+  function validPort(p) {
+    if (!PORT_RE.test(String(p))) return false;
+    const parts = String(p).split('-').map(Number);
+    return parts.every((n) => n >= 1 && n <= 65535) && (parts.length === 1 || parts[0] <= parts[1]);
+  }
+  function validProto(p) { return PROTO_RE.test(String(p || '').toLowerCase()); }
+  function validIp(s) {
+    if (!s) return false;
+    if (!IP_RE.test(String(s))) return false;
+    return String(s).length <= 64;
+  }
+
+  async function getStatus() {
+    if (!isLinux()) {
+      return { available: false, reason: 'only firewalld on Linux is supported', platform: process.platform };
+    }
+    const installed = await run('which', ['firewall-cmd']);
+    if (!installed.ok) {
+      return { available: false, reason: 'firewall-cmd not installed' };
+    }
+    const active = await systemctl(['is-active', 'firewalld']);
+    const enabled = await systemctl(['is-enabled', 'firewalld']);
+    const versionRes = await fwcmd(['--version']);
+    const stateRes = await fwcmd(['--state']);
+    // 默认 zone（用于显示，不阻塞主流程）
+    const defZoneRes = await fwcmd(['--get-default-zone']);
+    // ICMP block：返回 yes / no
+    const icmpRes = active.ok ? await fwcmd(['--zone=' + DEFAULT_ZONE, '--query-icmp-block=echo-request']) : { ok: false, stdout: '' };
+    return {
+      available: true,
+      installed: true,
+      activeRaw: (active.stdout || '').trim(),
+      enabledRaw: (enabled.stdout || '').trim(),
+      running: stateRes.ok && /^running$/i.test(stateRes.stdout || ''),
+      version: (versionRes.stdout || '').trim(),
+      defaultZone: (defZoneRes.stdout || DEFAULT_ZONE).trim() || DEFAULT_ZONE,
+      zone: DEFAULT_ZONE,
+      // 注意：--query-icmp-block 命中是 exit=0，未命中是 exit=1，stdout 也会是 yes/no
+      icmpBlocked: icmpRes.ok || /^yes$/i.test(icmpRes.stdout || ''),
+    };
+  }
+
+  // 端口规则：先把 firewall-cmd --list-ports / --list-rich-rules 都解一遍，合并成 [{proto, port, strategy, address, description, source: 'ports'|'rich'}]
+  function parseRichRules(text) {
+    if (!text) return [];
+    return text.split('\n').map((s) => s.trim()).filter(Boolean);
+  }
+  // rich-rule 端口形式：rule family="ipv4" [source address="x"] port port="80" protocol="tcp" accept|drop|reject
+  function parsePortRichRule(line) {
+    const m = line.match(/^rule\s+family="(ipv4|ipv6)"(?:\s+source\s+address="([^"]+)")?\s+port\s+port="([^"]+)"\s+protocol="(tcp|udp)"\s+(accept|drop|reject)\s*$/);
+    if (!m) return null;
+    return {
+      family: m[1],
+      address: m[2] || '',
+      port: m[3],
+      protocol: m[4],
+      action: m[5],
+    };
+  }
+  // forward-port rich-rule：rule family="ipv4" forward-port port="80" protocol="tcp" to-port="8080" [to-addr="..."]
+  function parseForwardRichRule(line) {
+    const m = line.match(/^rule\s+family="(ipv4|ipv6)"\s+forward-port\s+port="([^"]+)"\s+protocol="(tcp|udp)"\s+to-port="([^"]+)"(?:\s+to-addr="([^"]+)")?\s*$/);
+    if (!m) return null;
+    return { family: m[1], srcPort: m[2], protocol: m[3], dstPort: m[4], dstAddr: m[5] || '' };
+  }
+  // address rich-rule：rule family="ipv4" source address="x.x.x.x" accept|drop
+  function parseAddressRichRule(line) {
+    const m = line.match(/^rule\s+family="(ipv4|ipv6)"\s+source\s+address="([^"]+)"\s+(accept|drop|reject)\s*$/);
+    if (!m) return null;
+    return { family: m[1], address: m[2], action: m[3] };
+  }
+
+  async function listPortRules() {
+    const rules = [];
+    const ports = await fwcmd(['--zone=' + DEFAULT_ZONE, '--list-ports']);
+    if (ports.ok && ports.stdout) {
+      ports.stdout.split(/\s+/).filter(Boolean).forEach(function (item) {
+        const m = item.match(/^(\d+(?:-\d+)?)\/(tcp|udp)$/);
+        if (m) rules.push({ id: 'port:' + item, port: m[1], protocol: m[2], strategy: 'accept', address: '', source: 'ports' });
+      });
+    }
+    const rich = await fwcmd(['--zone=' + DEFAULT_ZONE, '--list-rich-rules']);
+    if (rich.ok && rich.stdout) {
+      parseRichRules(rich.stdout).forEach(function (line) {
+        const p = parsePortRichRule(line);
+        if (p) {
+          rules.push({
+            id: 'rich:' + line,
+            port: p.port,
+            protocol: p.protocol,
+            strategy: p.action === 'accept' ? 'accept' : 'drop',
+            address: p.address,
+            family: p.family,
+            source: 'rich',
+            raw: line,
+          });
+        }
+      });
+    }
+    return rules;
+  }
+
+  async function listForwardRules() {
+    const rules = [];
+    const fwd = await fwcmd(['--zone=' + DEFAULT_ZONE, '--list-forward-ports']);
+    if (fwd.ok && fwd.stdout) {
+      // 输出形如：port=80:proto=tcp:toport=8080:toaddr=
+      fwd.stdout.split('\n').map((s) => s.trim()).filter(Boolean).forEach(function (line) {
+        const obj = {};
+        line.split(':').forEach(function (kv) {
+          const i = kv.indexOf('=');
+          if (i > 0) obj[kv.slice(0, i)] = kv.slice(i + 1);
+        });
+        if (obj.port && obj.proto && obj.toport) {
+          rules.push({
+            id: 'fwd:' + line,
+            srcPort: obj.port,
+            protocol: obj.proto,
+            dstPort: obj.toport,
+            dstAddr: obj.toaddr || '',
+            source: 'forward-ports',
+          });
+        }
+      });
+    }
+    // forward 也可能写成 rich-rule，一并解析
+    const rich = await fwcmd(['--zone=' + DEFAULT_ZONE, '--list-rich-rules']);
+    if (rich.ok && rich.stdout) {
+      parseRichRules(rich.stdout).forEach(function (line) {
+        const f = parseForwardRichRule(line);
+        if (f) rules.push({
+          id: 'rich:' + line,
+          srcPort: f.srcPort,
+          protocol: f.protocol,
+          dstPort: f.dstPort,
+          dstAddr: f.dstAddr,
+          family: f.family,
+          source: 'rich',
+          raw: line,
+        });
+      });
+    }
+    return rules;
+  }
+
+  async function listAddressRules() {
+    const rules = [];
+    const rich = await fwcmd(['--zone=' + DEFAULT_ZONE, '--list-rich-rules']);
+    if (rich.ok && rich.stdout) {
+      parseRichRules(rich.stdout).forEach(function (line) {
+        const a = parseAddressRichRule(line);
+        if (a) rules.push({
+          id: 'rich:' + line,
+          address: a.address,
+          family: a.family,
+          strategy: a.action === 'accept' ? 'accept' : 'drop',
+          source: 'rich',
+          raw: line,
+        });
+      });
+    }
+    return rules;
+  }
+
+  async function reload() {
+    const r = await fwcmd(['--reload']);
+    return r;
+  }
+
+  app.use(express.json({ limit: '16mb' }));
+
+  // 总状态
+  app.get('/api/firewall/status', async function (_req, res) {
+    try {
+      const st = await getStatus();
+      res.json(st);
+    } catch (err) {
+      res.status(500).json({ available: false, error: err.message });
+    }
+  });
+
+  // 服务总控：start / stop / restart / enable / disable
+  app.post('/api/firewall/service', async function (req, res) {
+    if (!isLinux()) return res.status(400).json({ ok: false, message: '仅支持 Linux firewalld' });
+    const action = String((req.body && req.body.action) || '').toLowerCase();
+    if (!['start', 'stop', 'restart', 'enable', 'disable'].includes(action)) {
+      return res.status(400).json({ ok: false, message: 'unknown action' });
+    }
+    const r = await systemctl([action, 'firewalld']);
+    appendLog(`service ${action}: ok=${r.ok} stderr=${r.stderr}`);
+    res.json({ ok: r.ok, message: r.ok ? `已${action} firewalld` : (r.stderr || r.stdout) });
+  });
+
+  // 配置 ping 拦截
+  app.post('/api/firewall/icmp', async function (req, res) {
+    if (!isLinux()) return res.status(400).json({ ok: false, message: '仅支持 Linux firewalld' });
+    const block = !!(req.body && req.body.block);
+    const sub = block ? '--add-icmp-block=echo-request' : '--remove-icmp-block=echo-request';
+    const r = await fwcmd(['--zone=' + DEFAULT_ZONE, '--permanent', sub]);
+    if (!r.ok) return res.json({ ok: false, message: r.stderr || r.stdout });
+    const reloaded = await reload();
+    appendLog(`icmp block=${block}: ok=${r.ok} reload=${reloaded.ok}`);
+    res.json({ ok: reloaded.ok, message: reloaded.ok ? '已应用' : (reloaded.stderr || '') });
+  });
+
+  // 端口规则
+  app.get('/api/firewall/ports', async function (_req, res) {
+    if (!isLinux()) return res.json({ ok: false, available: false, items: [] });
+    try { res.json({ ok: true, items: await listPortRules() }); }
+    catch (err) { res.status(500).json({ ok: false, message: err.message }); }
+  });
+
+  app.post('/api/firewall/ports', async function (req, res) {
+    if (!isLinux()) return res.status(400).json({ ok: false, message: '仅支持 Linux firewalld' });
+    const body = req.body || {};
+    const port = String(body.port || '').trim();
+    const protocol = String(body.protocol || 'tcp').toLowerCase();
+    const strategy = String(body.strategy || 'accept').toLowerCase(); // accept | drop
+    const address = String(body.address || '').trim();
+    if (!validPort(port)) return res.status(400).json({ ok: false, message: '端口非法' });
+    if (!validProto(protocol)) return res.status(400).json({ ok: false, message: '协议非法' });
+    if (!['accept', 'drop'].includes(strategy)) return res.status(400).json({ ok: false, message: '策略非法' });
+    if (address && !validIp(address)) return res.status(400).json({ ok: false, message: '源 IP 非法' });
+
+    let r;
+    if (!address && strategy === 'accept') {
+      // 简单端口放行 → --add-port
+      r = await fwcmd(['--zone=' + DEFAULT_ZONE, '--permanent', `--add-port=${port}/${protocol}`]);
+    } else {
+      // 带源 IP 或拒绝策略 → rich-rule
+      const family = address.includes(':') ? 'ipv6' : 'ipv4';
+      const parts = ['rule', `family="${family}"`];
+      if (address) parts.push(`source address="${address}"`);
+      parts.push('port', `port="${port}"`, `protocol="${protocol}"`, strategy);
+      const rule = parts.join(' ');
+      r = await fwcmd(['--zone=' + DEFAULT_ZONE, '--permanent', `--add-rich-rule=${rule}`]);
+    }
+    if (!r.ok) return res.json({ ok: false, message: r.stderr || r.stdout });
+    const reloaded = await reload();
+    appendLog(`port add ${strategy} ${port}/${protocol} addr=${address}: ok=${reloaded.ok}`);
+    res.json({ ok: reloaded.ok, message: reloaded.ok ? '已应用' : (reloaded.stderr || '') });
+  });
+
+  app.delete('/api/firewall/ports', async function (req, res) {
+    if (!isLinux()) return res.status(400).json({ ok: false, message: '仅支持 Linux firewalld' });
+    const body = req.body || {};
+    const id = String(body.id || '');
+    let r;
+    if (id.startsWith('port:')) {
+      const item = id.slice(5);
+      const m = item.match(/^(\d+(?:-\d+)?)\/(tcp|udp)$/);
+      if (!m) return res.status(400).json({ ok: false, message: 'id 非法' });
+      r = await fwcmd(['--zone=' + DEFAULT_ZONE, '--permanent', `--remove-port=${m[1]}/${m[2]}`]);
+    } else if (id.startsWith('rich:')) {
+      const rule = id.slice(5);
+      // 二次校验：必须是端口型 rich-rule，避免被串改成乱删
+      if (!parsePortRichRule(rule)) return res.status(400).json({ ok: false, message: 'rich-rule 非端口规则' });
+      r = await fwcmd(['--zone=' + DEFAULT_ZONE, '--permanent', `--remove-rich-rule=${rule}`]);
+    } else {
+      return res.status(400).json({ ok: false, message: 'id 非法' });
+    }
+    if (!r.ok) return res.json({ ok: false, message: r.stderr || r.stdout });
+    const reloaded = await reload();
+    appendLog(`port remove ${id}: ok=${reloaded.ok}`);
+    res.json({ ok: reloaded.ok, message: reloaded.ok ? '已删除' : (reloaded.stderr || '') });
+  });
+
+  // 端口转发
+  app.get('/api/firewall/forwards', async function (_req, res) {
+    if (!isLinux()) return res.json({ ok: false, available: false, items: [] });
+    try { res.json({ ok: true, items: await listForwardRules() }); }
+    catch (err) { res.status(500).json({ ok: false, message: err.message }); }
+  });
+
+  app.post('/api/firewall/forwards', async function (req, res) {
+    if (!isLinux()) return res.status(400).json({ ok: false, message: '仅支持 Linux firewalld' });
+    const body = req.body || {};
+    const srcPort = String(body.srcPort || '').trim();
+    const dstPort = String(body.dstPort || '').trim();
+    const protocol = String(body.protocol || 'tcp').toLowerCase();
+    const dstAddr = String(body.dstAddr || '').trim();
+    if (!validPort(srcPort)) return res.status(400).json({ ok: false, message: '源端口非法' });
+    if (!validPort(dstPort)) return res.status(400).json({ ok: false, message: '目标端口非法' });
+    if (!validProto(protocol)) return res.status(400).json({ ok: false, message: '协议非法' });
+    if (dstAddr && !validIp(dstAddr)) return res.status(400).json({ ok: false, message: '目标 IP 非法' });
+
+    let arg = `--add-forward-port=port=${srcPort}:proto=${protocol}:toport=${dstPort}`;
+    if (dstAddr) arg += `:toaddr=${dstAddr}`;
+    const r = await fwcmd(['--zone=' + DEFAULT_ZONE, '--permanent', arg]);
+    if (!r.ok) return res.json({ ok: false, message: r.stderr || r.stdout });
+    const reloaded = await reload();
+    appendLog(`forward add ${srcPort}/${protocol} -> ${dstAddr || 'localhost'}:${dstPort}: ok=${reloaded.ok}`);
+    res.json({ ok: reloaded.ok, message: reloaded.ok ? '已应用' : (reloaded.stderr || '') });
+  });
+
+  app.delete('/api/firewall/forwards', async function (req, res) {
+    if (!isLinux()) return res.status(400).json({ ok: false, message: '仅支持 Linux firewalld' });
+    const body = req.body || {};
+    const id = String(body.id || '');
+    let r;
+    if (id.startsWith('fwd:')) {
+      const line = id.slice(4);
+      // 复用入参解析，反向构造 --remove-forward-port=...
+      const obj = {};
+      line.split(':').forEach((kv) => { const i = kv.indexOf('='); if (i > 0) obj[kv.slice(0, i)] = kv.slice(i + 1); });
+      if (!obj.port || !obj.proto || !obj.toport) return res.status(400).json({ ok: false, message: 'id 非法' });
+      let arg = `--remove-forward-port=port=${obj.port}:proto=${obj.proto}:toport=${obj.toport}`;
+      if (obj.toaddr) arg += `:toaddr=${obj.toaddr}`;
+      r = await fwcmd(['--zone=' + DEFAULT_ZONE, '--permanent', arg]);
+    } else if (id.startsWith('rich:')) {
+      const rule = id.slice(5);
+      if (!parseForwardRichRule(rule)) return res.status(400).json({ ok: false, message: 'rich-rule 非转发规则' });
+      r = await fwcmd(['--zone=' + DEFAULT_ZONE, '--permanent', `--remove-rich-rule=${rule}`]);
+    } else {
+      return res.status(400).json({ ok: false, message: 'id 非法' });
+    }
+    if (!r.ok) return res.json({ ok: false, message: r.stderr || r.stdout });
+    const reloaded = await reload();
+    appendLog(`forward remove ${id}: ok=${reloaded.ok}`);
+    res.json({ ok: reloaded.ok, message: reloaded.ok ? '已删除' : (reloaded.stderr || '') });
+  });
+
+  // IP 规则
+  app.get('/api/firewall/addresses', async function (_req, res) {
+    if (!isLinux()) return res.json({ ok: false, available: false, items: [] });
+    try { res.json({ ok: true, items: await listAddressRules() }); }
+    catch (err) { res.status(500).json({ ok: false, message: err.message }); }
+  });
+
+  app.post('/api/firewall/addresses', async function (req, res) {
+    if (!isLinux()) return res.status(400).json({ ok: false, message: '仅支持 Linux firewalld' });
+    const body = req.body || {};
+    const address = String(body.address || '').trim();
+    const strategy = String(body.strategy || 'drop').toLowerCase();
+    if (!validIp(address)) return res.status(400).json({ ok: false, message: 'IP 非法' });
+    if (!['accept', 'drop'].includes(strategy)) return res.status(400).json({ ok: false, message: '策略非法' });
+    const family = address.includes(':') ? 'ipv6' : 'ipv4';
+    const rule = `rule family="${family}" source address="${address}" ${strategy}`;
+    const r = await fwcmd(['--zone=' + DEFAULT_ZONE, '--permanent', `--add-rich-rule=${rule}`]);
+    if (!r.ok) return res.json({ ok: false, message: r.stderr || r.stdout });
+    const reloaded = await reload();
+    appendLog(`address add ${strategy} ${address}: ok=${reloaded.ok}`);
+    res.json({ ok: reloaded.ok, message: reloaded.ok ? '已应用' : (reloaded.stderr || '') });
+  });
+
+  app.delete('/api/firewall/addresses', async function (req, res) {
+    if (!isLinux()) return res.status(400).json({ ok: false, message: '仅支持 Linux firewalld' });
+    const body = req.body || {};
+    const id = String(body.id || '');
+    if (!id.startsWith('rich:')) return res.status(400).json({ ok: false, message: 'id 非法' });
+    const rule = id.slice(5);
+    if (!parseAddressRichRule(rule)) return res.status(400).json({ ok: false, message: 'rich-rule 非地址规则' });
+    const r = await fwcmd(['--zone=' + DEFAULT_ZONE, '--permanent', `--remove-rich-rule=${rule}`]);
+    if (!r.ok) return res.json({ ok: false, message: r.stderr || r.stdout });
+    const reloaded = await reload();
+    appendLog(`address remove ${id}: ok=${reloaded.ok}`);
+    res.json({ ok: reloaded.ok, message: reloaded.ok ? '已删除' : (reloaded.stderr || '') });
+  });
+
+  appendLog(`firewall API ready, zone=${DEFAULT_ZONE}, platform=${process.platform}`);
+})();
+
+// ===================== 视频监控（GB/T 28181 + ZLMediaKit） =====================
+// 浏览器 → /api/video/* → 本 IIFE → ZLM HTTP API (127.0.0.1:8000)
+// 浏览器 → /media/*     → 本 IIFE 反代 → ZLM HTTP-FLV (127.0.0.1:18080)
+// ZLM 注册/上线/下线/流就绪 webhook → /api/video/zlm/webhook
+(function setupVideo28181() {
+  const path = require('path');
+  const httpMod = require('http');
+
+  const CONFIG_PATH = process.env.VIDEO_CONFIG || path.join(__dirname, 'config', 'video-28181.json');
+  const LOG_PATH = process.env.VIDEO_LOG || path.join(__dirname, 'logs', 'video-28181.log');
+  const DEVICES_CACHE_PATH = process.env.VIDEO_DEVICES_CACHE || path.join(__dirname, 'config', 'video-devices.json');
+  const VIDEO_DISABLED = process.env.VIDEO_DISABLED === '1';
+
+  const defaults = {
+    sip: {
+      serverId: '34020000002000000001',
+      serverDomain: '3402000000',
+      localPort: 5060,
+      transport: 'UDP',
+      authPwd: '12345678',
+      keepaliveInterval: 60,
+      keepaliveTimeout: 3,
+      registerExpires: 3600,
+      protocolVersion: 'GB/T28181-2016',
+      streamIndex: 'main',
+      whitelist: [],
+    },
+    zlm: {
+      apiBase: 'http://127.0.0.1:8000',
+      secret: '',
+      publicHost: '',
+    },
+  };
+
+  function deepMerge(target, src) {
+    const out = Object.assign({}, target);
+    for (const k of Object.keys(src || {})) {
+      if (src[k] && typeof src[k] === 'object' && !Array.isArray(src[k])) {
+        out[k] = deepMerge(target[k] || {}, src[k]);
+      } else {
+        out[k] = src[k];
+      }
+    }
+    return out;
+  }
+
+  let cfg = JSON.parse(JSON.stringify(defaults));
+  // devices: { <deviceId>: { online, lastKeepalive, ip, port, name, channels:[{id,name,manufacturer,parentId,status}] } }
+  let devices = {};
+  // streamRegistry: streamKey -> { mode, deviceId, channelId, ssrc, startedAt }
+  const streamRegistry = new Map();
+
+  function readCfg() {
+    try {
+      const raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+      cfg = deepMerge(defaults, raw);
+    } catch (_e) {
+      cfg = JSON.parse(JSON.stringify(defaults));
+    }
+  }
+  function writeCfg() {
+    try {
+      fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
+      fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+      try { fs.chmodSync(CONFIG_PATH, 0o600); } catch (_e) {}
+    } catch (err) {
+      console.error('[video] 写配置失败:', err.message);
+    }
+  }
+  function readDevices() {
+    try {
+      devices = JSON.parse(fs.readFileSync(DEVICES_CACHE_PATH, 'utf8')) || {};
+    } catch (_e) { devices = {}; }
+  }
+  function writeDevices() {
+    try {
+      fs.mkdirSync(path.dirname(DEVICES_CACHE_PATH), { recursive: true });
+      fs.writeFileSync(DEVICES_CACHE_PATH, JSON.stringify(devices, null, 2) + '\n', 'utf8');
+    } catch (_e) {}
+  }
+  function redactCfg() {
+    return {
+      sip: {
+        serverId: cfg.sip.serverId,
+        serverDomain: cfg.sip.serverDomain,
+        localPort: cfg.sip.localPort,
+        transport: cfg.sip.transport,
+        authPwd: '***',
+        hasAuthPwd: !!cfg.sip.authPwd,
+        keepaliveInterval: cfg.sip.keepaliveInterval,
+        keepaliveTimeout: cfg.sip.keepaliveTimeout,
+        registerExpires: cfg.sip.registerExpires,
+        protocolVersion: cfg.sip.protocolVersion,
+        streamIndex: cfg.sip.streamIndex,
+        whitelist: cfg.sip.whitelist || [],
+      },
+      zlm: {
+        apiBase: cfg.zlm.apiBase,
+        secret: '***',
+        hasSecret: !!cfg.zlm.secret,
+        publicHost: cfg.zlm.publicHost || '',
+      },
+    };
+  }
+
+  readCfg();
+  readDevices();
+
+  function localStamp() {
+    const d = new Date();
+    const pad = (n) => (n < 10 ? '0' + n : '' + n);
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
+      + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+  }
+  function appendLog(line) {
+    try {
+      fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true });
+      fs.appendFileSync(LOG_PATH, '[' + localStamp() + '] ' + line + '\n', 'utf8');
+    } catch (_e) {}
+  }
+
+  // ---------- ZLM HTTP API 调用 ----------
+  const zlmAgent = new httpMod.Agent({ keepAlive: true });
+  let lastError = '';
+  let lastApiSuccessAt = 0;
+
+  function zlmCall(apiName, query) {
+    return new Promise(function (resolve) {
+      if (VIDEO_DISABLED) {
+        return resolve({ ok: false, status: 0, message: '已设 VIDEO_DISABLED=1' });
+      }
+      let urlObj;
+      try {
+        urlObj = new URL('/index/api/' + apiName, cfg.zlm.apiBase);
+      } catch (e) {
+        return resolve({ ok: false, status: 0, message: 'URL 构造失败：' + e.message });
+      }
+      urlObj.searchParams.set('secret', cfg.zlm.secret || '');
+      if (query && typeof query === 'object') {
+        Object.keys(query).forEach(function (k) {
+          if (query[k] != null && query[k] !== '') urlObj.searchParams.set(k, String(query[k]));
+        });
+      }
+      const reqOptions = {
+        method: 'GET',
+        hostname: urlObj.hostname,
+        port: urlObj.port || 80,
+        path: urlObj.pathname + (urlObj.search || ''),
+        agent: zlmAgent,
+        timeout: 6000,
+      };
+      const req = httpMod.request(reqOptions, function (res) {
+        const chunks = [];
+        res.on('data', function (d) { chunks.push(d); });
+        res.on('end', function () {
+          const text = Buffer.concat(chunks).toString('utf8');
+          let data;
+          try { data = JSON.parse(text); } catch (_e) { data = text; }
+          const ok = res.statusCode >= 200 && res.statusCode < 400;
+          if (ok) lastApiSuccessAt = Date.now();
+          resolve({ ok: ok, status: res.statusCode, data: data });
+        });
+      });
+      req.on('timeout', function () { try { req.destroy(new Error('timeout 6000ms')); } catch (_e) {} });
+      req.on('error', function (err) {
+        lastError = 'ZLM ' + apiName + ': ' + err.message;
+        resolve({ ok: false, status: 0, message: err.message });
+      });
+      req.end();
+    });
+  }
+
+  // ---------- ssrc 申请：实时 0F + 5 位序号；回放 0M + 5 位 ----------
+  let ssrcSeq = 1;
+  function nextSsrc(mode) {
+    const prefix = mode === 'playback' ? '0M' : '0F';
+    const dom = String(cfg.sip.serverDomain || '0000000000').slice(3, 8) || '00000';
+    const seq = String(ssrcSeq++ % 99999).padStart(5, '0');
+    return prefix + dom.slice(-3) + seq; // 10 位
+  }
+  function streamKeyFor(deviceId, channelId, ssrc, mode) {
+    if (mode === 'playback') return deviceId + '_' + channelId + '_' + ssrc;
+    return deviceId + '_' + channelId;
+  }
+  function flvUrlFor(streamKey) {
+    // 浏览器同源走 /media/* 反代到 ZLM 18080；ZLM 默认 app=rtp
+    return '/media/rtp/' + encodeURIComponent(streamKey) + '.live.flv';
+  }
+
+  // ---------- ZLM 配置热同步 ----------
+  async function pushSipToZlm() {
+    const params = {
+      'gb28181.serverId': cfg.sip.serverId,
+      'gb28181.serverDomain': cfg.sip.serverDomain,
+      'gb28181.serverPort': cfg.sip.localPort,
+      'gb28181.authPwd': cfg.sip.authPwd,
+      'gb28181.keepaliveInterval': cfg.sip.keepaliveInterval,
+      'gb28181.keepaliveExpires': cfg.sip.keepaliveTimeout,
+    };
+    const r = await zlmCall('setServerConfig', params);
+    appendLog('setServerConfig ok=' + r.ok + ' status=' + r.status);
+    return r;
+  }
+
+  // ---------- SSE 推送给前端 ----------
+  const sseClients = new Set();
+  function sseSend(payload) {
+    const text = 'data: ' + JSON.stringify(payload) + '\n\n';
+    for (const res of sseClients) {
+      try { res.write(text); } catch (_e) {}
+    }
+  }
+
+  // ---------- /api/video/* 路由 ----------
+  app.get('/api/video/config', function (_req, res) {
+    res.json({ ok: true, config: redactCfg() });
+  });
+
+  app.put('/api/video/config', async function (req, res) {
+    const body = req.body || {};
+    const sipIn = body.sip || {};
+    const zlmIn = body.zlm || {};
+    const oldPort = cfg.sip.localPort;
+    // sip 字段
+    const sipKeys = ['serverId', 'serverDomain', 'localPort', 'transport', 'protocolVersion',
+      'streamIndex', 'keepaliveInterval', 'keepaliveTimeout', 'registerExpires'];
+    sipKeys.forEach(function (k) { if (sipIn[k] !== undefined) cfg.sip[k] = sipIn[k]; });
+    if (Array.isArray(sipIn.whitelist)) cfg.sip.whitelist = sipIn.whitelist.map(String);
+    if (sipIn.authPwd !== undefined && String(sipIn.authPwd) !== '' && sipIn.authPwd !== '***') {
+      cfg.sip.authPwd = String(sipIn.authPwd);
+    }
+    // zlm 字段
+    if (zlmIn.apiBase !== undefined) cfg.zlm.apiBase = String(zlmIn.apiBase || '');
+    if (zlmIn.secret !== undefined && String(zlmIn.secret) !== '' && zlmIn.secret !== '***') {
+      cfg.zlm.secret = String(zlmIn.secret);
+    }
+    if (zlmIn.publicHost !== undefined) cfg.zlm.publicHost = String(zlmIn.publicHost || '');
+
+    writeCfg();
+    appendLog('config updated');
+
+    let needRestart = oldPort !== cfg.sip.localPort;
+    if (!needRestart) await pushSipToZlm();
+    res.json({ ok: true, config: redactCfg(), needRestart: needRestart });
+  });
+
+  app.get('/api/video/devices', function (_req, res) {
+    res.json({ ok: true, devices: devices });
+  });
+
+  app.post('/api/video/devices/refresh', async function (req, res) {
+    const body = req.body || {};
+    const targets = body.deviceId ? [String(body.deviceId)] : Object.keys(devices);
+    if (!targets.length) return res.json({ ok: true, message: '尚无已注册设备' });
+    let okCount = 0;
+    for (const id of targets) {
+      const r = await zlmCall('gb28181_query_catalog', { device_id: id });
+      if (r.ok) okCount++;
+    }
+    appendLog('catalog refresh: ' + okCount + '/' + targets.length);
+    res.json({ ok: true, requested: targets.length, succeeded: okCount });
+  });
+
+  app.post('/api/video/play', async function (req, res) {
+    const body = req.body || {};
+    const deviceId = String(body.deviceId || '').trim();
+    const channelId = String(body.channelId || '').trim();
+    if (!deviceId || !channelId) return res.status(400).json({ ok: false, message: 'deviceId/channelId 必填' });
+    const ssrc = nextSsrc('live');
+    const r = await zlmCall('gb28181_invite_stream_play', {
+      ssrc: ssrc, device_id: deviceId, channel_id: channelId,
+    });
+    if (!r.ok) {
+      appendLog('play fail device=' + deviceId + ' ch=' + channelId + ' status=' + r.status + ' msg=' + (r.message || ''));
+      return res.json({ ok: false, message: r.message || ('ZLM 返回 ' + r.status), data: r.data });
+    }
+    const streamKey = streamKeyFor(deviceId, channelId, ssrc, 'live');
+    streamRegistry.set(streamKey, { mode: 'live', deviceId: deviceId, channelId: channelId, ssrc: ssrc, startedAt: Date.now() });
+    const flvUrl = flvUrlFor(streamKey);
+    appendLog('play ok device=' + deviceId + ' ch=' + channelId + ' ssrc=' + ssrc + ' streamKey=' + streamKey);
+    res.json({ ok: true, streamKey: streamKey, flvUrl: flvUrl, ssrc: ssrc });
+  });
+
+  app.post('/api/video/playback', async function (req, res) {
+    const body = req.body || {};
+    const deviceId = String(body.deviceId || '').trim();
+    const channelId = String(body.channelId || '').trim();
+    const start = Number(body.start);
+    const end = Number(body.end);
+    if (!deviceId || !channelId) return res.status(400).json({ ok: false, message: 'deviceId/channelId 必填' });
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start >= end) {
+      return res.status(400).json({ ok: false, message: 'start/end 不合法（Unix 秒）' });
+    }
+    const ssrc = nextSsrc('playback');
+    const r = await zlmCall('gb28181_invite_stream_play_back', {
+      device_id: deviceId, channel_id: channelId, start_time: start, end_time: end, ssrc: ssrc,
+    });
+    if (!r.ok) {
+      appendLog('playback fail device=' + deviceId + ' ch=' + channelId + ' status=' + r.status + ' msg=' + (r.message || ''));
+      return res.json({ ok: false, message: r.message || ('ZLM 返回 ' + r.status), data: r.data });
+    }
+    const streamKey = streamKeyFor(deviceId, channelId, ssrc, 'playback');
+    streamRegistry.set(streamKey, { mode: 'playback', deviceId: deviceId, channelId: channelId, ssrc: ssrc, startedAt: Date.now() });
+    const flvUrl = flvUrlFor(streamKey);
+    appendLog('playback ok device=' + deviceId + ' ch=' + channelId + ' ssrc=' + ssrc + ' [' + start + ',' + end + ']');
+    res.json({ ok: true, streamKey: streamKey, flvUrl: flvUrl, ssrc: ssrc });
+  });
+
+  app.post('/api/video/playback/control', async function (req, res) {
+    const body = req.body || {};
+    const streamKey = String(body.streamKey || '').trim();
+    const action = String(body.action || '').trim();
+    const meta = streamRegistry.get(streamKey);
+    if (!meta || meta.mode !== 'playback') {
+      return res.status(400).json({ ok: false, message: '该流不是回放模式或不存在' });
+    }
+    if (!/^(play|pause|fastforward|seek)$/.test(action)) {
+      return res.status(400).json({ ok: false, message: 'action 不合法' });
+    }
+    const q = { device_id: meta.deviceId, channel_id: meta.channelId, action: action };
+    if (body.speed != null) q.speed = Number(body.speed) || 1;
+    if (body.seek != null) q.seek = Number(body.seek) || 0;
+    const r = await zlmCall('gb28181_play_back_control', q);
+    appendLog('playback control ' + action + ' streamKey=' + streamKey + ' ok=' + r.ok);
+    res.json({ ok: r.ok, message: r.ok ? '已执行' : (r.message || ('ZLM 返回 ' + r.status)) });
+  });
+
+  app.post('/api/video/stop', async function (req, res) {
+    const body = req.body || {};
+    const streamKey = String(body.streamKey || '').trim();
+    const meta = streamRegistry.get(streamKey);
+    if (!meta) return res.json({ ok: true, message: '未找到该流（可能已停止）' });
+    const r = await zlmCall('gb28181_close_stream', {
+      device_id: meta.deviceId, channel_id: meta.channelId,
+    });
+    streamRegistry.delete(streamKey);
+    appendLog('stop streamKey=' + streamKey + ' ok=' + r.ok);
+    res.json({ ok: true, message: r.ok ? '已关闭' : '已从注册表移除' });
+  });
+
+  app.post('/api/video/zlm/webhook', function (req, res) {
+    const event = String((req.query && req.query.event) || '').trim();
+    const body = req.body || {};
+    try {
+      if (event === 'on_server_keepalive' || event === 'keepalive') {
+        // ZLM 自身心跳，记录最后存活时间
+      } else if (event === 'on_publish' || event === 'publish') {
+        // 流准备发布
+      } else if (event === 'on_play' || event === 'play') {
+        // 有人在拉流（authentication 钩子）
+      } else if (event === 'on_stream_changed' || event === 'stream_changed') {
+        const regist = !!body.regist;
+        const streamId = String(body.stream || '');
+        appendLog('stream_changed stream=' + streamId + ' regist=' + regist);
+        sseSend({ type: regist ? 'stream-up' : 'stream-down', stream: streamId, deviceId: body.params || '' });
+      } else if (event === 'on_stream_none_reader' || event === 'stream_none_reader') {
+        const streamId = String(body.stream || '');
+        appendLog('none_reader stream=' + streamId + '，自动 close');
+        // 异步发起关流
+        (async function () {
+          for (const [k, m] of streamRegistry.entries()) {
+            if (k === streamId || streamId.indexOf(k) === 0) {
+              await zlmCall('gb28181_close_stream', { device_id: m.deviceId, channel_id: m.channelId });
+              streamRegistry.delete(k);
+            }
+          }
+        })();
+      } else if (event === 'on_send_rtp_stopped' || event === 'send_rtp_stopped') {
+        appendLog('send_rtp_stopped ssrc=' + (body.ssrc || ''));
+      } else if (event === 'on_rtp_server_timeout' || event === 'rtp_server_timeout') {
+        appendLog('rtp_server_timeout ssrc=' + (body.ssrc || ''));
+      } else if (event === 'on_device_status' || event === 'device_status') {
+        const id = String(body.deviceId || body.device_id || '');
+        if (id) {
+          devices[id] = devices[id] || { channels: [] };
+          devices[id].online = body.alive !== false;
+          devices[id].lastKeepalive = Date.now();
+          if (body.ip) devices[id].ip = body.ip;
+          if (body.port) devices[id].port = body.port;
+          writeDevices();
+          sseSend({ type: devices[id].online ? 'device-online' : 'device-offline', deviceId: id });
+        }
+      } else if (event === 'on_catalog' || event === 'catalog') {
+        const id = String(body.deviceId || body.device_id || '');
+        const list = Array.isArray(body.channels) ? body.channels : [];
+        if (id) {
+          devices[id] = devices[id] || { online: true, channels: [] };
+          devices[id].channels = list.map(function (c) {
+            return {
+              id: String(c.deviceId || c.id || ''),
+              name: String(c.name || c.deviceName || ''),
+              manufacturer: c.manufacturer || '',
+              parentId: c.parentId || '',
+              status: c.status || c.online === false ? 'OFF' : 'ON',
+            };
+          }).filter(function (c) { return c.id; });
+          writeDevices();
+          sseSend({ type: 'catalog-updated', deviceId: id, count: devices[id].channels.length });
+        }
+      }
+    } catch (e) {
+      appendLog('webhook handler error: ' + e.message);
+    }
+    // ZLM 期望返回 { code: 0, msg: 'success' }
+    res.json({ code: 0, msg: 'success' });
+  });
+
+  app.get('/api/video/events', function (req, res) {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+    res.write(':\n\n');
+    sseClients.add(res);
+    const heartbeat = setInterval(function () { try { res.write(':\n\n'); } catch (_e) {} }, 15000);
+    req.on('close', function () {
+      clearInterval(heartbeat);
+      sseClients.delete(res);
+    });
+  });
+
+  app.get('/api/video/status', async function (_req, res) {
+    let mediaserverRunning = false;
+    let zlmReachable = false;
+    let zlmVersion = '';
+    if (process.platform === 'linux') {
+      try {
+        await new Promise(function (resolve) {
+          const child = spawn('systemctl', ['is-active', 'webssh-mediaserver']);
+          let out = '';
+          child.stdout && child.stdout.on('data', function (b) { out += b.toString('utf8'); });
+          child.on('close', function () {
+            mediaserverRunning = out.trim() === 'active';
+            resolve();
+          });
+          child.on('error', function () { resolve(); });
+        });
+      } catch (_e) {}
+    } else {
+      mediaserverRunning = false;
+    }
+    if (!VIDEO_DISABLED) {
+      const r = await zlmCall('getServerConfig', {});
+      zlmReachable = r.ok;
+      if (r.ok && r.data && r.data.data) {
+        const d = Array.isArray(r.data.data) ? r.data.data[0] : r.data.data;
+        zlmVersion = (d && (d['general.version'] || d['mediaServerId'])) || '';
+      }
+    }
+    res.json({
+      ok: true,
+      mediaserverRunning: mediaserverRunning,
+      zlmReachable: zlmReachable,
+      zlmVersion: zlmVersion,
+      videoDisabled: VIDEO_DISABLED,
+      deviceCount: Object.keys(devices).length,
+      onlineDeviceCount: Object.values(devices).filter(function (d) { return d.online; }).length,
+      streamCount: streamRegistry.size,
+      lastApiSuccessAt: lastApiSuccessAt,
+      lastError: lastError,
+      sip: { localPort: cfg.sip.localPort, transport: cfg.sip.transport, serverId: cfg.sip.serverId },
+    });
+  });
+
+  app.post('/api/video/ptz', function (_req, res) {
+    res.status(501).json({ ok: false, message: 'PTZ 暂未实现，预留 ZLM gb28181_ptz_control 锚点' });
+  });
+
+  // ---------- /media/* 反代到 ZLM HTTP-FLV ----------
+  let zlmFlvTarget = 'http://127.0.0.1:18080';
+  try {
+    const u = new URL(cfg.zlm.apiBase || 'http://127.0.0.1:8000');
+    // ZLM HTTP-FLV 端口默认 80/18080，与 API 端口可能不同；用 publicHost 覆盖
+    if (cfg.zlm.publicHost) zlmFlvTarget = cfg.zlm.publicHost;
+    else zlmFlvTarget = u.protocol + '//' + u.hostname + ':18080';
+  } catch (_e) {}
+
+  const mediaProxy = httpProxy.createProxyServer({
+    target: zlmFlvTarget,
+    changeOrigin: false,
+    ws: false,
+    proxyTimeout: 60000,
+    timeout: 60000,
+  });
+  mediaProxy.on('error', function (err, _req, res2) {
+    if (res2 && !res2.headersSent) {
+      try {
+        res2.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
+        res2.end(JSON.stringify({ ok: false, msg: '媒体服务未启动或无响应：' + err.message, target: zlmFlvTarget }));
+      } catch (_e) {}
+    }
+  });
+
+  app.all(/^\/media(\/.*)?$/, function (req, res) {
+    // 把 /media 前缀剥掉转发，ZLM 的流路径是 /rtp/<streamKey>.live.flv
+    req.url = req.url.replace(/^\/media/, '') || '/';
+    mediaProxy.web(req, res);
+  });
+
+  if (!VIDEO_DISABLED) {
+    // 启动后异步把 SIP 配置推一遍到 ZLM（即使未注入也不阻塞）
+    setTimeout(function () {
+      pushSipToZlm().catch(function () {});
+    }, 1500);
+  }
+
+  appendLog('video-28181 ready (disabled=' + VIDEO_DISABLED + ', flvTarget=' + zlmFlvTarget + ')');
+})();
+
+// ===================== dcim 视频监控反代（绕过 8086 反代缺失）=====================
+// 背景：dcim 容器 8086 HTTPS 站点 (donghuan-camera-list.html / donghuan-camera-setting.html)
+// 调用前端相对路径 api/... 但 Apache vhost 没把 /api/* 反代到 dcim wvp 18080，
+// 导致点击「监控设备」「国标28181服务器配置」后页面空白。
+// 这里 webssh 后端代理 dcim wvp 18080 (HTTPS, 自签证书)，自动用 admin hash 登录拿
+// access-token，401 自动续登。前端 video/ 子站直接调 /api/dcim-video/* 拿数据渲染。
+(function setupDcimVideo() {
+  const path = require('path');
+  const https = require('https');
+
+  const CONFIG_PATH = process.env.DCIM_VIDEO_CONFIG || path.join(__dirname, 'config', 'dcim-video.json');
+  const LOG_PATH = process.env.DCIM_VIDEO_LOG || path.join(__dirname, 'logs', 'dcim-video.log');
+
+  const defaults = {
+    apiBase: 'https://127.0.0.1:18080',
+    username: 'admin',
+    // dcim 库里 wvp_user.password 字段是已经做了一层 hash 的值，登录时直接用它当
+    // password 提交即可（wvp 前端是 md5(明文) 然后等于这个 hash）
+    passwordHash: '551c76780e34e1c1fab9ff85dfc79947',
+    timeoutMs: 6000,
+  };
+
+  let cfg = JSON.parse(JSON.stringify(defaults));
+  function readCfg() {
+    try {
+      const raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+      cfg = Object.assign({}, defaults, raw);
+    } catch (_e) { cfg = JSON.parse(JSON.stringify(defaults)); }
+  }
+  function writeCfg() {
+    try {
+      fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
+      fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+      try { fs.chmodSync(CONFIG_PATH, 0o600); } catch (_e) {}
+    } catch (e) { console.error('[dcim-video] 写配置失败:', e.message); }
+  }
+  readCfg();
+
+  function localStamp() {
+    const d = new Date();
+    const pad = (n) => (n < 10 ? '0' + n : '' + n);
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
+      + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+  }
+  function appendLog(line) {
+    try {
+      fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true });
+      fs.appendFileSync(LOG_PATH, '[' + localStamp() + '] ' + line + '\n', 'utf8');
+    } catch (_e) {}
+  }
+
+  // dcim wvp 自签证书 + keepAlive
+  const dcimAgent = new https.Agent({ keepAlive: true, rejectUnauthorized: false });
+
+  let cachedToken = '';
+  let lastLoginAt = 0;
+  let lastError = '';
+
+  function dcimRequest(method, urlPath, headers, body) {
+    return new Promise(function (resolve) {
+      let urlObj;
+      try { urlObj = new URL(urlPath, cfg.apiBase); }
+      catch (e) { return resolve({ ok: false, status: 0, message: 'URL 构造失败：' + e.message }); }
+      const buf = body ? Buffer.from(body, 'utf8') : Buffer.alloc(0);
+      const reqOptions = {
+        method: method,
+        hostname: urlObj.hostname,
+        port: urlObj.port || 443,
+        path: urlObj.pathname + (urlObj.search || ''),
+        agent: dcimAgent,
+        timeout: cfg.timeoutMs || 6000,
+        headers: Object.assign({}, headers || {}),
+      };
+      if (buf.length) {
+        reqOptions.headers['content-type'] = reqOptions.headers['content-type'] || 'application/json;charset=utf-8';
+        reqOptions.headers['content-length'] = buf.length;
+      }
+      const req = https.request(reqOptions, function (res) {
+        const chunks = [];
+        res.on('data', function (d) { chunks.push(d); });
+        res.on('end', function () {
+          const text = Buffer.concat(chunks).toString('utf8');
+          let data;
+          try { data = JSON.parse(text); } catch (_e) { data = text; }
+          resolve({ ok: res.statusCode >= 200 && res.statusCode < 400, status: res.statusCode, data: data });
+        });
+      });
+      req.on('timeout', function () {
+        try { req.destroy(new Error('timeout ' + (cfg.timeoutMs || 6000) + 'ms')); } catch (_e) {}
+      });
+      req.on('error', function (err) {
+        lastError = method + ' ' + urlPath + ': ' + err.message;
+        resolve({ ok: false, status: 0, message: err.message });
+      });
+      if (buf.length) req.write(buf);
+      req.end();
+    });
+  }
+
+  async function loginDcim() {
+    const u = '/api/user/login?username=' + encodeURIComponent(cfg.username)
+      + '&password=' + encodeURIComponent(cfg.passwordHash);
+    const r = await dcimRequest('GET', u, {}, null);
+    if (r.ok && r.data && r.data.code === 0 && r.data.data && r.data.data.accessToken) {
+      cachedToken = r.data.data.accessToken;
+      lastLoginAt = Date.now();
+      appendLog('login ok, token len=' + cachedToken.length);
+      return true;
+    }
+    lastError = 'login failed: status=' + r.status + ' code=' + (r.data && r.data.code);
+    appendLog(lastError);
+    cachedToken = '';
+    return false;
+  }
+
+  async function callWithAuth(method, urlPath, body) {
+    if (!cachedToken) { await loginDcim(); }
+    let r = await dcimRequest(method, urlPath, { 'access-token': cachedToken }, body);
+    // 401 自动续登一次
+    if (r.status === 401 || (r.data && r.data.code === -1) || (r.data && r.data.code === -2)) {
+      const ok = await loginDcim();
+      if (ok) r = await dcimRequest(method, urlPath, { 'access-token': cachedToken }, body);
+    }
+    appendLog(method + ' ' + urlPath + ' -> status=' + r.status);
+    return r;
+  }
+
+  // ---------- /api/dcim-video/* 路由 ----------
+  app.get('/api/dcim-video/status', async function (_req, res) {
+    const cfgInfo = {
+      apiBase: cfg.apiBase, username: cfg.username,
+      hasPasswordHash: !!cfg.passwordHash, timeoutMs: cfg.timeoutMs,
+    };
+    const r = await callWithAuth('GET', '/api/server/version', null);
+    res.json({
+      ok: true,
+      reachable: r.ok,
+      status: r.status,
+      version: (r.ok && r.data && r.data.data && r.data.data.version) || '',
+      hasToken: !!cachedToken,
+      lastLoginAt: lastLoginAt,
+      lastError: lastError,
+      config: cfgInfo,
+    });
+  });
+
+  app.get('/api/dcim-video/config', async function (_req, res) {
+    const r = await callWithAuth('GET', '/api/server/system/configInfo', null);
+    if (!r.ok) return res.json({ ok: false, message: r.message || ('上游返回 ' + r.status), data: r.data });
+    res.json({ ok: true, data: (r.data && r.data.data) || r.data });
+  });
+
+  app.get('/api/dcim-video/devices', async function (req, res) {
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const count = Math.min(200, Math.max(1, parseInt(req.query.count, 10) || 50));
+    const u = '/api/device/query/devices?page=' + page + '&count=' + count;
+    const r = await callWithAuth('GET', u, null);
+    if (!r.ok) return res.json({ ok: false, message: r.message || ('上游返回 ' + r.status), data: r.data });
+    const d = (r.data && r.data.data) || {};
+    res.json({ ok: true, total: d.total || 0, list: d.list || [] });
+  });
+
+  app.get('/api/dcim-video/channels', async function (req, res) {
+    const deviceId = String(req.query.deviceId || '').trim();
+    if (!deviceId) return res.status(400).json({ ok: false, message: 'deviceId 必填' });
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const count = Math.min(500, Math.max(1, parseInt(req.query.count, 10) || 100));
+    const u = '/api/device/query/devices/' + encodeURIComponent(deviceId) + '/channels?page=' + page + '&count=' + count;
+    const r = await callWithAuth('GET', u, null);
+    if (!r.ok) return res.json({ ok: false, message: r.message || ('上游返回 ' + r.status), data: r.data });
+    const d = (r.data && r.data.data) || {};
+    res.json({ ok: true, total: d.total || 0, list: d.list || [] });
+  });
+
+  app.post('/api/dcim-video/sync-device', async function (req, res) {
+    const body = req.body || {};
+    const deviceId = String(body.deviceId || '').trim();
+    if (!deviceId) return res.status(400).json({ ok: false, message: 'deviceId 必填' });
+    const u = '/api/device/query/devices/' + encodeURIComponent(deviceId) + '/sync';
+    const r = await callWithAuth('GET', u, null);
+    res.json({ ok: r.ok, status: r.status, data: r.data });
+  });
+
+  // ---------- dcim 那套的 实时点播 / 回放 ----------
+  // wvp 返回的 flv URL 形如 http://192.168.0.22[:80]/rtp/xxx.live.flv
+  // 改写成 /media-dcim/rtp/xxx.live.flv，让浏览器同源走 webssh 反代
+  function rewriteToDcimProxy(url) {
+    if (!url) return '';
+    return String(url).replace(/^(https?:)?\/\/[^/]+/, '/media-dcim');
+  }
+
+  app.post('/api/dcim-video/play/:deviceId/:channelId', async function (req, res) {
+    const did = encodeURIComponent(req.params.deviceId || '');
+    const cid = encodeURIComponent(req.params.channelId || '');
+    const r = await callWithAuth('GET', '/api/play/start/' + did + '/' + cid, null);
+    if (!r.ok || !r.data || r.data.code !== 0) {
+      return res.json({ ok: false, status: r.status, message: (r.data && r.data.msg) || r.message || ('上游返回 ' + r.status), raw: r.data });
+    }
+    const d = r.data.data || {};
+    res.json({
+      ok: true,
+      streamKey: (d.app || 'rtp') + '/' + (d.stream || ''),
+      flvUrl: rewriteToDcimProxy(d.flv),
+      hlsUrl: rewriteToDcimProxy(d.hls),
+      ssrc: d.ssrc || '', app: d.app || 'rtp', stream: d.stream || '',
+    });
+  });
+
+  app.post('/api/dcim-video/play/stop/:deviceId/:channelId', async function (req, res) {
+    const did = encodeURIComponent(req.params.deviceId || '');
+    const cid = encodeURIComponent(req.params.channelId || '');
+    const r = await callWithAuth('GET', '/api/play/stop/' + did + '/' + cid, null);
+    res.json({ ok: r.ok && r.data && r.data.code === 0, message: (r.data && r.data.msg) || r.message || '' });
+  });
+
+  app.post('/api/dcim-video/playback/start/:deviceId/:channelId', async function (req, res) {
+    const did = encodeURIComponent(req.params.deviceId || '');
+    const cid = encodeURIComponent(req.params.channelId || '');
+    const startTime = String((req.body && req.body.startTime) || req.query.startTime || '');
+    const endTime = String((req.body && req.body.endTime) || req.query.endTime || '');
+    if (!startTime || !endTime) return res.status(400).json({ ok: false, message: 'startTime/endTime 必填' });
+    const u = '/api/playback/start/' + did + '/' + cid + '?startTime=' + encodeURIComponent(startTime) + '&endTime=' + encodeURIComponent(endTime);
+    const r = await callWithAuth('GET', u, null);
+    if (!r.ok || !r.data || r.data.code !== 0) {
+      return res.json({ ok: false, status: r.status, message: (r.data && r.data.msg) || r.message || ('上游返回 ' + r.status), raw: r.data });
+    }
+    const d = r.data.data || {};
+    res.json({
+      ok: true,
+      streamKey: (d.app || 'rtp') + '/' + (d.stream || ''),
+      flvUrl: rewriteToDcimProxy(d.flv),
+      hlsUrl: rewriteToDcimProxy(d.hls),
+      ssrc: d.ssrc || '', app: d.app || 'rtp', stream: d.stream || '',
+    });
+  });
+
+  app.post('/api/dcim-video/playback/stop/:streamId', async function (req, res) {
+    const sid = encodeURIComponent(req.params.streamId || '');
+    const r = await callWithAuth('GET', '/api/playback/stop/' + sid, null);
+    res.json({ ok: r.ok && r.data && r.data.code === 0, message: (r.data && r.data.msg) || r.message || '' });
+  });
+
+  app.post('/api/dcim-video/playback/control/:streamId/:cmd', async function (req, res) {
+    const sid = encodeURIComponent(req.params.streamId || '');
+    const cmd = encodeURIComponent(req.params.cmd || '');
+    const value = String((req.body && req.body.value) || req.query.value || '');
+    const u = '/api/playback/control/' + sid + '/' + cmd + (value ? '/' + encodeURIComponent(value) : '');
+    const r = await callWithAuth('GET', u, null);
+    res.json({ ok: r.ok && r.data && r.data.code === 0, message: (r.data && r.data.msg) || r.message || '', data: r.data && r.data.data });
+  });
+
+  // /media-dcim/* 反代到 dcim 容器内 ZLM HTTP 80（host:80 → docker-proxy → 容器:80 → ZLM）
+  const mediaProxyDcim = httpProxy.createProxyServer({
+    target: 'http://127.0.0.1:80',
+    changeOrigin: false, ws: false,
+    proxyTimeout: 60000, timeout: 60000,
+  });
+  mediaProxyDcim.on('error', function (err, _req, res2) {
+    if (res2 && !res2.headersSent) {
+      try {
+        res2.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
+        res2.end(JSON.stringify({ ok: false, msg: 'dcim ZLM 不可达：' + err.message }));
+      } catch (_e) {}
+    }
+  });
+  app.all(/^\/media-dcim(\/.*)?$/, function (req, res) {
+    req.url = req.url.replace(/^\/media-dcim/, '') || '/';
+    mediaProxyDcim.web(req, res);
+  });
+
+  appendLog('dcim-video reverse proxy ready, apiBase=' + cfg.apiBase);
+})();
+
+// ===================== webssh 自己 wvp 反代（5070 那套）=====================
+// 跟 setupDcimVideo 对称：webssh-wvp 监听 18082 HTTP（application-webssh.yml 里
+// server.ssl.enabled: false）。让前端 video/ 子站可以切换查看两套数据：
+// - /api/dcim-video/*    → dcim 容器内 wvp:18080 (HTTPS)，5060 SIP 注册的设备
+// - /api/webssh-video/*  → webssh-wvp:18082 (HTTP)，5070 SIP 注册的设备
+(function setupWebsshVideo() {
+  const path = require('path');
+  const httpMod = require('http');
+
+  const CONFIG_PATH = process.env.WEBSSH_VIDEO_CONFIG || path.join(__dirname, 'config', 'webssh-video.json');
+  const LOG_PATH = process.env.WEBSSH_VIDEO_LOG || path.join(__dirname, 'logs', 'webssh-video.log');
+
+  const defaults = {
+    apiBase: 'http://127.0.0.1:18082',
+    username: 'admin',
+    // wvp_webssh.wvp_user.password 字段（schema 从 dcim 同步过来，admin 用同样 hash）
+    passwordHash: '551c76780e34e1c1fab9ff85dfc79947',
+    timeoutMs: 6000,
+  };
+
+  let cfg = JSON.parse(JSON.stringify(defaults));
+  function readCfg() {
+    try {
+      const raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+      cfg = Object.assign({}, defaults, raw);
+    } catch (_e) { cfg = JSON.parse(JSON.stringify(defaults)); }
+  }
+  readCfg();
+
+  function localStamp() {
+    const d = new Date();
+    const pad = (n) => (n < 10 ? '0' + n : '' + n);
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
+      + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+  }
+  function appendLog(line) {
+    try {
+      fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true });
+      fs.appendFileSync(LOG_PATH, '[' + localStamp() + '] ' + line + '\n', 'utf8');
+    } catch (_e) {}
+  }
+
+  const wsAgent = new httpMod.Agent({ keepAlive: true });
+  let cachedToken = '';
+  let lastLoginAt = 0;
+  let lastError = '';
+
+  function wsRequest(method, urlPath, headers, body) {
+    return new Promise(function (resolve) {
+      let urlObj;
+      try { urlObj = new URL(urlPath, cfg.apiBase); }
+      catch (e) { return resolve({ ok: false, status: 0, message: 'URL 构造失败：' + e.message }); }
+      const buf = body ? Buffer.from(body, 'utf8') : Buffer.alloc(0);
+      const reqOptions = {
+        method: method,
+        hostname: urlObj.hostname,
+        port: urlObj.port || 80,
+        path: urlObj.pathname + (urlObj.search || ''),
+        agent: wsAgent,
+        timeout: cfg.timeoutMs || 6000,
+        headers: Object.assign({}, headers || {}),
+      };
+      if (buf.length) {
+        reqOptions.headers['content-type'] = reqOptions.headers['content-type'] || 'application/json;charset=utf-8';
+        reqOptions.headers['content-length'] = buf.length;
+      }
+      const req = httpMod.request(reqOptions, function (res) {
+        const chunks = [];
+        res.on('data', function (d) { chunks.push(d); });
+        res.on('end', function () {
+          const text = Buffer.concat(chunks).toString('utf8');
+          let data;
+          try { data = JSON.parse(text); } catch (_e) { data = text; }
+          resolve({ ok: res.statusCode >= 200 && res.statusCode < 400, status: res.statusCode, data: data });
+        });
+      });
+      req.on('timeout', function () {
+        try { req.destroy(new Error('timeout ' + (cfg.timeoutMs || 6000) + 'ms')); } catch (_e) {}
+      });
+      req.on('error', function (err) {
+        lastError = method + ' ' + urlPath + ': ' + err.message;
+        resolve({ ok: false, status: 0, message: err.message });
+      });
+      if (buf.length) req.write(buf);
+      req.end();
+    });
+  }
+
+  async function loginWvp() {
+    const u = '/api/user/login?username=' + encodeURIComponent(cfg.username)
+      + '&password=' + encodeURIComponent(cfg.passwordHash);
+    const r = await wsRequest('GET', u, {}, null);
+    if (r.ok && r.data && r.data.code === 0 && r.data.data && r.data.data.accessToken) {
+      cachedToken = r.data.data.accessToken;
+      lastLoginAt = Date.now();
+      appendLog('login ok, token len=' + cachedToken.length);
+      return true;
+    }
+    lastError = 'login failed: status=' + r.status + ' code=' + (r.data && r.data.code);
+    appendLog(lastError);
+    cachedToken = '';
+    return false;
+  }
+
+  async function callWithAuth(method, urlPath, body) {
+    if (!cachedToken) { await loginWvp(); }
+    let r = await wsRequest(method, urlPath, { 'access-token': cachedToken }, body);
+    if (r.status === 401 || (r.data && r.data.code === -1) || (r.data && r.data.code === -2)) {
+      const ok = await loginWvp();
+      if (ok) r = await wsRequest(method, urlPath, { 'access-token': cachedToken }, body);
+    }
+    appendLog(method + ' ' + urlPath + ' -> status=' + r.status);
+    return r;
+  }
+
+  app.get('/api/webssh-video/status', async function (_req, res) {
+    const r = await callWithAuth('GET', '/api/server/version', null);
+    res.json({
+      ok: true,
+      reachable: r.ok,
+      status: r.status,
+      version: (r.ok && r.data && r.data.data && r.data.data.version) || '',
+      hasToken: !!cachedToken,
+      lastLoginAt: lastLoginAt,
+      lastError: lastError,
+      config: { apiBase: cfg.apiBase, username: cfg.username, hasPasswordHash: !!cfg.passwordHash, timeoutMs: cfg.timeoutMs },
+    });
+  });
+
+  app.get('/api/webssh-video/config', async function (_req, res) {
+    const r = await callWithAuth('GET', '/api/server/system/configInfo', null);
+    if (!r.ok) return res.json({ ok: false, message: r.message || ('上游返回 ' + r.status), data: r.data });
+    res.json({ ok: true, data: (r.data && r.data.data) || r.data });
+  });
+
+  app.get('/api/webssh-video/devices', async function (req, res) {
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const count = Math.min(200, Math.max(1, parseInt(req.query.count, 10) || 50));
+    const u = '/api/device/query/devices?page=' + page + '&count=' + count;
+    const r = await callWithAuth('GET', u, null);
+    if (!r.ok) return res.json({ ok: false, message: r.message || ('上游返回 ' + r.status), data: r.data });
+    const d = (r.data && r.data.data) || {};
+    res.json({ ok: true, total: d.total || 0, list: d.list || [] });
+  });
+
+  app.get('/api/webssh-video/channels', async function (req, res) {
+    const deviceId = String(req.query.deviceId || '').trim();
+    if (!deviceId) return res.status(400).json({ ok: false, message: 'deviceId 必填' });
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const count = Math.min(500, Math.max(1, parseInt(req.query.count, 10) || 100));
+    const u = '/api/device/query/devices/' + encodeURIComponent(deviceId) + '/channels?page=' + page + '&count=' + count;
+    const r = await callWithAuth('GET', u, null);
+    if (!r.ok) return res.json({ ok: false, message: r.message || ('上游返回 ' + r.status), data: r.data });
+    const d = (r.data && r.data.data) || {};
+    res.json({ ok: true, total: d.total || 0, list: d.list || [] });
+  });
+
+  // ---------- 实时点播 / 停止 / 回放（走 wvp /api/play /api/playback）----------
+  // 把 wvp 返回的 flv URL（http://stream-ip:zlm-port/...）改写成 /media-webssh/*
+  // 让浏览器同源走 webssh 反代，复用 webssh 登录态，避开自签证书 / 跨端口问题
+  function rewriteToProxy(url) {
+    if (!url) return '';
+    return String(url).replace(/^(https?:)?\/\/[^/]+/, '/media-webssh');
+  }
+
+  app.post('/api/webssh-video/play/:deviceId/:channelId', async function (req, res) {
+    const did = encodeURIComponent(req.params.deviceId || '');
+    const cid = encodeURIComponent(req.params.channelId || '');
+    const r = await callWithAuth('GET', '/api/play/start/' + did + '/' + cid, null);
+    if (!r.ok || !r.data || r.data.code !== 0) {
+      return res.json({ ok: false, status: r.status, message: (r.data && r.data.msg) || r.message || ('上游返回 ' + r.status), raw: r.data });
+    }
+    const d = r.data.data || {};
+    res.json({
+      ok: true,
+      streamKey: (d.app || 'rtp') + '/' + (d.stream || ''),
+      flvUrl: rewriteToProxy(d.flv),
+      hlsUrl: rewriteToProxy(d.hls),
+      ssrc: d.ssrc || '',
+      app: d.app || 'rtp',
+      stream: d.stream || '',
+      mediaServerId: d.mediaServerId || '',
+    });
+  });
+
+  app.post('/api/webssh-video/play/stop/:deviceId/:channelId', async function (req, res) {
+    const did = encodeURIComponent(req.params.deviceId || '');
+    const cid = encodeURIComponent(req.params.channelId || '');
+    const r = await callWithAuth('GET', '/api/play/stop/' + did + '/' + cid, null);
+    res.json({ ok: r.ok && r.data && r.data.code === 0, message: (r.data && r.data.msg) || r.message || '' });
+  });
+
+  app.post('/api/webssh-video/playback/start/:deviceId/:channelId', async function (req, res) {
+    const did = encodeURIComponent(req.params.deviceId || '');
+    const cid = encodeURIComponent(req.params.channelId || '');
+    const startTime = String((req.body && req.body.startTime) || req.query.startTime || '');
+    const endTime = String((req.body && req.body.endTime) || req.query.endTime || '');
+    if (!startTime || !endTime) return res.status(400).json({ ok: false, message: 'startTime/endTime 必填（YYYY-MM-DDTHH:mm:ss）' });
+    const u = '/api/playback/start/' + did + '/' + cid + '?startTime=' + encodeURIComponent(startTime) + '&endTime=' + encodeURIComponent(endTime);
+    const r = await callWithAuth('GET', u, null);
+    if (!r.ok || !r.data || r.data.code !== 0) {
+      return res.json({ ok: false, status: r.status, message: (r.data && r.data.msg) || r.message || ('上游返回 ' + r.status), raw: r.data });
+    }
+    const d = r.data.data || {};
+    res.json({
+      ok: true,
+      streamKey: (d.app || 'rtp') + '/' + (d.stream || ''),
+      flvUrl: rewriteToProxy(d.flv),
+      hlsUrl: rewriteToProxy(d.hls),
+      ssrc: d.ssrc || '',
+      app: d.app || 'rtp',
+      stream: d.stream || '',
+    });
+  });
+
+  app.post('/api/webssh-video/playback/stop/:streamId', async function (req, res) {
+    const sid = encodeURIComponent(req.params.streamId || '');
+    const r = await callWithAuth('GET', '/api/playback/stop/' + sid, null);
+    res.json({ ok: r.ok && r.data && r.data.code === 0, message: (r.data && r.data.msg) || r.message || '' });
+  });
+
+  // 倍速/暂停/继续/seek（wvp 2.6.9 /api/playback/control/{stream}/{cmd}/{value}）
+  app.post('/api/webssh-video/playback/control/:streamId/:cmd', async function (req, res) {
+    const sid = encodeURIComponent(req.params.streamId || '');
+    const cmd = encodeURIComponent(req.params.cmd || ''); // pause / play / scale / seek
+    const value = String((req.body && req.body.value) || req.query.value || '');
+    const u = '/api/playback/control/' + sid + '/' + cmd + (value ? '/' + encodeURIComponent(value) : '');
+    const r = await callWithAuth('GET', u, null);
+    res.json({ ok: r.ok && r.data && r.data.code === 0, message: (r.data && r.data.msg) || r.message || '', data: r.data && r.data.data });
+  });
+
+  // ---------- /media-webssh/* 反代到 webssh-mediaserver ZLM 18180 ----------
+  const mediaProxyWebssh = httpProxy.createProxyServer({
+    target: 'http://127.0.0.1:18180',
+    changeOrigin: false, ws: false,
+    proxyTimeout: 60000, timeout: 60000,
+  });
+  mediaProxyWebssh.on('error', function (err, _req, res2) {
+    if (res2 && !res2.headersSent) {
+      try {
+        res2.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
+        res2.end(JSON.stringify({ ok: false, msg: 'webssh 媒体服务未启动或无响应：' + err.message }));
+      } catch (_e) {}
+    }
+  });
+  app.all(/^\/media-webssh(\/.*)?$/, function (req, res) {
+    req.url = req.url.replace(/^\/media-webssh/, '') || '/';
+    mediaProxyWebssh.web(req, res);
+  });
+
+  appendLog('webssh-video reverse proxy ready, apiBase=' + cfg.apiBase);
 })();
 
 const port = Number(process.env.PORT || 3000);

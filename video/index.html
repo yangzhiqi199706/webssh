@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>视频监控 · Web SSH</title>
+  <link rel="stylesheet" href="./assets/css/style.css" />
+  <script src="./vendor/flv.min.js"></script>
+</head>
+<body>
+  <div id="app">
+    <header class="top-bar">
+      <div class="title">视频监控</div>
+      <div class="subtitle">GB/T 28181 · 实时预览（双击设备列表的设备名）+ dcim/webssh 配置切换</div>
+      <div class="spacer"></div>
+
+      <div class="layout-switcher" role="group" aria-label="分屏切换">
+        <button class="lb active" data-layout="1" type="button" title="1 分屏">1</button>
+        <button class="lb" data-layout="4" type="button" title="2×2">4</button>
+        <button class="lb" data-layout="9" type="button" title="3×3">9</button>
+        <button class="lb" data-layout="16" type="button" title="4×4">16</button>
+      </div>
+
+      <button class="btn" id="btnStopAll" type="button" disabled title="待对接">关闭全部</button>
+      <button class="btn" id="btnFullscreen" type="button" disabled title="待对接">全屏</button>
+
+      <span class="role-tag" id="dcimTag" title="dcim 视频监控状态">
+        <span class="dot off" id="dcimDot"></span>dcim 视频监控
+      </span>
+      <button class="btn primary big" id="btnLoadDcim" type="button" title="拉取 dcim wvp（5060 SIP）的配置和设备">
+        📡 加载 dcim 视频监控
+      </button>
+
+      <span class="role-tag" id="webTag" title="webssh 视频监控状态">
+        <span class="dot off" id="webDot"></span>webssh 视频监控
+      </span>
+      <button class="btn primary big" id="btnLoadWebssh" type="button" title="拉取 webssh-wvp（5070 SIP）的配置和设备">
+        📡 加载 webssh 视频监控
+      </button>
+
+      <button class="btn" id="btnOpenDcim" type="button" title="新窗口打开 dcim 8086 页面">
+        🔗 打开 8086
+      </button>
+    </header>
+
+    <section class="main">
+      <!-- 左：设备列表 -->
+      <aside class="column" id="colTree">
+        <div class="column-head">
+          <h2>设备列表</h2>
+          <span class="muted" id="treeCount">(0)</span>
+        </div>
+        <div class="column-body">
+          <div class="hint placeholder" id="treePlaceholder">
+            <p><b>UI 占位</b></p>
+            <p>切换摄像头 SIP 服务器端口：</p>
+            <p>① <b>5070</b> → webssh-wvp（点「📡 加载 webssh 视频监控」）</p>
+            <p>② <b>5060</b> → dcim 容器内 wvp（点「📡 加载 dcim 视频监控」或「🔗 打开 8086」）</p>
+
+            <details class="fix-tip">
+              <summary>⚙ dcim 8086 网页看不到数据 → 一次性修复方法</summary>
+              <p style="margin-top:8px">改下面两个 yml（容器内）：</p>
+              <p>① <code>/dcim/media/wvp-GB28181-pro/target/classes/application-dev.yml</code></p>
+              <p>② <code>/dcim/media/wvp-pro-assist/target/classes/application-dev.yml</code></p>
+              <p style="margin-top:6px"><b>media 段：</b></p>
+              <pre>stream-ip: 192.168.0.22
+sdp-ip:    192.168.0.22</pre>
+              <p><b>user-settings.allowed-origins：</b></p>
+              <pre>- http://192.168.0.22:8088
+- https://192.168.0.22:8081
+- https://192.168.0.22:8086</pre>
+              <p style="margin-top:6px"><b>容器内执行：</b></p>
+              <pre>systemctl restart wvp-pro ZLMediaKit</pre>
+              <p style="color:#94a3b8;margin-top:6px">根因：浏览器从 8086 跨端口访问 wvp 18080 触发 CORS，
+                wvp allowed-origins 没列 8086 → 被浏览器拦截。</p>
+            </details>
+          </div>
+          <div id="dcimDeviceList" class="dev-tree" style="display:none"></div>
+        </div>
+      </aside>
+
+      <!-- 中：分屏占位 + 下方 dcim 数据面板 -->
+      <div class="column" id="colGrid">
+        <div class="column-head">
+          <h2 id="gridTitle">实时预览</h2>
+          <div class="muted" id="gridHint">UI 占位 - 功能待对接</div>
+        </div>
+        <div class="column-body grid-body">
+          <div id="videoGrid" class="video-grid layout-1"></div>
+
+          <div class="dcim-panels" id="dcimPanels" hidden>
+            <details class="dcim-card" id="dcimCfgCard" open>
+              <summary>
+                <span class="card-title">🛰 国标 28181 服务器配置 <span class="src-tag" id="cfgSrcTag" hidden></span></span>
+                <span class="muted" id="dcimCfgHint">未加载</span>
+              </summary>
+              <div class="card-body">
+                <table class="kv-table" id="dcimCfgTable">
+                  <tbody><tr><td colspan="2" class="muted">点上方「📡 加载 dcim/webssh 视频监控」</td></tr></tbody>
+                </table>
+              </div>
+            </details>
+
+            <details class="dcim-card" id="dcimDevCard" open>
+              <summary>
+                <span class="card-title">📺 监控设备 <span class="src-tag" id="devSrcTag" hidden></span></span>
+                <span class="muted" id="dcimDevHint">未加载</span>
+              </summary>
+              <div class="card-body">
+                <table class="data-table" id="dcimDevTable">
+                  <thead><tr><th>设备 ID</th><th>名称</th><th>厂家</th><th>IP:Port</th><th>通道数</th><th>状态</th><th>最后心跳</th></tr></thead>
+                  <tbody><tr><td colspan="7" class="muted">点上方「📡 加载 dcim/webssh 视频监控」</td></tr></tbody>
+                </table>
+              </div>
+            </details>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+  (function () {
+    'use strict';
+    var $ = function (id) { return document.getElementById(id); };
+    var grid = $('videoGrid');
+    var hint = $('gridHint');
+    var dcimDot = $('dcimDot');
+    var dcimTagEl = $('dcimTag');
+    var webDot = $('webDot');
+    var webTagEl = $('webTag');
+
+    // ==================== 分屏 + Tile 类（flv.js 实时播放）====================
+    var LAYOUT_CAPS = { 1: 1, 4: 4, 9: 9, 16: 16 };
+    var tiles = [];        // Tile 实例数组
+    var activeIdx = 0;
+    var currentSource = 'webssh';  // 默认走 webssh-wvp（5070），切到 dcim 时改 'dcim'
+
+    function Tile(idx, el) {
+      this.idx = idx;
+      this.el = el;
+      this.video = el.querySelector('video');
+      this.elEmpty = el.querySelector('.tile-empty');
+      this.elOverlay = el.querySelector('.tile-overlay');
+      this.elTitle = el.querySelector('.tile-overlay .title');
+      this.elActions = el.querySelector('.tile-actions');
+      this.elLoader = el.querySelector('.tile-loader');
+      this.player = null;
+      this.streamKey = null;
+      this.deviceId = null;
+      this.channelId = null;
+      this.source = null;
+      var self = this;
+      el.addEventListener('click', function () { setActiveTile(self.idx); });
+      el.querySelector('.btn-stop').addEventListener('click', function (e) { e.stopPropagation(); self.stop(); });
+    }
+    Tile.prototype.play = function (params) {
+      var self = this;
+      this.deviceId = params.deviceId; this.channelId = params.channelId;
+      this.streamKey = params.streamKey; this.source = params.source;
+      this.elTitle.textContent = (params.channelName || params.channelId) + (params.deviceName ? '  ◎ ' + params.deviceName : '');
+      this._destroyPlayer();
+      this.elEmpty.style.display = 'none';
+      this.video.style.display = '';
+      this.elOverlay.hidden = false;
+      this.elActions.hidden = false;
+      this.elLoader.hidden = false;
+      if (!window.flvjs || !window.flvjs.isSupported()) {
+        this.elLoader.hidden = true;
+        this.elEmpty.style.display = '';
+        this.video.style.display = 'none';
+        this.elEmpty.innerHTML = '当前浏览器不支持 MSE / flv.js';
+        return;
+      }
+      var p = window.flvjs.createPlayer(
+        { type: 'flv', url: params.flvUrl, isLive: true, hasAudio: false },
+        { enableStashBuffer: false, stashInitialSize: 128, lazyLoad: false, autoCleanupSourceBuffer: true }
+      );
+      p.attachMediaElement(this.video);
+      p.on(window.flvjs.Events.MEDIA_INFO, function () { self.elLoader.hidden = true; });
+      p.on(window.flvjs.Events.ERROR, function (et, ed) {
+        self.elLoader.hidden = true;
+        console.warn('[tile ' + self.idx + '] flv error', et, ed);
+      });
+      try { p.load(); } catch (_e) {}
+      try { var pr = this.video.play(); if (pr && pr.catch) pr.catch(function () {}); } catch (_e) {}
+      this.player = p;
+    };
+    Tile.prototype._destroyPlayer = function () {
+      if (this.player) {
+        try { this.player.pause(); } catch (_e) {}
+        try { this.player.unload(); } catch (_e) {}
+        try { this.player.detachMediaElement(); } catch (_e) {}
+        try { this.player.destroy(); } catch (_e) {}
+        this.player = null;
+      }
+      try { this.video.removeAttribute('src'); this.video.load(); } catch (_e) {}
+    };
+    Tile.prototype.stop = function () {
+      var self = this;
+      var dev = this.deviceId, ch = this.channelId, src = this.source;
+      this._destroyPlayer();
+      this.streamKey = null; this.deviceId = null; this.channelId = null; this.source = null;
+      this.elEmpty.style.display = '';
+      this.video.style.display = 'none';
+      this.elOverlay.hidden = true;
+      this.elActions.hidden = true;
+      this.elLoader.hidden = true;
+      if (dev && ch && src) {
+        fetch('/api/' + src + '-video/play/stop/' + encodeURIComponent(dev) + '/' + encodeURIComponent(ch),
+          { method: 'POST' }).catch(function () {});
+      }
+    };
+
+    function tileHTML(idx) {
+      return '<video muted playsinline style="display:none"></video>'
+        + '<div class="tile-empty">分屏 ' + (idx + 1) + '<br><span class="dim">双击左侧设备名播放</span></div>'
+        + '<div class="tile-overlay" hidden><span class="badge">LIVE</span><span class="title"></span></div>'
+        + '<div class="tile-actions" hidden><button class="ta-btn btn-stop" type="button" title="停止">×</button></div>'
+        + '<div class="tile-loader" hidden>载入中…</div>';
+    }
+    function renderTiles(n) {
+      grid.className = 'video-grid layout-' + n;
+      while (tiles.length > n) {
+        var t = tiles.pop();
+        t.stop();
+        t.el.remove();
+      }
+      while (tiles.length < n) {
+        var idx = tiles.length;
+        var div = document.createElement('div');
+        div.className = 'tile';
+        div.dataset.idx = String(idx);
+        div.innerHTML = tileHTML(idx);
+        grid.appendChild(div);
+        tiles.push(new Tile(idx, div));
+      }
+      if (activeIdx >= tiles.length) activeIdx = 0;
+      setActiveTile(activeIdx);
+    }
+    function setActiveTile(idx) {
+      activeIdx = (idx >= 0 && idx < tiles.length) ? idx : 0;
+      tiles.forEach(function (t, i) { t.el.classList.toggle('active', i === activeIdx); });
+    }
+    renderTiles(1);
+    document.querySelectorAll('.layout-switcher .lb').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var n = Number(b.dataset.layout);
+        if (!LAYOUT_CAPS[n]) return;
+        document.querySelectorAll('.layout-switcher .lb').forEach(function (x) {
+          x.classList.toggle('active', x === b);
+        });
+        renderTiles(n);
+        hint.textContent = '已切到 ' + n + ' 分屏，双击左侧设备名分配到当前激活格子';
+      });
+    });
+
+    // 关闭全部 + 全屏
+    $('btnStopAll').disabled = false;
+    $('btnStopAll').title = '停止所有分屏';
+    $('btnStopAll').addEventListener('click', function () { tiles.forEach(function (t) { t.stop(); }); });
+    $('btnFullscreen').disabled = false;
+    $('btnFullscreen').title = '全屏当前激活格子';
+    $('btnFullscreen').addEventListener('click', function () {
+      var doc = document;
+      if (doc.fullscreenElement) {
+        (doc.exitFullscreen || function () {}).call(doc);
+      } else {
+        var t = tiles[activeIdx];
+        var target = t ? t.el : grid;
+        var fn = target.requestFullscreen || target.webkitRequestFullscreen;
+        if (fn) fn.call(target);
+      }
+    });
+
+    // 状态轮询：dcim + webssh 两套对称
+    function setStatus(dotEl, tagEl, stateClass, title) {
+      dotEl.className = 'dot ' + stateClass;
+      tagEl.title = title || '';
+    }
+    function refreshStatus(srcKey, dotEl, tagEl, label) {
+      return fetch('/api/' + srcKey + '-video/status').then(function (r) { return r.json(); })
+        .then(function (resp) {
+          if (!resp.ok) { setStatus(dotEl, tagEl, 'err', '查询失败'); return; }
+          if (resp.reachable) setStatus(dotEl, tagEl, 'on', label + ' wvp v' + resp.version + ' · token=' + (resp.hasToken ? '已登录' : '无'));
+          else setStatus(dotEl, tagEl, 'err', resp.lastError || '不可达');
+        }).catch(function () { setStatus(dotEl, tagEl, 'err', '请求失败'); });
+    }
+    function refreshDcimStatus() { return refreshStatus('dcim', dcimDot, dcimTagEl, 'dcim'); }
+    function refreshWebsshStatus() { return refreshStatus('webssh', webDot, webTagEl, 'webssh'); }
+    refreshDcimStatus();
+    refreshWebsshStatus();
+    setInterval(refreshDcimStatus, 30000);
+    setInterval(refreshWebsshStatus, 30000);
+
+    // 渲染配置（接受数据源，更新面板标签）
+    function renderConfig(cfg, source) {
+      var sip = (cfg && cfg.sip) || {};
+      var ver = (cfg && cfg.version) || {};
+      var rows = [
+        ['SIP 服务器 ID', sip.id || '—'],
+        ['SIP 服务器域', sip.domain || '—'],
+        ['SIP 监听 IP', sip.ip || '—'],
+        ['SIP 监听端口', sip.port != null ? sip.port : '—'],
+        ['SIP 鉴权密码', sip.password ? sip.password : '(留空 = 不校验)'],
+        ['注册有效期', (sip.registerTimeInterval || '—') + ' 秒'],
+        ['云台速度', sip.ptzSpeed != null ? sip.ptzSpeed : '—'],
+        ['wvp 版本', (ver.version || '—') + ' (' + (ver.GIT_BRANCH || '') + ' / ' + (ver.BUILD_DATE || '') + ')'],
+        ['HTTP 端口', cfg && cfg.serverPort ? cfg.serverPort : '—'],
+      ];
+      var html = '';
+      rows.forEach(function (r) {
+        html += '<tr><td class="k">' + esc(r[0]) + '</td><td class="v">' + esc(r[1]) + '</td></tr>';
+      });
+      $('dcimCfgTable').querySelector('tbody').innerHTML = html;
+      $('dcimCfgHint').textContent = '已加载';
+      $('dcimCfgHint').className = 'muted ok';
+      var srcEl = $('cfgSrcTag');
+      srcEl.hidden = false;
+      srcEl.textContent = source === 'dcim' ? 'dcim 那套（5060）' : 'webssh 那套（5070）';
+      srcEl.className = 'src-tag ' + (source === 'dcim' ? 'src-dcim' : 'src-webssh');
+    }
+
+    // 渲染设备
+    function renderDevices(list, total, source) {
+      var tbody = $('dcimDevTable').querySelector('tbody');
+      var portTip = source === 'dcim' ? '5060' : '5070';
+      if (!list || !list.length) {
+        tbody.innerHTML = '<tr><td colspan="7" class="muted" style="text-align:center;padding:20px">'
+          + '暂无设备 — 切换摄像头 SIP 服务器端口为 <b>' + portTip + '</b> 即可注册到这套</td></tr>';
+        $('dcimDevHint').textContent = '设备数 0';
+        $('treeCount').textContent = '(0)';
+      } else {
+        var html = '';
+        list.forEach(function (d) {
+          var online = d.onLine ? '<span class="badge ok">在线</span>' : '<span class="badge err">离线</span>';
+          html += '<tr>'
+            + '<td class="mono">' + esc(d.deviceId || '') + '</td>'
+            + '<td>' + esc(d.name || '—') + '</td>'
+            + '<td>' + esc(d.manufacturer || '—') + '</td>'
+            + '<td class="mono">' + esc(d.ip || '—') + ':' + esc(d.port || '') + '</td>'
+            + '<td>' + esc(d.channelCount != null ? d.channelCount : '—') + '</td>'
+            + '<td>' + online + '</td>'
+            + '<td class="mono">' + esc(d.keepaliveTime || '—') + '</td>'
+            + '</tr>';
+        });
+        tbody.innerHTML = html;
+        $('dcimDevHint').textContent = '设备数 ' + (total != null ? total : list.length);
+
+        var treeHtml = '';
+        list.forEach(function (d) {
+          var st = d.onLine ? 'on' : 'off';
+          treeHtml += '<div class="dev-node">'
+            + '<div class="dev-head" data-dev="' + esc(d.deviceId) + '" data-name="' + esc(d.name || d.deviceId) + '" title="双击播放">'
+            + '<span class="arrow">▾</span>'
+            + '<span class="dev-name">' + esc(d.name || d.deviceId) + '</span>'
+            + '<span class="dev-status ' + st + '">' + (d.onLine ? '在线' : '离线') + '</span>'
+            + '</div></div>';
+        });
+        $('dcimDeviceList').innerHTML = treeHtml;
+        $('dcimDeviceList').style.display = '';
+        $('treePlaceholder').style.display = 'none';
+        $('treeCount').textContent = '(' + (total != null ? total : list.length) + ')';
+      }
+      var srcEl = $('devSrcTag');
+      srcEl.hidden = false;
+      srcEl.textContent = source === 'dcim' ? 'dcim 那套（5060）' : 'webssh 那套（5070）';
+      srcEl.className = 'src-tag ' + (source === 'dcim' ? 'src-dcim' : 'src-webssh');
+    }
+
+    function esc(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    // ==================== 加载 dcim/webssh 配置和设备 ====================
+    function loadSource(source, btnId) {
+      var btn = $(btnId);
+      btn.disabled = true;
+      var oldText = btn.textContent;
+      btn.textContent = "加载中…";
+      $("dcimPanels").hidden = false;
+      $("dcimCfgHint").textContent = "加载中…";
+      $("dcimDevHint").textContent = "加载中…";
+      var apiPrefix = "/api/" + source + "-video";
+      Promise.all([
+        fetch(apiPrefix + "/config").then(function (r) { return r.json(); }),
+        fetch(apiPrefix + "/devices?page=1&count=200").then(function (r) { return r.json(); }),
+      ]).then(function (results) {
+        var cfgResp = results[0], devResp = results[1];
+        if (cfgResp.ok && cfgResp.data) renderConfig(cfgResp.data, source);
+        else $("dcimCfgHint").textContent = "加载失败：" + (cfgResp.message || "未知");
+        if (devResp.ok) renderDevices(devResp.list, devResp.total, source);
+        else $("dcimDevHint").textContent = "加载失败：" + (devResp.message || "未知");
+        currentSource = source;
+        if (source === "dcim") refreshDcimStatus(); else refreshWebsshStatus();
+        hint.textContent = "当前数据源：" + (source === "dcim" ? "dcim（5060）" : "webssh（5070）")
+          + " · 双击左侧设备名播放到当前激活分屏";
+      }).catch(function (e) { $("dcimCfgHint").textContent = "请求失败：" + e.message; })
+      .then(function () { btn.disabled = false; btn.textContent = oldText; });
+    }
+
+    $("btnLoadDcim").addEventListener("click", function () { loadSource("dcim", "btnLoadDcim"); });
+    $("btnLoadWebssh").addEventListener("click", function () { loadSource("webssh", "btnLoadWebssh"); });
+    $("btnOpenDcim").addEventListener("click", function () {
+      window.open("https://" + location.hostname + ":8086/", "_blank", "noopener");
+    });
+
+    // ==================== 双击设备名 → 起播到 active tile ====================
+    function playFromDevice(deviceId, deviceName) {
+      var src = currentSource;
+      if (!src) { hint.textContent = "请先点「📡 加载 webssh/dcim 视频监控」"; return; }
+      hint.textContent = "查询通道中… " + deviceName;
+      fetch("/api/" + src + "-video/channels?deviceId=" + encodeURIComponent(deviceId) + "&page=1&count=10")
+        .then(function (r) { return r.json(); })
+        .then(function (resp) {
+          if (!resp.ok || !resp.list || !resp.list.length) {
+            hint.textContent = "设备 " + deviceName + " 暂无通道（catalog 可能未同步）"; return null;
+          }
+          var ch = resp.list.find(function (c) { return c.status === "ON" || c.status === "on"; }) || resp.list[0];
+          var chId = ch.channelId || ch.deviceId;
+          var chName = ch.name || chId;
+          hint.textContent = "点播中… " + deviceName + " / " + chName;
+          return fetch("/api/" + src + "-video/play/" + encodeURIComponent(deviceId) + "/" + encodeURIComponent(chId), { method: "POST" })
+            .then(function (r) { return r.json(); })
+            .then(function (pr) { return { pr: pr, chId: chId, chName: chName }; });
+        })
+        .then(function (out) {
+          if (!out) return;
+          if (!out.pr || !out.pr.ok) { hint.textContent = "点播失败：" + ((out.pr && out.pr.message) || "未知"); return; }
+          var tile = tiles[activeIdx]; if (!tile) return;
+          tile.play({ flvUrl: out.pr.flvUrl, streamKey: out.pr.streamKey, deviceId: deviceId,
+            channelId: out.chId, channelName: out.chName, deviceName: deviceName, source: src });
+          hint.textContent = "已起播：" + deviceName + " / " + out.chName + "（" + src + "，分屏 " + (activeIdx + 1) + "）";
+        })
+        .catch(function (e) { hint.textContent = "请求失败：" + e.message; });
+    }
+
+    $("dcimDeviceList").addEventListener("dblclick", function (e) {
+      var head = e.target.closest(".dev-head");
+      if (!head) return;
+      var did = head.dataset.dev;
+      var name = head.dataset.name || did;
+      if (did) playFromDevice(did, name);
+    });
+
+    window.addEventListener("beforeunload", function () { tiles.forEach(function (t) { t.stop(); }); });
+
+  })();
+  </script>
+</body>
+</html>

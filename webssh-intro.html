@@ -1,0 +1,700 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>WebSSH Suite — 浏览器里的运维总控台</title>
+<style>
+  :root{
+    --bg:#020617;
+    --bg-2:#0b1220;
+    --panel:#0f172a;
+    --panel-2:#111c33;
+    --line:#1e293b;
+    --line-2:#243047;
+    --text:#e2e8f0;
+    --muted:#94a3b8;
+    --dim:#64748b;
+    --cyan:#22d3ee;
+    --cyan-2:#67e8f9;
+    --green:#34d399;
+    --amber:#fbbf24;
+    --red:#f87171;
+    --violet:#a78bfa;
+    --pink:#f472b6;
+    --radius:14px;
+    --radius-sm:10px;
+    --shadow:0 6px 24px rgba(2,6,23,.45),0 1px 0 rgba(255,255,255,.04) inset;
+    --mono:"JetBrains Mono","SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;
+    --sans:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue","PingFang SC","Microsoft YaHei",sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14px;line-height:1.65;-webkit-font-smoothing:antialiased}
+  body{background:
+    radial-gradient(1100px 600px at 12% -10%,rgba(34,211,238,.10),transparent 60%),
+    radial-gradient(900px 500px at 110% 5%,rgba(167,139,250,.10),transparent 65%),
+    radial-gradient(800px 600px at 50% 110%,rgba(52,211,153,.06),transparent 60%),
+    var(--bg);
+    min-height:100vh;
+  }
+  a{color:var(--cyan);text-decoration:none}
+  a:hover{color:var(--cyan-2);text-decoration:underline}
+  ::selection{background:rgba(34,211,238,.3);color:#fff}
+
+  /* layout */
+  .wrap{max-width:1240px;margin:0 auto;padding:0 24px}
+  .nav{position:sticky;top:0;z-index:50;backdrop-filter:saturate(140%) blur(10px);background:rgba(2,6,23,.7);border-bottom:1px solid var(--line)}
+  .nav-row{display:flex;align-items:center;gap:18px;height:60px}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:15px;letter-spacing:.2px}
+  .brand-dot{width:10px;height:10px;border-radius:3px;background:var(--cyan);box-shadow:0 0 14px rgba(34,211,238,.7)}
+  .brand small{color:var(--muted);font-weight:500;margin-left:6px;font-family:var(--mono);font-size:11px}
+  .nav-links{display:flex;gap:18px;margin-left:auto;flex-wrap:wrap}
+  .nav-links a{color:var(--muted);font-size:13px;cursor:pointer}
+  .nav-links a:hover{color:var(--text);text-decoration:none}
+  .nav-cta{display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border:1px solid var(--line-2);border-radius:8px;color:var(--text);font-size:13px;cursor:pointer;transition:all .2s ease}
+  .nav-cta:hover{border-color:var(--cyan);color:var(--cyan);text-decoration:none}
+
+  /* hero */
+  .hero{padding:84px 0 56px;position:relative;overflow:hidden}
+  .hero::before{content:"";position:absolute;inset:0;background-image:
+    linear-gradient(rgba(148,163,184,.05) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(148,163,184,.05) 1px,transparent 1px);
+    background-size:42px 42px;mask-image:radial-gradient(ellipse 70% 60% at 50% 30%,#000 35%,transparent 75%);
+    pointer-events:none}
+  .pill{display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border:1px solid var(--line-2);background:rgba(15,23,42,.6);border-radius:999px;font-family:var(--mono);font-size:11px;color:var(--muted);letter-spacing:.5px}
+  .pill .dot{width:6px;height:6px;border-radius:50%;background:var(--green);box-shadow:0 0 10px var(--green);animation:pulse 2.4s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
+  h1{font-size:clamp(34px,5.2vw,64px);line-height:1.05;letter-spacing:-1px;margin:18px 0 18px;font-weight:800}
+  h1 .grad{background:linear-gradient(90deg,#22d3ee,#a78bfa 60%,#f472b6);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .lede{max-width:720px;color:var(--muted);font-size:17px;line-height:1.7}
+  .hero-actions{display:flex;gap:12px;margin-top:28px;flex-wrap:wrap}
+  .btn{display:inline-flex;align-items:center;gap:8px;padding:11px 18px;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;border:1px solid transparent;transition:all .2s ease;text-decoration:none}
+  .btn-primary{background:linear-gradient(180deg,#22d3ee,#0ea5b7);color:#062028;box-shadow:0 6px 22px rgba(34,211,238,.28)}
+  .btn-primary:hover{transform:translateY(-1px);box-shadow:0 10px 30px rgba(34,211,238,.4);text-decoration:none;color:#062028}
+  .btn-ghost{background:rgba(15,23,42,.6);border-color:var(--line-2);color:var(--text)}
+  .btn-ghost:hover{border-color:var(--cyan);color:var(--cyan);text-decoration:none}
+  .icon{width:16px;height:16px;flex:0 0 auto}
+
+  /* spec strip */
+  .specs{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:42px}
+  .spec{background:linear-gradient(180deg,rgba(15,23,42,.85),rgba(15,23,42,.6));border:1px solid var(--line);border-radius:var(--radius-sm);padding:16px 18px}
+  .spec .k{font-family:var(--mono);font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.8px}
+  .spec .v{font-size:22px;font-weight:700;margin-top:4px;letter-spacing:-.3px}
+  .spec .v small{font-family:var(--mono);font-size:12px;color:var(--muted);font-weight:500;margin-left:4px}
+  @media (max-width:780px){.specs{grid-template-columns:repeat(2,1fr)}}
+
+  /* sections */
+  section{padding:72px 0}
+  .sec-head{display:flex;align-items:flex-end;gap:18px;flex-wrap:wrap;margin-bottom:32px}
+  .sec-tag{font-family:var(--mono);font-size:11px;color:var(--cyan);letter-spacing:1.2px;text-transform:uppercase}
+  .sec-title{font-size:clamp(26px,3vw,36px);margin:6px 0 0;font-weight:800;letter-spacing:-.5px}
+  .sec-desc{color:var(--muted);max-width:680px;margin-left:auto;font-size:14.5px}
+
+  /* bento grid */
+  .bento{display:grid;grid-template-columns:repeat(6,1fr);grid-auto-rows:minmax(150px,auto);gap:14px}
+  .card{background:linear-gradient(180deg,rgba(17,28,51,.9),rgba(15,23,42,.75));border:1px solid var(--line);border-radius:var(--radius);padding:22px;position:relative;overflow:hidden;transition:border-color .2s ease,transform .2s ease,box-shadow .2s ease}
+  .card:hover{border-color:var(--line-2);box-shadow:var(--shadow)}
+  .card::after{content:"";position:absolute;inset:0;border-radius:var(--radius);pointer-events:none;background:radial-gradient(400px 200px at var(--mx,50%) var(--my,0%),rgba(34,211,238,.08),transparent 60%);opacity:0;transition:opacity .3s ease}
+  .card:hover::after{opacity:1}
+  .card-head{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+  .card-icn{width:36px;height:36px;border-radius:9px;display:flex;align-items:center;justify-content:center;background:rgba(34,211,238,.1);color:var(--cyan);border:1px solid rgba(34,211,238,.25)}
+  .card-icn svg{width:18px;height:18px}
+  .card-title{font-size:15px;font-weight:700;letter-spacing:-.2px}
+  .card-sub{font-family:var(--mono);font-size:11px;color:var(--muted);margin-left:auto}
+  .card p{color:var(--muted);font-size:13.5px;margin:6px 0 0;line-height:1.65}
+  .tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:14px}
+  .tag{font-family:var(--mono);font-size:11px;color:var(--muted);padding:3px 8px;border:1px solid var(--line-2);border-radius:999px;background:rgba(2,6,23,.4)}
+  .tag.cyan{color:var(--cyan);border-color:rgba(34,211,238,.35)}
+  .tag.green{color:var(--green);border-color:rgba(52,211,153,.35)}
+  .tag.violet{color:var(--violet);border-color:rgba(167,139,250,.35)}
+  .tag.amber{color:var(--amber);border-color:rgba(251,191,36,.35)}
+  .tag.pink{color:var(--pink);border-color:rgba(244,114,182,.35)}
+
+  /* bento layouts */
+  .col-2{grid-column:span 2}
+  .col-3{grid-column:span 3}
+  .col-4{grid-column:span 4}
+  .col-6{grid-column:span 6}
+  .row-2{grid-row:span 2}
+  @media (max-width:980px){
+    .bento{grid-template-columns:repeat(2,1fr)}
+    .col-2,.col-3,.col-4,.col-6{grid-column:span 2}
+    .row-2{grid-row:span 1}
+  }
+  @media (max-width:520px){
+    .bento{grid-template-columns:1fr}
+    .col-2,.col-3,.col-4,.col-6{grid-column:span 1}
+  }
+  /* code block */
+  .code{background:#020912;border:1px solid var(--line);border-radius:var(--radius-sm);padding:16px 18px;font-family:var(--mono);font-size:12.5px;color:#cbd5e1;overflow-x:auto;line-height:1.7}
+  .code .pmt{color:var(--green)}
+  .code .cmt{color:var(--dim)}
+  .code .key{color:var(--cyan)}
+  .code .str{color:var(--amber)}
+  .code .var{color:var(--violet)}
+  .code .out{color:var(--muted)}
+
+  /* terminal mock */
+  .term{background:#020912;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;font-family:var(--mono);font-size:12.5px}
+  .term-bar{display:flex;align-items:center;gap:8px;padding:10px 14px;background:rgba(15,23,42,.8);border-bottom:1px solid var(--line)}
+  .term-bar .d{width:11px;height:11px;border-radius:50%}
+  .term-bar .d.r{background:#ef4444}.term-bar .d.y{background:#f59e0b}.term-bar .d.g{background:#22c55e}
+  .term-bar .ttl{margin-left:auto;color:var(--muted);font-size:11px}
+  .term-body{padding:16px 18px;color:#cbd5e1;line-height:1.75}
+
+  /* arch diagram */
+  .arch{display:grid;grid-template-columns:1.1fr 1fr;gap:18px}
+  @media (max-width:980px){.arch{grid-template-columns:1fr}}
+  .lane{background:linear-gradient(180deg,rgba(17,28,51,.9),rgba(15,23,42,.7));border:1px solid var(--line);border-radius:var(--radius);padding:20px}
+  .lane h4{margin:0 0 12px;font-size:13px;color:var(--cyan);font-family:var(--mono);letter-spacing:.6px;text-transform:uppercase}
+  .node{display:flex;align-items:center;gap:10px;padding:11px 14px;border:1px solid var(--line-2);border-radius:10px;background:rgba(2,6,23,.45);margin-bottom:8px;font-size:13px}
+  .node .ico{width:28px;height:28px;border-radius:7px;background:rgba(34,211,238,.12);color:var(--cyan);display:flex;align-items:center;justify-content:center;border:1px solid rgba(34,211,238,.25)}
+  .node .ico svg{width:14px;height:14px}
+  .node .meta{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .arrow{display:flex;justify-content:center;color:var(--dim);margin:6px 0;font-family:var(--mono);font-size:12px}
+
+  /* protocol assistant tabs */
+  .modules{display:grid;grid-template-columns:repeat(5,1fr);gap:12px}
+  @media (max-width:980px){.modules{grid-template-columns:repeat(2,1fr)}}
+  @media (max-width:520px){.modules{grid-template-columns:1fr}}
+  .mod{background:linear-gradient(180deg,rgba(17,28,51,.9),rgba(15,23,42,.7));border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 16px;transition:border-color .2s ease}
+  .mod:hover{border-color:var(--violet)}
+  .mod .num{font-family:var(--mono);font-size:11px;color:var(--violet);letter-spacing:1px}
+  .mod h5{margin:6px 0 8px;font-size:14px;font-weight:700}
+  .mod p{color:var(--muted);font-size:12.5px;margin:0;line-height:1.6}
+
+  /* deploy steps */
+  .steps{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+  @media (max-width:980px){.steps{grid-template-columns:repeat(2,1fr)}}
+  @media (max-width:520px){.steps{grid-template-columns:1fr}}
+  .step{background:rgba(15,23,42,.6);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px;position:relative}
+  .step .n{font-family:var(--mono);font-size:11px;color:var(--cyan);letter-spacing:1px}
+  .step h5{margin:6px 0 8px;font-size:14.5px}
+  .step p{margin:0;color:var(--muted);font-size:12.5px;line-height:1.6}
+
+  /* table */
+  .tbl{width:100%;border-collapse:collapse;font-size:13px}
+  .tbl th,.tbl td{padding:12px 14px;text-align:left;border-bottom:1px solid var(--line)}
+  .tbl th{color:var(--muted);font-family:var(--mono);font-size:11px;letter-spacing:.8px;text-transform:uppercase;font-weight:500;background:rgba(2,6,23,.4)}
+  .tbl tr:hover td{background:rgba(15,23,42,.5)}
+  .tbl td.mono{font-family:var(--mono);font-size:12.5px;color:var(--cyan)}
+  .tbl td .badge{display:inline-block;padding:2px 8px;border-radius:6px;font-family:var(--mono);font-size:11px;border:1px solid var(--line-2)}
+  .tbl-wrap{border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;background:rgba(15,23,42,.4)}
+  .tbl-wrap .scroll{overflow-x:auto}
+
+  /* footer */
+  footer{padding:42px 0 60px;border-top:1px solid var(--line);margin-top:32px;color:var(--muted);font-size:13px}
+  .foot-row{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap}
+
+  /* utilities */
+  .gradient-text{background:linear-gradient(90deg,#22d3ee,#a78bfa);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .kbd{font-family:var(--mono);font-size:11px;padding:2px 7px;border:1px solid var(--line-2);border-bottom-width:2px;border-radius:5px;background:rgba(2,6,23,.5);color:var(--text)}
+
+  @media (prefers-reduced-motion:reduce){
+    *{animation:none!important;transition:none!important}
+  }
+</style>
+</head>
+<body>
+
+<!-- ============== NAV ============== -->
+<header class="nav">
+  <div class="wrap nav-row">
+    <div class="brand">
+      <span class="brand-dot"></span>
+      WebSSH Suite
+      <small>v20260605</small>
+    </div>
+    <nav class="nav-links" aria-label="主导航">
+      <a href="#features">功能</a>
+      <a href="#protocol">协议转换</a>
+      <a href="#assistant">协议助手</a>
+      <a href="#firewall">防火墙</a>
+      <a href="#deploy">离线部署</a>
+      <a href="#stack">技术栈</a>
+    </nav>
+    <a class="nav-cta" href="#deploy" aria-label="跳到部署">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
+      离线全栈包
+    </a>
+  </div>
+</header>
+
+<!-- ============== HERO ============== -->
+<section class="hero">
+  <div class="wrap">
+    <span class="pill"><span class="dot"></span>双服务在线 · 单端口 3010 · Kylin V10 已验证</span>
+    <h1>浏览器里的 <span class="grad">运维总控台</span><br/>一个端口装下整套现场工具</h1>
+    <p class="lede">
+      WebSSH Suite 是一个不依赖容器、可整包离线交付的轻量运维平台:终端、串口、TCP、SFTP、短信猫、双机热备、协议转换、协议助手、防火墙管理 —— 全部跑在同一个 Node 进程后面,前端不打包,只要一个浏览器就能开箱使用。
+    </p>
+    <div class="hero-actions">
+      <a class="btn btn-primary" href="#deploy">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        查看离线部署
+      </a>
+      <a class="btn btn-ghost" href="#features">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        浏览全部功能
+      </a>
+    </div>
+
+    <div class="specs" aria-label="运行规格">
+      <div class="spec"><div class="k">主壳运行时</div><div class="v">Node<small> 12.22.12</small></div></div>
+      <div class="spec"><div class="k">协议助手运行时</div><div class="v">Python<small> 3.11.10</small></div></div>
+      <div class="spec"><div class="k">对外端口</div><div class="v">3010<small> · http</small></div></div>
+      <div class="spec"><div class="k">离线包体积</div><div class="v">~95<small> MB</small></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============== FEATURES BENTO ============== -->
+<section id="features">
+  <div class="wrap">
+    <div class="sec-head">
+      <div>
+        <span class="sec-tag">// CORE FEATURES</span>
+        <h2 class="sec-title">六大主菜单 · 一套设计语言</h2>
+      </div>
+      <p class="sec-desc">左侧菜单驱动整个主壳。每一项要么是原生组件,要么是 iframe 子站,要么经反代挂到 /protocol/* —— 但视觉、配色、交互完全一致。</p>
+    </div>
+
+    <div class="bento">
+      <!-- SSH -->
+      <div class="card col-3 row-2">
+        <div class="card-head">
+          <div class="card-icn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg></div>
+          <div class="card-title">SSH 终端</div>
+          <span class="card-sub">/ws</span>
+        </div>
+        <p>基于 ssh2 + WebSocket 的全功能 pty。多主机管理、密码 / 私钥认证、字体大小调节、屏幕清理、命令历史。一切都从浏览器里出去,不用 SecureCRT。</p>
+        <div class="term" style="margin-top:14px" aria-hidden="true">
+          <div class="term-bar"><span class="d r"></span><span class="d y"></span><span class="d g"></span><span class="ttl">root@prod-01: ~</span></div>
+          <div class="term-body">
+            <span style="color:var(--green)">root@prod-01</span>:<span style="color:var(--cyan)">~</span>$ uname -r<br/>
+            <span style="color:var(--muted)">4.19.90-25.10.v2101.ky10.x86_64</span><br/>
+            <span style="color:var(--green)">root@prod-01</span>:<span style="color:var(--cyan)">~</span>$ systemctl is-active webssh<br/>
+            <span style="color:var(--green)">active</span><br/>
+            <span style="color:var(--green)">root@prod-01</span>:<span style="color:var(--cyan)">~</span>$ <span style="background:var(--cyan);width:8px;height:14px;display:inline-block;vertical-align:middle;animation:pulse 1s infinite"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- SFTP -->
+      <div class="card col-3">
+        <div class="card-head">
+          <div class="card-icn" style="background:rgba(167,139,250,.12);color:var(--violet);border-color:rgba(167,139,250,.3)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></div>
+          <div class="card-title">SFTP 文件管理</div>
+          <span class="card-sub">复用 SSH 通道</span>
+        </div>
+        <p>同一条 SSH 连接里直接开 SFTP 子系统:浏览、上传、下载、删除、重命名、新建文件夹、在线编辑文本。CodeMirror 5 提供 9 种语法高亮,不依赖 CDN。</p>
+        <div class="tags">
+          <span class="tag violet">browse</span>
+          <span class="tag violet">upload</span>
+          <span class="tag violet">download</span>
+          <span class="tag violet">edit</span>
+          <span class="tag">codemirror</span>
+        </div>
+      </div>
+
+      <!-- Serial -->
+      <div class="card col-3">
+        <div class="card-head">
+          <div class="card-icn" style="background:rgba(52,211,153,.12);color:var(--green);border-color:rgba(52,211,153,.3)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 12h.01M10 12h.01M14 12h.01M18 12h.01"/></svg></div>
+          <div class="card-title">串口调试</div>
+          <span class="card-sub">/ws/serial</span>
+        </div>
+        <p>服务端原生串口 + 浏览器 WebSerial 双通道。波特率 / 校验 / 数据位 / 停止位全可调,HEX/ASCII 双显示,定时发送,断线重连。</p>
+        <div class="tags">
+          <span class="tag green">webserial</span>
+          <span class="tag green">native serial</span>
+          <span class="tag">hex / ascii</span>
+        </div>
+      </div>
+
+      <!-- TCP -->
+      <div class="card col-2">
+        <div class="card-head">
+          <div class="card-icn" style="background:rgba(251,191,36,.12);color:var(--amber);border-color:rgba(251,191,36,.3)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15 15 0 0 1 4 10 15 15 0 0 1-4 10 15 15 0 0 1-4-10 15 15 0 0 1 4-10z"/></svg></div>
+          <div class="card-title">TCP 调试</div>
+          <span class="card-sub">/ws/tcp</span>
+        </div>
+        <p>客户端模式连任意 ip:port,作 PLC、网关、协议设备的现场抓包工具。</p>
+      </div>
+
+      <!-- SMS -->
+      <div class="card col-2">
+        <div class="card-head">
+          <div class="card-icn" style="background:rgba(244,114,182,.12);color:var(--pink);border-color:rgba(244,114,182,.3)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div>
+          <div class="card-title">信创短信猫</div>
+          <span class="card-sub">sms 子站</span>
+        </div>
+        <p>MySQL 告警监测 + 短信批量推送 + 调度任务,适配信创平台的电力一体化告警通路。</p>
+      </div>
+
+      <!-- HA -->
+      <div class="card col-2">
+        <div class="card-head">
+          <div class="card-icn" style="background:rgba(248,113,113,.12);color:var(--red);border-color:rgba(248,113,113,.3)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
+          <div class="card-title">双机热备</div>
+          <span class="card-sub">HA 同步</span>
+        </div>
+        <p>主备 dcim 库 mysqldump / 灌库,渐进退避重试 + 跨版本兼容,搭配 max_connect_errors 一键调优。</p>
+      </div>
+
+      <!-- Proto-Conv -->
+      <div class="card col-3">
+        <div class="card-head">
+          <div class="card-icn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg></div>
+          <div class="card-title">协议转换</div>
+          <span class="card-sub">8082 / Modbus / SNMP</span>
+        </div>
+        <p>把 dcim 后端 91 条接口做成可视化按钮面板,同时反向把数据 / 控制项暴露成 Modbus TCP 寄存器和 SNMP v2c OID 树,直接对接第三方 SCADA。</p>
+        <div class="tags">
+          <span class="tag cyan">91 endpoints</span>
+          <span class="tag cyan">modbus rw</span>
+          <span class="tag cyan">snmp v2c</span>
+          <span class="tag amber">⚠ 24 危险接口</span>
+        </div>
+      </div>
+
+      <!-- Protocol assistant -->
+      <div class="card col-3">
+        <div class="card-head">
+          <div class="card-icn" style="background:rgba(167,139,250,.12);color:var(--violet);border-color:rgba(167,139,250,.3)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg></div>
+          <div class="card-title">协议助手</div>
+          <span class="card-sub">5 modules · Flask</span>
+        </div>
+        <p>XLS 清洗、故障编码补全、PDF↔Excel 对照、MBP 文件生成、协议批处理。Flask 子站经 http-proxy 挂在 /protocol/*,iframe 嵌入主壳。</p>
+        <div class="tags">
+          <span class="tag violet">pandas</span>
+          <span class="tag violet">openpyxl</span>
+          <span class="tag violet">python-docx</span>
+          <span class="tag">xlrd 1.2.0</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============== PROTOCOL CONVERTER ============== -->
+<section id="protocol">
+  <div class="wrap">
+    <div class="sec-head">
+      <div>
+        <span class="sec-tag">// PROTOCOL CONVERTER</span>
+        <h2 class="sec-title">把 dcim 8082 接口暴露成<br/>Modbus TCP 与 SNMP v2c</h2>
+      </div>
+      <p class="sec-desc">协议转换不是网关:它直接 SCADA 友好。第三方 master 用 FC=03 读温湿度,用 FC=06 触发控制下发;snmpwalk 也能把整棵树拉下来。</p>
+    </div>
+
+    <div class="bento">
+      <div class="card col-3">
+        <div class="card-head">
+          <div class="card-icn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/></svg></div>
+          <div class="card-title">Modbus TCP 数据 + 控制</div>
+          <span class="card-sub">port 5020</span>
+        </div>
+        <p>数据段从 Reg[0] 紧密排开:DeviceStatus + 每参数 FLOAT32 BE。控制段固定从 Reg[60000] 起,master 写 1 触发 dcim 控制命令,2 秒去重 + 边沿触发。</p>
+        <div class="tags">
+          <span class="tag cyan">FC=03 read</span>
+          <span class="tag cyan">FC=06 write</span>
+          <span class="tag amber">debounce 2s</span>
+        </div>
+      </div>
+
+      <div class="card col-3">
+        <div class="card-head">
+          <div class="card-icn" style="background:rgba(52,211,153,.12);color:var(--green);border-color:rgba(52,211,153,.3)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 3h20M5 7h14M8 11h8M11 15h2M11 19h2"/></svg></div>
+          <div class="card-title">SNMP v2c Agent</div>
+          <span class="card-sub">udp/16162</span>
+        </div>
+        <p>OID 前缀 1.3.6.1.4.1.99999;CurValue 自动 ×10 转 INTEGER,SET 写控制段触发下发。net-snmp 3.9.7 锁版本兼容 Node 12,Authorizer ReadWrite 显式覆盖。</p>
+        <div class="tags">
+          <span class="tag green">snmpwalk</span>
+          <span class="tag green">snmpset</span>
+          <span class="tag">ip whitelist</span>
+        </div>
+      </div>
+
+      <div class="card col-6">
+        <div class="card-head">
+          <div class="card-icn" style="background:rgba(244,114,182,.12);color:var(--pink);border-color:rgba(244,114,182,.3)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></div>
+          <div class="card-title">91 条 8082 接口可视化</div>
+          <span class="card-sub">10 业务分组 / 24 危险写入</span>
+        </div>
+        <p>覆盖告警、知识库、资产盘点、巡检维护、控制下发、IT 容量、工单、自定义参数、资管 GET 等全集。Cookie 维持 + 401 自动续登 + 自签证书绕过 + 弹窗参数 + 危险接口二次确认 —— 全在右栏 200 条环形日志里看到。</p>
+        <div class="code" style="margin-top:14px">
+<span class="cmt"># 调用代理(浏览器→Node→8082)</span>
+<span class="pmt">POST</span> <span class="key">/api/proto-conv/invoke</span>
+{ <span class="var">"key"</span>: <span class="str">"GetRealAlarmsKey"</span>, <span class="var">"method"</span>: <span class="str">"POST"</span>, <span class="var">"body"</span>: { <span class="var">"PageIndex"</span>: <span class="str">1</span> } }
+<span class="cmt"># Node 自动注入 UserLsh 兜底 + 复用 cookieJar</span></div>
+      </div>
+    </div>
+
+    <h3 style="font-size:18px;margin:36px 0 14px;letter-spacing:-.2px">寄存器地址速查</h3>
+    <div class="tbl-wrap"><div class="scroll">
+    <table class="tbl">
+      <thead>
+        <tr><th>段</th><th>起始地址</th><th>布局</th><th>说明</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>数据段 / 设备状态</td><td class="mono">Reg[base+0]</td><td>INT16</td><td>1=在线 / 0=离线 / -1=未知</td></tr>
+        <tr><td>数据段 / 参数</td><td class="mono">Reg[base+1+2i]</td><td>FLOAT32 BE (2 reg)</td><td>每设备 1+2N 紧密排列,顺序按 selectedDevices</td></tr>
+        <tr><td>控制段</td><td class="mono">Reg[60000+i]</td><td>INT16</td><td>master 写 1 触发,server 立即清 0</td></tr>
+        <tr><td>SNMP 设备状态</td><td class="mono">.1.&lt;d&gt;.0.0</td><td>INTEGER</td><td>同上</td></tr>
+        <tr><td>SNMP 参数值</td><td class="mono">.1.&lt;d&gt;.2.&lt;p&gt;.0</td><td>INTEGER ×10</td><td>master 端除 10 还原</td></tr>
+        <tr><td>SNMP 控制触发</td><td class="mono">.2.&lt;c&gt;.0</td><td>INTEGER (W)</td><td>SET 写 1 触发 controlId</td></tr>
+      </tbody>
+    </table>
+    </div></div>
+  </div>
+</section>
+
+<!-- ============== PROTOCOL ASSISTANT ============== -->
+<section id="assistant">
+  <div class="wrap">
+    <div class="sec-head">
+      <div>
+        <span class="sec-tag">// PROTOCOL ASSISTANT</span>
+        <h2 class="sec-title">5 个 Excel/PDF/DOCX 处理模块</h2>
+      </div>
+      <p class="sec-desc">Flask 子站,独立运行时(CPython 3.11.10 + 22 个 manylinux2014 wheels),通过 DispatcherMiddleware 挂 /protocol 前缀。可单跑也可经主壳反代访问。</p>
+    </div>
+
+    <div class="modules">
+      <div class="mod">
+        <div class="num">M1 / XLS</div>
+        <h5>XLS 清洗</h5>
+        <p>B/D/G/I/J/M/R/S~V 列规则处理,故障标记。pandas + xlrd 1.2.0 处理老 .xls。</p>
+      </div>
+      <div class="mod">
+        <div class="num">M2 / FILL</div>
+        <h5>故障编码填充</h5>
+        <p>断续编码 10/16 进制双向转换,自动补全缺失序号。</p>
+      </div>
+      <div class="mod">
+        <div class="num">M3 / DIFF</div>
+        <h5>PDF ↔ Excel 对照</h5>
+        <p>左 PDF 右编辑器分屏,三相多功能表点码表生成。</p>
+      </div>
+      <div class="mod">
+        <div class="num">M4 / MBP</div>
+        <h5>MBP 文件生成</h5>
+        <p>遍历 D 列匹配 J/K 的 J2K2 规则,输出 MBP 配置文件。</p>
+      </div>
+      <div class="mod">
+        <div class="num">M5 / BATCH</div>
+        <h5>协议批处理</h5>
+        <p>xls/xlsx/docx 统一格式 + NaN 清洗 + 批量协议解析。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============== FIREWALL & DOCKER ============== -->
+<section id="firewall">
+  <div class="wrap">
+    <div class="sec-head">
+      <div>
+        <span class="sec-tag">// SYSTEM CONTROL</span>
+        <h2 class="sec-title">防火墙面板 + Docker 自动重启</h2>
+      </div>
+      <p class="sec-desc">设置弹窗里的两块系统级控制。封装 firewall-cmd 走 spawn argv,做了输入校验和 rich-rule 类型路由,避免命令注入。</p>
+    </div>
+
+    <div class="bento">
+      <div class="card col-4">
+        <div class="card-head">
+          <div class="card-icn" style="background:rgba(248,113,113,.12);color:var(--red);border-color:rgba(248,113,113,.3)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
+          <div class="card-title">防火墙(firewalld)</div>
+          <span class="card-sub">1panel 风格</span>
+        </div>
+        <p>顶部:服务状态 / 默认 zone / 禁 ping 开关。三个子 tab —— 端口规则(允许/拒绝 + 源 IP)、端口转发(本机端口→远端 ip:port)、IP 黑白名单。所有改动 --permanent + --reload,一行写入 logs/firewall.log。</p>
+        <div class="tags">
+          <span class="tag">--add-port</span>
+          <span class="tag">rich-rule</span>
+          <span class="tag">--add-forward-port</span>
+          <span class="tag green">仅 Linux + firewalld</span>
+        </div>
+      </div>
+
+      <div class="card col-2">
+        <div class="card-head">
+          <div class="card-icn" style="background:rgba(34,211,238,.12);color:var(--cyan);border-color:rgba(34,211,238,.25)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15A9 9 0 1 1 5.64 5.64L23 10"/></svg></div>
+          <div class="card-title">Docker 自动重启</div>
+          <span class="card-sub">倒计时执行</span>
+        </div>
+        <p>开机倒计时调用 systemctl restart docker,失败原因记录到 docker-restart.log。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============== ARCHITECTURE ============== -->
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <div>
+        <span class="sec-tag">// ARCHITECTURE</span>
+        <h2 class="sec-title">单端口反代 · 双进程协作</h2>
+      </div>
+      <p class="sec-desc">主壳 Node 进程拥有 3010 端口,/protocol/* 反代到 Flask 5000,Modbus/SNMP 直接监听各自端口。Flask 进程作 systemd PartOf=webssh.service —— 主壳停,它跟着停。</p>
+    </div>
+
+    <div class="arch">
+      <div class="lane">
+        <h4>// 上游入口</h4>
+        <div class="node"><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15 15 0 0 1 4 10 15 15 0 0 1-4 10 15 15 0 0 1-4-10 15 15 0 0 1 4-10z"/></svg></div>浏览器 / SCADA / SNMP master <span class="meta">tcp/udp</span></div>
+        <div class="arrow">▼</div>
+        <div class="node"><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></div>WebSSH Node 主进程 <span class="meta">:3010</span></div>
+        <div class="arrow">▼ ▼ ▼ ▼</div>
+        <div class="node"><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg></div>Express + WS + http-proxy <span class="meta">node 12.22.12</span></div>
+      </div>
+      <div class="lane">
+        <h4>// 下游服务</h4>
+        <div class="node"><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></div>Flask 协议助手 <span class="meta">127.0.0.1:5000</span></div>
+        <div class="node"><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/></svg></div>Modbus TCP server <span class="meta">tcp/5020</span></div>
+        <div class="node"><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z"/><path d="M3 12h18"/></svg></div>SNMP v2c agent <span class="meta">udp/16162</span></div>
+        <div class="node"><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></div>dcim 上游 8082 <span class="meta">https / cookieJar</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============== DEPLOY ============== -->
+<section id="deploy">
+  <div class="wrap">
+    <div class="sec-head">
+      <div>
+        <span class="sec-tag">// OFFLINE DEPLOY</span>
+        <h2 class="sec-title">95 MB 全栈包 · 一行装机</h2>
+      </div>
+      <p class="sec-desc">目标机不需要联网、不需要 yum、不需要 npm/pip。Node 12.22.12 + CPython 3.11.10 全部自带,systemd 双服务联动启停。</p>
+    </div>
+
+    <div class="steps">
+      <div class="step">
+        <div class="n">STEP 01</div>
+        <h5>本机打包</h5>
+        <p>node scripts/build-fullstack-on-server.js 在服务器组装,scp 拉回 dist/。</p>
+      </div>
+      <div class="step">
+        <div class="n">STEP 02</div>
+        <h5>上传 + 校验</h5>
+        <p>scp 到目标机 /root/,sha256sum -c 比对完整性。</p>
+      </div>
+      <div class="step">
+        <div class="n">STEP 03</div>
+        <h5>解压 + install</h5>
+        <p>tar -xzf 后 ./install-all.sh,自动渲染 systemd unit、启动双服务。</p>
+      </div>
+      <div class="step">
+        <div class="n">STEP 04</div>
+        <h5>三重探活</h5>
+        <p>systemctl is-active + /health 200 + /protocol/ 200,失败自动回滚到 .bak。</p>
+      </div>
+    </div>
+
+    <div class="code" style="margin-top:24px" aria-label="一行装机命令">
+<span class="cmt"># 目标机一次性装机(无外网)</span>
+<span class="pmt">$</span> tar -xzf <span class="str">webssh-fullstack-offline-linux-x64-v1.0.0-*.tar.gz</span>
+<span class="pmt">$</span> <span class="key">cd</span> webssh-fullstack-offline-linux-x64-v*/
+<span class="pmt">$</span> ./install-all.sh
+<span class="cmt">  ↳ 解压 runtime/node + protocol/runtime/python</span>
+<span class="cmt">  ↳ 渲染 webssh.service + webssh-protocol.service</span>
+<span class="cmt">  ↳ systemctl daemon-reload && enable && start</span>
+<span class="cmt">  ↳ curl /health → {"ok":true}</span>
+
+<span class="cmt"># 验证</span>
+<span class="pmt">$</span> systemctl is-active webssh webssh-protocol
+<span class="out">active
+active</span>
+<span class="pmt">$</span> curl -s http://127.0.0.1:3010/health
+<span class="out">{"ok":true}</span></div>
+
+    <h3 style="font-size:18px;margin:36px 0 14px;letter-spacing:-.2px">三条部署路径,按场景挑</h3>
+    <div class="tbl-wrap"><div class="scroll">
+    <table class="tbl">
+      <thead><tr><th>场景</th><th>用什么</th><th>速度</th></tr></thead>
+      <tbody>
+        <tr><td>新机器初装 / 完整迁移</td><td class="mono">install-all.sh</td><td><span class="badge" style="color:var(--green);border-color:rgba(52,211,153,.4)">推荐</span></td></tr>
+        <tr><td>已部署机日常增量更新主壳</td><td class="mono">scripts/deploy-upgrade.js</td><td>~30 s</td></tr>
+        <tr><td>已部署机更新协议助手</td><td class="mono">scripts/deploy-protocol.js</td><td>~90 s</td></tr>
+        <tr><td>完整卸载 / 重装前清场</td><td class="mono">/opt/webssh/uninstall-all.sh</td><td>--purge / --keep-backups</td></tr>
+        <tr><td>从服务器现态打全栈包</td><td class="mono">scripts/build-fullstack-on-server.js</td><td>~90 s · 95 MB</td></tr>
+      </tbody>
+    </table>
+    </div></div>
+  </div>
+</section>
+
+<!-- ============== STACK ============== -->
+<section id="stack">
+  <div class="wrap">
+    <div class="sec-head">
+      <div>
+        <span class="sec-tag">// TECH STACK</span>
+        <h2 class="sec-title">每一项都锁了版本</h2>
+      </div>
+      <p class="sec-desc">不依赖系统 Node、Python、libc。net-snmp、xlrd、pandas、http-proxy 都按兼容性卡住版本号,踩过的坑都写在 CLAUDE.md 里。</p>
+    </div>
+
+    <div class="tbl-wrap"><div class="scroll">
+    <table class="tbl">
+      <thead><tr><th>组件</th><th>版本</th><th>位置</th><th>选型理由</th></tr></thead>
+      <tbody>
+        <tr><td>Node.js</td><td class="mono">12.22.12</td><td>runtime/node</td><td>系统遗留兼容;http-proxy 1.18.1 是 Node 12 兼容上限</td></tr>
+        <tr><td>Express</td><td class="mono">4.21.2</td><td>app/node_modules</td><td>静态 + 路由 + 反代挂载</td></tr>
+        <tr><td>ws</td><td class="mono">8.18.0</td><td>app/node_modules</td><td>SSH/串口/TCP 三条 WebSocket 通道</td></tr>
+        <tr><td>ssh2</td><td class="mono">1.17.0</td><td>app/node_modules</td><td>纯 JS,不依赖 native crypto binding</td></tr>
+        <tr><td>http-proxy</td><td class="mono">1.18.1</td><td>app/node_modules</td><td>/protocol/* 保留前缀转发</td></tr>
+        <tr><td>net-snmp</td><td class="mono">3.9.7</td><td>snmp-bundle</td><td>★ 不能升 3.10+/4.x —— 用了 ?. 语法 Node 12 跑不起</td></tr>
+        <tr><td>CPython</td><td class="mono">3.11.10</td><td>protocol/runtime/python</td><td>python-build-standalone,manylinux2014 兼容 glibc 2.28</td></tr>
+        <tr><td>flask</td><td class="mono">2.3.3</td><td>protocol/runtime/site-packages</td><td>避开 3.x 不兼容</td></tr>
+        <tr><td>pandas</td><td class="mono">2.2.3</td><td>protocol/runtime/site-packages</td><td>+ numpy 1.26.4 稳定组合</td></tr>
+        <tr><td>xlrd</td><td class="mono">1.2.0</td><td>protocol/runtime/site-packages</td><td>★ 最后支持 .xls 的版本,不能升</td></tr>
+      </tbody>
+    </table>
+    </div></div>
+  </div>
+</section>
+
+<!-- ============== FOOTER ============== -->
+<footer>
+  <div class="wrap foot-row">
+    <div>
+      <div class="brand" style="margin-bottom:6px"><span class="brand-dot"></span>WebSSH Suite</div>
+      <div>独立部署 · 离线交付 · Kylin V10 已验证 · 单端口 3010 对外</div>
+    </div>
+    <div style="text-align:right">
+      <div>设计语言: <code style="font-family:var(--mono);color:var(--cyan)">#020617</code> / <code style="font-family:var(--mono);color:var(--cyan)">#0f172a</code> / <code style="font-family:var(--mono);color:var(--cyan)">#22d3ee</code></div>
+      <div style="margin-top:6px">按 <span class="kbd">Ctrl</span> + <span class="kbd">F</span> 在 CLAUDE.md 里查任意细节</div>
+    </div>
+  </div>
+</footer>
+
+<script>
+  // 卡片光标跟随高光
+  document.querySelectorAll('.card').forEach(card => {
+    card.addEventListener('pointermove', (e) => {
+      const r = card.getBoundingClientRect();
+      card.style.setProperty('--mx', ((e.clientX - r.left) / r.width * 100) + '%');
+      card.style.setProperty('--my', ((e.clientY - r.top) / r.height * 100) + '%');
+    });
+  });
+  // 锚点平滑滚动
+  document.querySelectorAll('a[href^="#"]').forEach(a => {
+    a.addEventListener('click', (e) => {
+      const id = a.getAttribute('href').slice(1);
+      const tgt = document.getElementById(id);
+      if (!tgt) return;
+      e.preventDefault();
+      tgt.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  });
+</script>
+
+</body>
+</html>
+

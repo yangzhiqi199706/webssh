@@ -847,4 +847,375 @@ const session = snmp.createSession('127.0.0.1', 'public', { port: 16162, version
 session.subtree('1.3.6.1.4.1.99999', vbs => console.log(vbs), () => session.close());
 ```
 
+------------------------------------------------------------
 
+## 十、防火墙管理面板（2026-06-08 新增）
+
+### 10.1 是什么
+设置弹窗里的「防火墙」分页，参考 1panel 风格，对服务器 firewalld 做可视化管理：
+- 顶部状态栏：firewalld 服务 active 状态、版本、默认 zone、开启/关闭/重启入口、禁 ping 开关
+- 三个子 tab：
+  - **端口规则**：协议 / 端口 / 策略（允许/拒绝）/ 指定源 IP，搜索 + 创建 + 删除
+  - **端口转发**：本机端口 → 本机或远端端口（含目标 IP）
+  - **IP 规则**：IPv4/IPv6 黑名单/白名单（单 IP 或 CIDR）
+
+仅支持 Linux + firewalld（Kylin V10 默认）；非 Linux 平台 `available:false`，UI 显示原因不报错。
+
+### 10.2 实现要点
+- 后端：`server.js` 末尾 `setupFirewall()` IIFE，所有命令 `--permanent` + `--reload`
+- 不走 shell：`spawn('firewall-cmd', [...args])`，参数当 argv，避免命令注入
+- 端口规则映射：
+  - 简单放行（accept + 无源 IP）→ `--add-port=80/tcp`
+  - 拒绝 / 带源 IP → `--add-rich-rule='rule family="ipv4" [source address="x"] port port="80" protocol="tcp" accept|drop'`
+- 端口转发：`--add-forward-port=port=80:proto=tcp:toport=8080[:toaddr=...]`
+- IP 规则：`--add-rich-rule='rule family="ipv4" source address="x" accept|drop'`
+- 输入校验：端口 `\d{1,5}(-\d{1,5})?` 1-65535、协议 tcp/udp、IP 仅允许十六进制 + `.:/`，长度 ≤ 64
+- 删除时按 `id` 前缀路由：`port:` / `fwd:` / `rich:`，rich-rule 删除前用对应正则二次校验类型，防止串改
+
+### 10.3 路由清单
+| 路由 | 用途 |
+| -- | -- |
+| `GET  /api/firewall/status` | available / running / version / defaultZone / icmpBlocked |
+| `POST /api/firewall/service` | body `{action: start\|stop\|restart\|enable\|disable}` |
+| `POST /api/firewall/icmp` | body `{block: true\|false}`，禁 ping 开关 |
+| `GET  /api/firewall/ports` | 列端口规则（合并 `--list-ports` + 端口型 rich-rule）|
+| `POST /api/firewall/ports` | body `{port, protocol, strategy, address?}` |
+| `DELETE /api/firewall/ports` | body `{id}` |
+| `GET  /api/firewall/forwards` | 列端口转发（`--list-forward-ports` + 转发型 rich-rule）|
+| `POST /api/firewall/forwards` | body `{srcPort, dstPort, protocol, dstAddr?}` |
+| `DELETE /api/firewall/forwards` | body `{id}` |
+| `GET  /api/firewall/addresses` | 列地址型 rich-rule |
+| `POST /api/firewall/addresses` | body `{address, strategy}` |
+| `DELETE /api/firewall/addresses` | body `{id}` |
+
+**zone**：默认操作 `public`，可通过环境变量 `FIREWALL_ZONE` 覆盖。
+**日志**：`logs/firewall.log`，每条改动追加一行。
+
+### 10.4 验证
+本机（Windows）：
+```bash
+PORT=3010 node server.js
+# 浏览器开 http://127.0.0.1:3010 → 设置 → 防火墙 → 看到「firewalld 不可用 only firewalld on Linux is supported」即正常
+```
+
+服务器（192.168.0.22）部署后：
+```bash
+curl -s http://127.0.0.1:3010/api/firewall/status | jq
+# 预期：{ "available": true, "running": true/false, "version": "x.y.z", ... }
+firewall-cmd --list-ports
+firewall-cmd --list-rich-rules
+firewall-cmd --list-forward-ports
+```
+UI 操作后用上面 3 条 firewall-cmd 复核，规则应已生效且 `--permanent` 写入。
+
+### 10.5 部署
+属于主壳改动，走 `deploy-upgrade.js`：
+```bash
+WEBSSH_HOST=192.168.0.22 WEBSSH_DEPLOY_PASS='smt@2023' \
+  node scripts/deploy-upgrade.js
+```
+或者用 `deploy-protocol.js`（会顺带同步主壳代码）。
+
+------------------------------------------------------------
+
+
+
+
+## 十一、视频监控板块（GB/T 28181，2026-06-09 新增）
+
+### 11.1 是什么
+左侧菜单第 7 项「视频监控」。GB/T 28181 接入实际**走 wvp-pro + ZLMediaKit + Redis** 的标准栈，
+webssh 主壳只负责 UI 入口（iframe 嵌入 wvp 原生 UI）。下级 NVR/IPC 主动注册到 wvp，
+浏览器走 wvp 自带的「分屏监控」做实时预览 + 历史回放。
+
+### 11.2 架构（实际部署）
+```
+浏览器  http://<host>:3010/  →  webssh 主壳菜单「视频监控」
+  └─ iframe → http://<host>:18082/  (wvp-pro 原生 UI，跨端口同主机)
+                  ↓
+           wvp-pro 2.6.9 (webssh-wvp.service, Java 8)
+              ├─ SIP 5070/udp+tcp     接收 NVR 注册 / 心跳 / catalog
+              ├─ HTTP API 18082       wvp UI + 内部调度
+              ├─ Redis 127.0.0.1:6380 缓存设备/会话/在线状态
+              └─ MySQL 127.0.0.1:3333 → dcim 容器内 MySQL，独立库 wvp_webssh
+                  ↓
+           ZLMediaKit (webssh-mediaserver.service)
+              ├─ HTTP API+FLV 18180   仅本机
+              ├─ RTP 30600-30700/udp  收 PS 流
+              └─ webhook → wvp:18082  wvp 启动时自动 setServerConfig 配置 hook
+```
+
+**4 个 systemd 服务**（启动顺序）：webssh-redis → webssh-mediaserver → webssh-wvp → webssh
+
+### 11.3 关键文件分布
+
+```
+/opt/webssh/
+├── app/                                  webssh 主壳（含 video/ 子站，目前未使用，留作备用）
+├── redis/
+│   ├── bin/{redis-server,redis-cli}      从 dcim 容器拷出
+│   ├── conf/redis.conf                   port 6380, bind 127.0.0.1
+│   └── data/                             RDB 数据（默认禁用持久化）
+├── mediaserver/                          ZLMediaKit 二进制+依赖（从 dcim 容器拷）
+│   ├── MediaServer                       ELF 二进制（90MB，git d818cad / 2023-03-12）
+│   ├── lib/{libssl.so.10,libcrypto.so.10}  从 dcim overlay 拷的旧 OpenSSL（CentOS 7 ABI）
+│   │                                       systemd 用 LD_LIBRARY_PATH 加载
+│   ├── config.ini                        secret + http.port=18180 + rtp_proxy.port_range=30600-30700
+│   └── default.pem
+├── wvp/
+│   ├── wvp.jar                           wvp-pro 2.6.9-06021439（111 MB，从 dcim 拷）
+│   └── conf/application-webssh.yml       见 11.4
+└── config/
+    └── video-28181.json                  webssh 主壳预留扩展点（当前未读写）
+```
+
+dcim 容器对 webssh 的两个外部依赖（**仅读，不修改 dcim 自身**）：
+- 容器内 MySQL 5.7.39 → 通过 docker port-map `host:3333 → container:3306` 访问
+- 容器卷里的 ZLMediaKit 二进制和 OpenSSL 库 → 复制出来用，不依赖 dcim 进程
+
+### 11.4 wvp 配置 `/opt/webssh/wvp/conf/application-webssh.yml`
+
+关键字段（chmod 600，**不入 git**）：
+
+```yaml
+spring:
+  redis:
+    host: 127.0.0.1
+    port: 6380             # 独立 redis，避开 dcim 容器内的 6379
+    database: 6
+  datasource:
+    url: jdbc:mysql://127.0.0.1:3333/wvp_webssh?...    # 复用 dcim MySQL，独立库
+    username: root
+    password: e1145c17c66ca8ac
+server:
+  port: 18082              # wvp HTTP / UI
+  ssl:
+    enabled: false
+sip:
+  ip: 0.0.0.0
+  port: 5070               # SIP 信令端口（避开 dcim 占用的 5060）
+  domain: 4401020049
+  id: 44010200492000000001
+  password: ""             # 留空 = 跳过密码摘要校验。海康/大华密码 hash 各家有差异，
+                           # 留空最稳；内网部署不需要 SIP 鉴权
+media:
+  id: webssh_zlm           # 必须和 ZLM config.ini 的 general.mediaServerId 一致
+  ip: 127.0.0.1
+  stream-ip: 192.168.0.22
+  hook-ip: 127.0.0.1
+  http-port: 18180
+  secret: <16字节hex>      # 必须和 ZLM config.ini 的 api.secret 一致
+  rtp:
+    enable: true
+    port-range: 30600,30700
+```
+
+**两套 ID 规则**（注意区别）：
+- 平台 ID（webssh-wvp 自己的 SIP ID）：`44010200492000000001`，第 11-13 位 `200` 表示平台
+- 设备 ID（NVR/IPC 厂商烧录）：`44010200491320000001`，第 11-12 位 `13` 表示 IP 摄像机
+
+下级设备配 SIP 服务器 ID = 平台 ID `34020000002000000001`，下级设备 SIP 用户名 = 设备自己 ID。
+
+### 11.5 数据库初始化
+
+`wvp_webssh` 库 schema 直接从 dcim 的 `wvp` 库 dump 过来（同版本 wvp 2.6.9）：
+
+```bash
+docker exec dcim mysqldump -uroot -p<pwd> --no-data --routines --triggers wvp \
+  | mysql -h127.0.0.1 -P3333 -uroot -p<pwd> wvp_webssh
+```
+
+需要手动灌两条 seed 数据（schema dump 不带数据）：
+
+```sql
+INSERT INTO wvp_user_role (id, name, authority, create_time, update_time)
+VALUES (1, 'admin', '0', NOW(), NOW());
+
+INSERT INTO wvp_user (id, username, password, role_id, create_time, update_time, push_key)
+VALUES (1, 'admin', '551c76780e34e1c1fab9ff85dfc79947', 1, NOW(), NOW(), 'webssh_admin_key');
+```
+
+wvp 登录：浏览器输入 `admin / admin`，前端会自动 md5 转 hash 提交。
+后端 API 直接调用时 `password` 字段填 `551c76780e34e1c1fab9ff85dfc79947`（dcim 库里的 hash）。
+
+### 11.6 webssh 主壳「视频监控」入口（自研 UI · 实时预览 · dcim/webssh 双栈）
+
+webssh 视频监控菜单是**真接通了实时预览的自研 UI**，同时反代两套独立的 wvp（dcim
+原生 + webssh 自建）让用户切换查看：
+
+```
+[index.html]                       showView("video") → iframe src=./video/index.html
+[video/index.html]                 webssh 设计语言（深色 #020617 / cyan #22d3ee）
+  顶栏：标题 + 1/4/9/16 分屏切换 + 关闭全部 + 全屏
+        + 状态灯「dcim 视频监控」+「📡 加载 dcim 视频监控」按钮
+        + 状态灯「webssh 视频监控」+「📡 加载 webssh 视频监控」按钮
+        + 「🔗 打开 8086」次按钮
+  左栏：设备列表（双击设备名 → 起播到当前激活分屏）+「⚙ 8086 修复指南」details
+  中央上：1/4/9/16 video 分屏（flv.js 实例 + active tile 选择）
+  中央下：折叠卡片（带数据源标签 dcim/webssh）
+        - 🛰 国标 28181 服务器配置
+        - 📺 监控设备
+[video/vendor/flv.min.js]          flv.js v1.6.2（144 KB）
+[video/assets/css/style.css]       占位样式 + dcim 面板 + 数据源标签 + 修复指南
+```
+
+**双栈反代（两套对称）**：
+| 套 | apiBase | 协议 | ZLM | 摄像头 SIP 端口 |
+|---|---|---|---|---|
+| `dcim`   | `https://127.0.0.1:18080` (dcim wvp，自签证书) | HTTPS | dcim ZLM `127.0.0.1:80`     | **5060** |
+| `webssh` | `http://127.0.0.1:18082`  (webssh-wvp)         | HTTP  | webssh ZLM `127.0.0.1:18180` | **5070** |
+
+两边都自动用 `admin / 551c76780e34e1c1fab9ff85dfc79947` 登录拿 token，401 自动续登。
+
+**路由清单**（两套对称，把 `<src>` 替换为 `dcim` 或 `webssh`）：
+| Method | Path | 用途 |
+|---|---|---|
+| GET  | `/api/<src>-video/status`                    | 探活：reachable/version/hasToken |
+| GET  | `/api/<src>-video/config`                    | wvp `/api/server/system/configInfo`（SIP 配置） |
+| GET  | `/api/<src>-video/devices?page=&count=`      | wvp `/api/device/query/devices` |
+| GET  | `/api/<src>-video/channels?deviceId=&page=&count=` | wvp `/api/device/query/devices/{id}/channels` |
+| POST | `/api/<src>-video/play/:dev/:ch`             | wvp `/api/play/start` → 改写 flv URL 为 `/media-<src>/...` |
+| POST | `/api/<src>-video/play/stop/:dev/:ch`        | wvp `/api/play/stop` |
+| POST | `/api/<src>-video/playback/start/:dev/:ch`   | wvp `/api/playback/start?startTime=&endTime=` |
+| POST | `/api/<src>-video/playback/stop/:streamId`   | wvp `/api/playback/stop` |
+| POST | `/api/<src>-video/playback/control/:streamId/:cmd` | wvp `/api/playback/control` (pause/play/scale/seek) |
+| ALL  | `/media-<src>/*`                             | 反代到对应 ZLM HTTP-FLV，剥前缀转发 |
+
+**前端起播流程**（双击设备名）：
+1. `currentSource` 由最后一次点击的「📡 加载 dcim/webssh 视频监控」决定
+2. 双击 `<dev-head data-dev=... data-name=...>` → fetch `/api/<src>-video/channels?deviceId=...`
+3. 取第一个在线通道 → POST `/api/<src>-video/play/<dev>/<ch>` → 拿到 `flvUrl`（已改写为 `/media-<src>/rtp/<streamKey>.live.flv`）
+4. `tiles[activeIdx].play({ flvUrl, ... })` → flv.js attachMediaElement → 出图
+5. 点 tile 右上 ✕ 或顶栏「关闭全部」触发 `tile.stop()` → flv.js destroy + POST stop API
+
+**Tile 类**（`video/index.html` 内联）管理 flv.js 实例：
+- `play(params)` 创建 player + attach video + 自动播放
+- `stop()` destroy player + 调 wvp stop + 还原占位
+- `_destroyPlayer()` pause/unload/detach/destroy 完整清理
+
+**保留代码**：[server.js](server.js) 的 `setupVideo28181` IIFE（API 路由 + `/media/*` 反代，
+最早的设想里 webssh 直接当 SIP 服务器用 ZLM 28181）+ [video/assets/js/](video/assets/js/)
+下 7 个 JS 模块仍在仓库里，当前 `video/index.html` 不引用（用 inline 简化版），预留备用。
+
+### 11.7 端口分配（最终）
+
+| 端口 | 协议 | 用途 | 暴露范围 |
+|---|---|---|---|
+| 3010 | TCP | webssh 主壳 | LAN |
+| 5070 | UDP+TCP | wvp SIP 信令 | LAN（NVR/IPC 注册）|
+| 6380 | TCP | webssh-redis | 仅本机 |
+| 18082 | TCP | wvp HTTP+UI | LAN（浏览器 iframe）|
+| 18180 | TCP | ZLM HTTP API + HTTP-FLV | 仅本机 |
+| 30600-30700 | UDP | ZLM RTP 收流 | LAN（NVR 推流）|
+
+dcim 容器原有的 5060 SIP / 18080 ZLM / 30000-30500 RTP **不动**，两套环境完全并存。
+
+### 11.8 NVR/IPC 接入步骤
+
+下级设备（海康/大华等）配置上级平台：
+
+| 字段 | 值 |
+|---|---|
+| 平台接入方式 | 28181 |
+| 协议版本 | GB/T28181-2016 |
+| SIP 服务器 ID | `34020000002000000001`（webssh-wvp 的 sip.id）|
+| SIP 服务器域 | `3402000000`（webssh-wvp 的 sip.domain）|
+| SIP 服务器地址 | `192.168.0.22`（webssh 部署主机）|
+| SIP 服务器端口 | **5070**（注意不是默认的 5060）|
+| SIP 用户名 / 用户认证 ID | 设备自己的 28181 编码（如海康默认 `44010200491320000001`）|
+| 密码 | 任意（wvp 端 password 留空跳过校验）|
+| 注册有效期 | 3600 |
+| 心跳周期 | 60 |
+
+保存后 1-2 个心跳周期内（约 60s），wvp UI「国标设备」页应能看到设备上线。
+
+### 11.9 验证
+
+通路探活：
+```bash
+# 4 个服务
+systemctl is-active webssh-redis webssh-mediaserver webssh-wvp webssh
+
+# wvp 登录测试
+curl "http://127.0.0.1:18082/api/user/login?username=admin&password=551c76780e34e1c1fab9ff85dfc79947"
+
+# ZLM API 自检
+SECRET=$(grep '^secret=' /opt/webssh/mediaserver/config.ini | head -1 | cut -d= -f2)
+curl "http://127.0.0.1:18180/index/api/getServerConfig?secret=$SECRET"
+
+# 看 wvp 是否认到 ZLM
+mysql -h127.0.0.1 -P3333 -uroot -p<pwd> wvp_webssh \
+  -e "SELECT id,ip,http_port,default_server FROM wvp_media_server"
+/opt/webssh/redis/bin/redis-cli -p 6380 -n 6 ZRANGE VMP_MEDIA_ONLINE_SERVERS_webssh_<id> 0 -1
+```
+
+SIP 注册抓包（设备注册不上时用）：
+```bash
+timeout 60 tcpdump -i any -nn -A 'udp and (port 5060 or port 5070)'
+journalctl -u webssh-wvp -f       # wvp 日志，grep "注册请求" 看 401/403/200
+```
+
+端到端：
+1. 浏览器开 `http://192.168.0.22:3010/` → 左栏「视频监控」 → iframe 加载 wvp UI
+2. wvp 登录页输 `admin / admin` → 进顶部菜单「分屏监控」
+3. 左侧设备树选通道拖到右边格子 → 1-3s 出图（HTTP-FLV via ZLM）
+4. 切换 1/4/9 分屏布局 / 试回放（菜单 → 云端录像）
+
+### 11.10 已知坑
+
+1. **wvp 启动慢**：Spring Boot 冷启动 30-40s，systemd 探活时要给足时间
+2. **ZLM 端口冲突**：dcim 容器默认 ZLM 在 18080/30000-30500，webssh 这套必须用 18180/30600-30700
+3. **wvp `media_server/list` API 偶发返回空**：DB+Redis 数据齐全但 API 返回 `[]`。重启 wvp 一次能恢复，
+   原因不明，疑似 wvp 2.6.9 启动期 race condition
+4. **wvp 注册 race condition 报错**：日志看到 `Duplicate entry ... for key 'uk_device_device'` 是
+   正常的（同时收到多次 REGISTER 重传），最终一次能成功入库即可
+5. **SIP 密码摘要兼容性差**：留空 `sip.password=""` 是最稳的做法。海康/大华等设备的
+   `Authorization: Digest` 计算细节和 wvp 默认实现不完全一致，开校验后大量设备会 403
+6. **跨端口 iframe 没问题但 cookie/storage 不共享**：用户首次打开「视频监控」会看到 wvp 登录页，
+   登录一次即可，token 存在 wvp 域的 sessionStorage 里
+7. **浏览器拦截 mixed content**：webssh 如果配 HTTPS，iframe 拉 wvp HTTP 资源会被拦
+   要么 webssh 也走 HTTP，要么 wvp 也开 HTTPS（在 application.yml 改 ssl.enabled=true）
+8. **dcim 8086 原生页面 ajax 失败问题**（**2026-06-09 已修复**）：
+   dcim 自己 8086 HTTPS 站点 (donghuan-camera-list.html / donghuan-camera-setting.html)
+   子页面进去后「配置信息」「监控设备」表格全空。
+   - **真实根因（最终定位）**：dcim wvp 的 `application-dev.yml` 里 `user-settings.allowed-origins`
+     只有 `http://ip:8088` 和 `http://ip:8081`，**没包含 `https://192.168.0.22:8086`**。
+     浏览器从 `https://...:8086` 跨端口调 `https://...:18080/api/*` 走 CORS 预检，
+     wvp 拒绝该 origin → 浏览器拦截响应 → 前端模板渲染不出数据。
+   - **错误判断（已订正）**：之前以为是 Apache 8086 vhost 没有 `/api/*` 反代规则，
+     加了 ProxyPass → 但前端 `videoUrl = window.location.protocol + '//' + hostname + ":18080/"`
+     根本不走 `/api/*`，是直连 18080。ProxyPass 实际未起作用（保留备份不删）。
+   - **修复方式 A（webssh 自研 UI）**：server.js 末尾 `setupDcimVideo` IIFE 做反代
+     （HTTPS + 自动登录），前端 [video/index.html](video/index.html) 通过
+     `/api/dcim-video/*` 拿到 dcim 那套数据。**不改 dcim 内部任何东西**。
+   - **修复方式 B（dcim 8086 原生页面，最终生效）**：用户在 dcim 容器内改：
+     - `/dcim/media/wvp-GB28181-pro/target/classes/application-dev.yml`
+     - `/dcim/media/wvp-pro-assist/target/classes/application-dev.yml`
+     ```yaml
+     media:
+       stream-ip: 192.168.0.22       # 之前是 192.168.2.141（旧网段，已不可达）
+       sdp-ip: 192.168.0.22
+     user-settings:
+       allowed-origins:
+         - http://192.168.0.22:8088
+         - https://192.168.0.22:8081
+         - https://192.168.0.22:8086  # ← 新增，关键
+     ```
+     然后容器内 `systemctl restart ZLMediaKit.service && systemctl restart wvp-pro.service`，
+     8086 那两个原生页面立刻恢复显示。
+   - **遗留产物**：`127.0.0.6.conf.bak-20260531103846`（容器内 8086 vhost 备份）+
+     vhost 里追加的 ProxyPass `/api → 18080` 块。不影响功能，保留作为冗余反代。
+     如要回滚：`docker exec dcim sh -c "cp -a /www/server/panel/vhost/apache/127.0.0.6.conf.bak-20260531103846 /www/server/panel/vhost/apache/127.0.0.6.conf && /www/server/apache/bin/httpd -k graceful"`
+9. **dcim wvp_device 表本身是空的**：海康摄像头默认 SIP 服务器端口配的是 5070（webssh-wvp），
+   不是 5060（dcim wvp）。要看 dcim 那套有数据，得把摄像头 SIP 端口切回 5060 重新注册。
+
+### 11.11 不做 / 暂搁置（明确收口）
+
+- ⚠️ webssh 风格自研视频 UI **架子已搭**（[video/index.html](video/index.html) 占位 +
+  分屏切换演示 + dcim 反代修复面板），实际播放/分屏拖动/回放等功能待对接
+- ⚠️ webssh 主壳 `/api/video/*` 路由 + `/media/*` 反代代码已就绪
+  （[server.js](server.js) `setupVideo28181` IIFE），但前端当前不调用
+- ❌ ZLM 自带 SIP 服务器（v8 master 分支已拆掉，必须 wvp+ZLM 双进程）
+- ❌ webssh 本地录像（用 NVR 自带）
+- ❌ WebRTC / HLS（wvp 默认 FLV 已够用）
+- ❌ 装独立 MySQL（直接复用 dcim 的，仅独立库 `wvp_webssh`）

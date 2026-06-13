@@ -122,47 +122,118 @@
     deviceMeta = {};
     checkedKey = {};
     try {
-      // 1. 区域
-      var rArea = await invokePc('GetNewAllAreasKey', { UserLsh: '1' });
-      var areas = ((rArea && rArea.data && rArea.data.data) || []);
-      treeData = [];
-      // 2. 每个区域取分组 + 每个分组取设备
-      for (var i = 0; i < areas.length; i++) {
-        var ar = areas[i];
-        var gNode = { zonesubno: ar.Zonesubno, zonesubname: ar.Zonesubname, groups: [] };
-        var rGrp = await invokePc('GetGroupByZonesubnoKey', {
-          UserLsh: '1', serverCode: ar.ServerCode || '1', Zonesubno: ar.Zonesubno,
-        });
-        var groups = ((rGrp && rGrp.data && rGrp.data.data) || []);
-        for (var j = 0; j < groups.length; j++) {
-          var g = groups[j];
-          var rDev = await invokePc('GetDeviceByGroupKey', { UserLsh: '1', GroupId: g.GroupId });
-          var devs = ((rDev && rDev.data && rDev.data.data) || []);
-          // dcim 后端 GroupId 是全局共享的（不同区域同名分组撞 GroupId），
-          // 所以这里返回的可能是所有区域下该 GroupId 的设备，需按当前 Zonesubno 过滤
-          devs = devs.filter(function (d) {
-            return d && String(d.Zonesubno == null ? '' : d.Zonesubno) === String(ar.Zonesubno);
-          });
-          var devList = devs.map(function (d) {
-            return {
-              deviceId: String(d.DeviceId),
-              deviceName: String(d.DeviceName || ''),
-              groupId: String(g.GroupId),
-              groupName: String(g.GroupName || ''),
-              zonesubno: String(ar.Zonesubno),
-              zonesubname: String(ar.Zonesubname || ''),
-              params: (d.ParaList || []).map(function (p) {
-                return { paraName: String(p.ParaName == null ? '' : p.ParaName), unit: String(p.Unit == null ? '' : p.Unit) };
-              }),
-            };
-          });
-          // 写入 deviceMeta
-          devList.forEach(function (d) { deviceMeta[d.deviceId] = d; });
-          gNode.groups.push({ groupId: String(g.GroupId), groupName: String(g.GroupName || ''), devices: devList });
+      // 新方案：以分组为主、不依赖 GetNewAllAreasKey 的区域列表完整性
+      // 1) 取一份 areaMap (Zonesubno -> Zonesubname)，仅用作展示标签
+      //    优先从 dcim 数据库直查（dcim-area 表）；接口 GetNewAllAreasKey 作兜底
+      var areaMap = {};
+      try {
+        var rDb = await fetch('/api/proto-conv/area-map').then(function (r) { return r.json(); });
+        if (rDb && rDb.ok && rDb.map) {
+          Object.keys(rDb.map).forEach(function (k) { areaMap[k] = rDb.map[k]; });
+          if (rDb.source === 'db') Mon.info('Modbus → 区域名从 dcim-area 表拿到 ' + rDb.count + ' 个');
         }
-        treeData.push(gNode);
+      } catch (_e) {}
+      var rArea = await invokePc('GetNewAllAreasKey', { UserLsh: '1' });
+      var rawAreas = ((rArea && rArea.data && rArea.data.data) || []);
+      rawAreas.forEach(function (a) {
+        if (a && a.Zonesubno != null && !areaMap[String(a.Zonesubno)]) {
+          areaMap[String(a.Zonesubno)] = String(a.Zonesubname || '');
+        }
+      });
+      // 2) 穷举 Zonesubno=1..30 拿所有分组（dcim GetNewAllAreasKey 不可靠 + GroupId 分布在不同 zone，必须穷举）
+      var ZONE_MAX = 30, EMPTY_STOP = 5;
+      var groupMap = {}; // GroupId -> {GroupId, GroupName}
+      var emptyStreak = 0;
+      el.treeBox.innerHTML = '<div class="hint">扫描中…正在穷举区域（1/' + ZONE_MAX + '）</div>';
+      for (var z = 1; z <= ZONE_MAX; z++) {
+        if ((z % 5) === 0) {
+          el.treeBox.innerHTML = '<div class="hint">扫描中…穷举区域 ' + z + '/' + ZONE_MAX + '</div>';
+        }
+        var rG = await invokePc('GetGroupByZonesubnoKey', {
+          UserLsh: '1', serverCode: '1', Zonesubno: String(z),
+        });
+        var gs = ((rG && rG.data && rG.data.data) || []);
+        if (gs.length === 0) {
+          emptyStreak += 1;
+          if (emptyStreak >= EMPTY_STOP) break;
+          continue;
+        }
+        emptyStreak = 0;
+        gs.forEach(function (g) {
+          var gid = String(g.GroupId);
+          if (!groupMap[gid]) groupMap[gid] = { GroupId: gid, GroupName: String(g.GroupName || '') };
+        });
       }
-      // 仅恢复那些"扫描后仍存在"的设备的勾选状态；旧 dcim 的孤儿设备被自动丢弃
+      var groupList = Object.keys(groupMap).map(function (k) { return groupMap[k]; });
+      if (groupList.length === 0) throw new Error('穷举 Zonesubno=1..' + ZONE_MAX + ' 没拿到任何分组');
+
+      // 3) 每个分组拉一次设备（不再按区域过滤），按设备的 Zonesubno 自然分组
+      treeData = [];
+      var zoneNodes = {}; // Zonesubno -> { zonesubno, zonesubname, groups: { groupId -> {groupId, groupName, devices:[]} } }
+      function getZoneNode(zno) {
+        var k = String(zno == null ? '' : zno);
+        if (!zoneNodes[k]) {
+          zoneNodes[k] = {
+            zonesubno: k,
+            zonesubname: areaMap[k] || ('未知区域 (Zonesubno=' + k + ')'),
+            groups: {},
+          };
+        }
+        return zoneNodes[k];
+      }
+      function getGroupNode(zoneNode, gid, gname) {
+        var k = String(gid);
+        if (!zoneNode.groups[k]) {
+          zoneNode.groups[k] = { groupId: k, groupName: String(gname || ''), devices: [] };
+        }
+        return zoneNode.groups[k];
+      }
+
+      for (var j = 0; j < groupList.length; j++) {
+        var g = groupList[j];
+        var rDev = await invokePc('GetDeviceByGroupKey', { UserLsh: '1', GroupId: g.GroupId });
+        var devs = ((rDev && rDev.data && rDev.data.data) || []);
+        devs.forEach(function (d) {
+          if (!d || d.DeviceId == null) return;
+          var zNode = getZoneNode(d.Zonesubno);
+          var grpNode = getGroupNode(zNode, g.GroupId, g.GroupName);
+          var dev = {
+            deviceId: String(d.DeviceId),
+            deviceName: String(d.DeviceName || ''),
+            groupId: String(g.GroupId),
+            groupName: String(g.GroupName || ''),
+            zonesubno: String(d.Zonesubno == null ? '' : d.Zonesubno),
+            zonesubname: zNode.zonesubname,
+            params: (d.ParaList || []).map(function (p) {
+              return {
+                paraName: String(p.ParaName == null ? '' : p.ParaName),
+                unit: String(p.Unit == null ? '' : p.Unit),
+                dataType: String(p.DataType == null ? '' : p.DataType),
+              };
+            }),
+          };
+          grpNode.devices.push(dev);
+          deviceMeta[dev.deviceId] = dev;
+        });
+      }
+
+      // 4) zoneNodes (Map) → treeData (Array)，按 Zonesubno 数字排序
+      var zoneKeys = Object.keys(zoneNodes).sort(function (a, b) {
+        var na = parseInt(a, 10), nb = parseInt(b, 10);
+        if (isNaN(na) || isNaN(nb)) return a < b ? -1 : (a > b ? 1 : 0);
+        return na - nb;
+      });
+      zoneKeys.forEach(function (k) {
+        var zn = zoneNodes[k];
+        var groupsArr = Object.keys(zn.groups).map(function (gk) { return zn.groups[gk]; });
+        treeData.push({
+          zonesubno: zn.zonesubno,
+          zonesubname: zn.zonesubname,
+          groups: groupsArr,
+        });
+      });
+
+      // 5) 仅恢复那些"扫描后仍存在"的设备的勾选状态；旧 dcim 的孤儿设备被自动丢弃
       var droppedCount = 0;
       Object.keys(oldChecked).forEach(function (k) {
         if (oldChecked[k]) {
@@ -171,8 +242,9 @@
         }
       });
       renderTree();
-      var hint = '扫描完成，' + areas.length + ' 区域';
-      if (droppedCount > 0) hint += '；丢弃 ' + droppedCount + ' 个旧 dcim 孤儿设备（不在当前连接里）';
+      var totalDevs = Object.keys(deviceMeta).length;
+      var hint = '扫描完成，' + treeData.length + ' 区域，' + groupList.length + ' 分组，' + totalDevs + ' 设备';
+      if (droppedCount > 0) hint += '；丢弃 ' + droppedCount + ' 个旧 dcim 孤儿设备';
       Mon.info('Modbus → ' + hint);
     } catch (err) {
       el.treeBox.innerHTML = '<div class="hint err">扫描失败：' + escHtml(err.message) + '</div>';

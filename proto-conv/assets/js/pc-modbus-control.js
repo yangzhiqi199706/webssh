@@ -122,52 +122,117 @@
     commandMeta = {};
     checkedKey = {};
     try {
-      var rArea = await invokePc('GetNewAllAreasKey', { UserLsh: '1' });
-      var areas = ((rArea && rArea.data && rArea.data.data) || []);
-      treeData = [];
-      var totalDevs = 0, totalCmds = 0;
-      for (var i = 0; i < areas.length; i++) {
-        var ar = areas[i];
-        var zNode = { zonesubno: ar.Zonesubno, zonesubname: ar.Zonesubname, groups: [] };
-        var rGrp = await invokePc('GetGroupByZonesubnoKey', {
-          UserLsh: '1', serverCode: ar.ServerCode || '1', Zonesubno: ar.Zonesubno,
-        });
-        var groups = ((rGrp && rGrp.data && rGrp.data.data) || []);
-        for (var j = 0; j < groups.length; j++) {
-          var g = groups[j];
-          var rDev = await invokePc('GetDeviceByGroupKey', { UserLsh: '1', GroupId: g.GroupId });
-          var devs = ((rDev && rDev.data && rDev.data.data) || []);
-          // 按 Zonesubno 过滤（dcim GroupId 全局共享，需要按区域筛）
-          devs = devs.filter(function (d) {
-            return d && String(d.Zonesubno == null ? '' : d.Zonesubno) === String(ar.Zonesubno);
-          });
-          var gNode = { groupId: String(g.GroupId), groupName: String(g.GroupName || ''), devices: [] };
-          for (var k = 0; k < devs.length; k++) {
-            var dev = devs[k];
-            var rCtrl = await invokePc('GetDeviceControlKey', { UserLsh: '1', DeviceId: String(dev.DeviceId) });
-            var ctrls = ((rCtrl && rCtrl.data && rCtrl.data.data) || []);
-            var cmdList = ctrls.map(function (c) {
-              return {
-                deviceId: String(dev.DeviceId), deviceName: String(dev.DeviceName || ''),
-                controlId: String(c.ControlId == null ? '' : c.ControlId),
-                commandName: String(c.CommandName == null ? '' : c.CommandName),
-                groupId: String(g.GroupId), groupName: String(g.GroupName || ''),
-                zonesubno: String(ar.Zonesubno), zonesubname: String(ar.Zonesubname || ''),
-              };
-            }).filter(function (c) { return c.controlId; });
-            cmdList.forEach(function (c) { commandMeta[ckey(c.deviceId, c.controlId)] = c; });
-            totalCmds += cmdList.length;
-            gNode.devices.push({
-              deviceId: String(dev.DeviceId),
-              deviceName: String(dev.DeviceName || ''),
-              commands: cmdList,
-            });
-            totalDevs += 1;
-          }
-          zNode.groups.push(gNode);
+      // 新方案：以分组为主、不依赖 GetNewAllAreasKey 的区域列表完整性
+      var areaMap = {};
+      try {
+        var rDb = await fetch('/api/proto-conv/area-map').then(function (r) { return r.json(); });
+        if (rDb && rDb.ok && rDb.map) {
+          Object.keys(rDb.map).forEach(function (k) { areaMap[k] = rDb.map[k]; });
+          if (rDb.source === 'db') Mon.info('Modbus 控制 → 区域名从 dcim-area 表拿到 ' + rDb.count + ' 个');
         }
-        treeData.push(zNode);
+      } catch (_e) {}
+      var rArea = await invokePc('GetNewAllAreasKey', { UserLsh: '1' });
+      var rawAreas = ((rArea && rArea.data && rArea.data.data) || []);
+      rawAreas.forEach(function (a) {
+        if (a && a.Zonesubno != null && !areaMap[String(a.Zonesubno)]) {
+          areaMap[String(a.Zonesubno)] = String(a.Zonesubname || '');
+        }
+      });
+      var ZONE_MAX = 30, EMPTY_STOP = 5;
+      var groupMap = {};
+      var emptyStreak = 0;
+      el.treeBox.innerHTML = '<div class="hint">扫描中…正在穷举区域（1/' + ZONE_MAX + '）</div>';
+      for (var z = 1; z <= ZONE_MAX; z++) {
+        if ((z % 5) === 0) {
+          el.treeBox.innerHTML = '<div class="hint">扫描中…穷举区域 ' + z + '/' + ZONE_MAX + '</div>';
+        }
+        var rG = await invokePc('GetGroupByZonesubnoKey', {
+          UserLsh: '1', serverCode: '1', Zonesubno: String(z),
+        });
+        var gs = ((rG && rG.data && rG.data.data) || []);
+        if (gs.length === 0) {
+          emptyStreak += 1;
+          if (emptyStreak >= EMPTY_STOP) break;
+          continue;
+        }
+        emptyStreak = 0;
+        gs.forEach(function (g) {
+          var gid = String(g.GroupId);
+          if (!groupMap[gid]) groupMap[gid] = { GroupId: gid, GroupName: String(g.GroupName || '') };
+        });
       }
+      var groupList = Object.keys(groupMap).map(function (k) { return groupMap[k]; });
+      if (groupList.length === 0) throw new Error('穷举 Zonesubno=1..' + ZONE_MAX + ' 没拿到任何分组');
+
+      treeData = [];
+      var zoneNodes = {};
+      function getZoneNode(zno) {
+        var k = String(zno == null ? '' : zno);
+        if (!zoneNodes[k]) {
+          zoneNodes[k] = {
+            zonesubno: k,
+            zonesubname: areaMap[k] || ('未知区域 (Zonesubno=' + k + ')'),
+            groups: {},
+          };
+        }
+        return zoneNodes[k];
+      }
+      function getGroupNode(zoneNode, gid, gname) {
+        var k = String(gid);
+        if (!zoneNode.groups[k]) {
+          zoneNode.groups[k] = { groupId: k, groupName: String(gname || ''), devices: [] };
+        }
+        return zoneNode.groups[k];
+      }
+
+      var totalDevs = 0, totalCmds = 0;
+      for (var j = 0; j < groupList.length; j++) {
+        var g = groupList[j];
+        var rDev = await invokePc('GetDeviceByGroupKey', { UserLsh: '1', GroupId: g.GroupId });
+        var devs = ((rDev && rDev.data && rDev.data.data) || []);
+        for (var k = 0; k < devs.length; k++) {
+          var dev = devs[k];
+          if (!dev || dev.DeviceId == null) continue;
+          var rCtrl = await invokePc('GetDeviceControlKey', { UserLsh: '1', DeviceId: String(dev.DeviceId) });
+          var ctrls = ((rCtrl && rCtrl.data && rCtrl.data.data) || []);
+          var zNode = getZoneNode(dev.Zonesubno);
+          var grpNode = getGroupNode(zNode, g.GroupId, g.GroupName);
+          var cmdList = ctrls.map(function (c) {
+            return {
+              deviceId: String(dev.DeviceId), deviceName: String(dev.DeviceName || ''),
+              controlId: String(c.ControlId == null ? '' : c.ControlId),
+              commandName: String(c.CommandName == null ? '' : c.CommandName),
+              groupId: String(g.GroupId), groupName: String(g.GroupName || ''),
+              zonesubno: String(dev.Zonesubno == null ? '' : dev.Zonesubno),
+              zonesubname: zNode.zonesubname,
+            };
+          }).filter(function (c) { return c.controlId; });
+          cmdList.forEach(function (c) { commandMeta[ckey(c.deviceId, c.controlId)] = c; });
+          totalCmds += cmdList.length;
+          grpNode.devices.push({
+            deviceId: String(dev.DeviceId),
+            deviceName: String(dev.DeviceName || ''),
+            commands: cmdList,
+          });
+          totalDevs += 1;
+        }
+      }
+
+      var zoneKeys = Object.keys(zoneNodes).sort(function (a, b) {
+        var na = parseInt(a, 10), nb = parseInt(b, 10);
+        if (isNaN(na) || isNaN(nb)) return a < b ? -1 : (a > b ? 1 : 0);
+        return na - nb;
+      });
+      zoneKeys.forEach(function (zk) {
+        var zn = zoneNodes[zk];
+        var groupsArr = Object.keys(zn.groups).map(function (gk) { return zn.groups[gk]; });
+        treeData.push({
+          zonesubno: zn.zonesubno,
+          zonesubname: zn.zonesubname,
+          groups: groupsArr,
+        });
+      });
+
       // 仅恢复扫描后仍存在的控制项的勾选；旧 dcim 的孤儿命令自动丢弃
       var droppedCount = 0;
       Object.keys(oldChecked).forEach(function (k) {
@@ -177,7 +242,7 @@
         }
       });
       renderTree();
-      var hint = '扫描完成，' + areas.length + ' 区域，' + totalDevs + ' 设备，' + totalCmds + ' 控制项';
+      var hint = '扫描完成，' + treeData.length + ' 区域，' + groupList.length + ' 分组，' + totalDevs + ' 设备，' + totalCmds + ' 控制项';
       if (droppedCount > 0) hint += '；丢弃 ' + droppedCount + ' 个旧 dcim 孤儿命令';
       Mon.info('Modbus 控制 → ' + hint);
     } catch (err) {

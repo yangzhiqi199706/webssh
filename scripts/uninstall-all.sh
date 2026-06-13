@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# uninstall-all.sh —— 全栈一键卸载：webssh 主壳 + 协议助手
+# uninstall-all.sh —— 全栈一键卸载：webssh 主壳 + 协议助手 + 视频媒体服务
 #
 # 默认会：
-#   1. 停止并 disable 双 systemd 服务
-#   2. 删除两个 unit 文件 + daemon-reload
-#   3. 删除 /opt/webssh/{app,protocol,runtime,scripts,systemd,run} 等
+#   1. 停止并 disable 三个 systemd 服务（webssh / webssh-protocol / webssh-mediaserver）
+#   2. 删除三个 unit 文件 + daemon-reload
+#   3. 删除 /opt/webssh/{app,protocol,mediaserver,runtime,scripts,systemd,run} 等
 #   4. 默认会保留 logs/ 和 config/，避免误删审计日志/配置
 #
 # 用法：
@@ -17,12 +17,14 @@
 #   INSTALL_DIR     默认 /opt/webssh
 #   SERVICE_MAIN    默认 webssh
 #   SERVICE_PROTO   默认 webssh-protocol
+#   SERVICE_MEDIA   默认 webssh-mediaserver
 
 set -euo pipefail
 
 INSTALL_DIR="${INSTALL_DIR:-/opt/webssh}"
 SERVICE_MAIN="${SERVICE_MAIN:-webssh}"
 SERVICE_PROTO="${SERVICE_PROTO:-webssh-protocol}"
+SERVICE_MEDIA="${SERVICE_MEDIA:-webssh-mediaserver}"
 
 PURGE="0"
 KEEP_BACKUPS="0"
@@ -45,8 +47,8 @@ warn() { echo "[警告] $*" >&2; }
 
 [[ "$(id -u)" -eq 0 ]] || { echo "需要 root 权限" >&2; exit 1; }
 
-# -------------------- 1. 停止并 disable 服务（顺序：先 protocol 再 main，避免 PartOf 二次触发） --------------------
-for svc in "$SERVICE_PROTO" "$SERVICE_MAIN"; do
+# -------------------- 1. 停止并 disable 服务（顺序：先 protocol/media 再 main，避免 PartOf 二次触发） --------------------
+for svc in "$SERVICE_PROTO" "$SERVICE_MEDIA" "$SERVICE_MAIN"; do
   if systemctl list-unit-files 2>/dev/null | grep -q "^${svc}\.service"; then
     log "停止 $svc ..."
     systemctl stop    "$svc" 2>/dev/null || true
@@ -57,7 +59,7 @@ for svc in "$SERVICE_PROTO" "$SERVICE_MAIN"; do
 done
 
 # -------------------- 2. 删除 systemd unit --------------------
-for svc in "$SERVICE_PROTO" "$SERVICE_MAIN"; do
+for svc in "$SERVICE_PROTO" "$SERVICE_MEDIA" "$SERVICE_MAIN"; do
   UNIT="/etc/systemd/system/${svc}.service"
   if [[ -f "$UNIT" ]]; then
     log "删除 unit: $UNIT"
@@ -76,7 +78,7 @@ fi
 log "清理 $INSTALL_DIR 下子目录..."
 
 # 必删项：代码、运行时、systemd 模板、脚本、运行时数据
-for sub in app protocol runtime scripts systemd run release; do
+for sub in app protocol mediaserver runtime scripts systemd run release; do
   if [[ -e "$INSTALL_DIR/$sub" ]]; then
     log "  删除 $INSTALL_DIR/$sub"
     rm -rf "$INSTALL_DIR/$sub"
@@ -112,9 +114,13 @@ fi
 if systemctl is-active firewalld >/dev/null 2>&1; then
   warn "firewalld 仍在运行。如已开放过 webssh 端口（默认 3010），可手动收回："
   warn "  firewall-cmd --permanent --remove-port=3010/tcp && firewall-cmd --reload"
+  warn "视频监控端口（如果之前开过）："
+  warn "  firewall-cmd --permanent --remove-port=5060/tcp"
+  warn "  firewall-cmd --permanent --remove-port=5060/udp"
+  warn "  firewall-cmd --permanent --remove-port=30000-30100/udp && firewall-cmd --reload"
 fi
 
 log ""
 log "✅ 卸载完成"
-log "   服务状态: systemctl is-active $SERVICE_MAIN $SERVICE_PROTO 应输出 inactive"
+log "   服务状态: systemctl is-active $SERVICE_MAIN $SERVICE_PROTO $SERVICE_MEDIA 应输出 inactive"
 log "   残留目录: ls -la $INSTALL_DIR 2>/dev/null"

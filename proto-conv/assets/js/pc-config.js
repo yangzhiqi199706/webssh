@@ -9,6 +9,7 @@
     btnClose: $('btnCloseConfig'),
     btnLogin: $('btnLogin'),
     btnTest: $('btnTest'),
+    btnToggleProtocol: $('btnToggleProtocol'),
     sessionTag: $('sessionTag'),
     modal: $('configModal'),
     baseUrl: $('cfgBaseUrl'),
@@ -17,6 +18,11 @@
     userLsh: $('cfgUserLsh'),
     timeoutMs: $('cfgTimeoutMs'),
     pathMap: $('cfgPathMap'),
+    dbHost: $('cfgDbHost'),
+    dbPort: $('cfgDbPort'),
+    dbUser: $('cfgDbUser'),
+    dbPwd: $('cfgDbPwd'),
+    dbName: $('cfgDbName'),
     btnSave: $('btnCfgSave'),
     btnReload: $('btnCfgReload'),
     saveHint: $('cfgSaveHint'),
@@ -57,6 +63,71 @@
     try {
       el.pathMap.value = JSON.stringify(current.pathMap || {}, null, 2);
     } catch (_e) { el.pathMap.value = '{}'; }
+    var db = current.dcimDb || {};
+    if (el.dbHost) el.dbHost.value = db.host || '';
+    if (el.dbPort) el.dbPort.value = db.port || 3333;
+    if (el.dbUser) el.dbUser.value = db.user || '';
+    if (el.dbPwd) {
+      el.dbPwd.value = '';
+      el.dbPwd.placeholder = db.hasPassword ? '已保存（留空保持原值）' : '留空保持原值';
+    }
+    if (el.dbName) el.dbName.value = db.database || 'dcim';
+    syncProtocolBtn(current.baseUrl);
+  }
+
+  // 顶栏「协议: HTTPS/HTTP」按钮文字与样式同步
+  function syncProtocolBtn(baseUrl) {
+    if (!el.btnToggleProtocol) return;
+    var proto = '?';
+    try {
+      var u = new URL(String(baseUrl || ''));
+      proto = (u.protocol === 'https:') ? 'HTTPS' : (u.protocol === 'http:' ? 'HTTP' : '?');
+    } catch (_e) {}
+    el.btnToggleProtocol.textContent = '协议: ' + proto;
+    el.btnToggleProtocol.title = '当前 baseUrl: ' + (baseUrl || '(未配置)') + '\n点击切换 HTTPS ↔ HTTP';
+  }
+
+  // 切换 baseUrl 协议头并保存
+  async function toggleProtocol() {
+    var cfg = current;
+    if (!cfg || !cfg.baseUrl) {
+      Mon.warn('协议切换：请先在「连接信息」里配置 baseUrl');
+      return;
+    }
+    var u;
+    try { u = new URL(cfg.baseUrl); }
+    catch (e) {
+      Mon.error('协议切换失败：baseUrl 解析错 ' + e.message);
+      return;
+    }
+    var oldProto = u.protocol; // 'https:' / 'http:'
+    var newProto = (oldProto === 'https:') ? 'http:' : 'https:';
+    u.protocol = newProto;
+    var newBaseUrl = u.toString().replace(/\/$/, '');
+    el.btnToggleProtocol.disabled = true;
+    Mon.info('切换协议: ' + oldProto + '//... → ' + newProto + '//...');
+    try {
+      var r = await fetch('/api/proto-conv/config', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          baseUrl: newBaseUrl,
+          userName: cfg.userName,
+          userLsh: cfg.userLsh,
+          timeoutMs: cfg.timeoutMs,
+          pathMap: cfg.pathMap || {},
+        }),
+      }).then(function (r) { return r.json(); });
+      if (!r.ok) throw new Error(r.message || '保存失败');
+      fillForm(r.config);
+      window.PcConfig._cfg = r.config;
+      window.PcBus && window.PcBus.emit('config-loaded', r.config);
+      Mon.info('协议已切换为 ' + newProto.replace(':', '').toUpperCase() + '，新 baseUrl: ' + r.config.baseUrl);
+    } catch (err) {
+      Mon.error('协议切换失败: ' + err.message);
+    } finally {
+      el.btnToggleProtocol.disabled = false;
+    }
   }
 
   async function loadConfig() {
@@ -97,6 +168,16 @@
     };
     var pwd = el.passWord.value;
     if (pwd && pwd !== '') body.passWord = pwd;
+    // dcimDb 可选
+    var db = {
+      host: (el.dbHost && el.dbHost.value || '').trim(),
+      port: Number(el.dbPort && el.dbPort.value) || 3333,
+      user: (el.dbUser && el.dbUser.value || '').trim(),
+      database: (el.dbName && el.dbName.value || '').trim() || 'dcim',
+    };
+    var dbPwd = el.dbPwd && el.dbPwd.value;
+    if (dbPwd && dbPwd !== '') db.password = dbPwd;
+    body.dcimDb = db;
     if (!body.baseUrl) { setHint(el.saveHint, 'baseUrl 必填', 'err'); return; }
     if (!body.userName) { setHint(el.saveHint, '账号必填', 'err'); return; }
 
@@ -171,6 +252,7 @@
   el.btnReload && el.btnReload.addEventListener('click', loadConfig);
   el.btnLogin && el.btnLogin.addEventListener('click', doLogin);
   el.btnTest && el.btnTest.addEventListener('click', doTest);
+  el.btnToggleProtocol && el.btnToggleProtocol.addEventListener('click', toggleProtocol);
   // ESC 关闭
   el.modal && el.modal.addEventListener('click', function (e) {
     if (e.target === el.modal) close();

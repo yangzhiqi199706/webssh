@@ -27,6 +27,12 @@ config/proto-conv-modbus.json
 config/proto-conv-modbus-map.csv
 config/proto-conv-modbus-control.json
 config/proto-conv-snmp.json
+config/video-28181.json
+config/video-devices.json
+config/dcim-video.json
+
+# 视频监控离线 vendor（flv.js 只是从 .offline-downloads/ 落进来的运行时产物）
+video/vendor/flv.min.js
 
 # 临时调试脚本
 .tmp-*.js

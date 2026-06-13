@@ -124,7 +124,7 @@ async function main() {
 
     // ---------- 2. 准备 stage ----------
     await exec(conn, `rm -rf ${STAGE_DIR}`);
-    await exec(conn, `mkdir -p ${STAGE_DIR}/app ${STAGE_DIR}/runtime ${STAGE_DIR}/protocol/runtime ${STAGE_DIR}/systemd ${STAGE_DIR}/scripts ${STAGE_DIR}/config ${RELEASE_DIR}`);
+    await exec(conn, `mkdir -p ${STAGE_DIR}/app ${STAGE_DIR}/runtime ${STAGE_DIR}/protocol/runtime ${STAGE_DIR}/systemd ${STAGE_DIR}/scripts ${STAGE_DIR}/config ${STAGE_DIR}/mediaserver ${RELEASE_DIR}`);
 
     // ---------- 3. 主壳 ----------
     await exec(conn, `cp -a /opt/webssh/app/server.js /opt/webssh/app/index.html /opt/webssh/app/package.json /opt/webssh/app/package-lock.json ${STAGE_DIR}/app/`);
@@ -133,6 +133,7 @@ async function main() {
     await exec(conn, `cp -a /opt/webssh/app/sms ${STAGE_DIR}/app/ 2>/dev/null || true`);
     await exec(conn, `cp -a /opt/webssh/app/ha ${STAGE_DIR}/app/ 2>/dev/null || true`);
     await exec(conn, `cp -a /opt/webssh/app/proto-conv ${STAGE_DIR}/app/ 2>/dev/null || true`);
+    await exec(conn, `cp -a /opt/webssh/app/video ${STAGE_DIR}/app/ 2>/dev/null || true`);
     await exec(conn, `cp -a /opt/webssh/app/snmp-bundle ${STAGE_DIR}/app/ 2>/dev/null || true`);
     await exec(conn, `cp -a /opt/webssh/app/node_modules ${STAGE_DIR}/app/`);
     await exec(conn, `cp -a /opt/webssh/app/README.txt ${STAGE_DIR}/app/ 2>/dev/null || true`);
@@ -153,18 +154,55 @@ async function main() {
     await exec(conn, `cp -a /opt/webssh/scripts/. ${STAGE_DIR}/scripts/ 2>/dev/null || true`);
     await exec(conn, `cp -a /opt/webssh/config/.env.example ${STAGE_DIR}/config/.env.example 2>/dev/null || true`);
 
+    // ---------- 5.5 视频媒体服务（ZLMediaKit）----------
+    // 优先使用服务器现有的 mediaserver/ 目录（含编译好的 MediaServer 二进制 + config.ini.example）
+    // 若服务器没有，再从 .offline-downloads/ZLMediaKit/ 拉一份原包（开发期）
+    const localZlmDir = path.join(ROOT, '.offline-downloads', 'ZLMediaKit');
+    let zlmTarLocal = '';
+    if (fs.existsSync(localZlmDir)) {
+      const tars = fs.readdirSync(localZlmDir).filter(function (n) {
+        return /^MediaServer.*\.tar\.gz$/i.test(n);
+      });
+      if (tars.length) zlmTarLocal = path.join(localZlmDir, tars.sort().pop());
+    }
+    // 服务器侧若有现成 mediaserver/，整目录拷过来
+    const hasServerZlm = await exec(conn, `test -x /opt/webssh/mediaserver/MediaServer && echo yes || echo no`, { silent: true });
+    if (hasServerZlm.stdout.trim() === 'yes') {
+      log('使用服务器已编译的 MediaServer');
+      await exec(conn, `rsync -a --exclude=www --exclude=record /opt/webssh/mediaserver/ ${STAGE_DIR}/mediaserver/`);
+    } else if (zlmTarLocal) {
+      log('上传本地 ZLMediaKit tar 进打包目录：' + path.basename(zlmTarLocal));
+      await uploadFile(conn, zlmTarLocal, `${STAGE_DIR}/mediaserver/${path.basename(zlmTarLocal)}`);
+    } else {
+      log('⚠ 未找到 ZLMediaKit 二进制（服务器和本地 .offline-downloads/ZLMediaKit/ 都没有），打出来的全栈包将不含视频监控的媒体服务');
+    }
+
+    // 视频前端 vendor：flv.js
+    const localFlvDir = path.join(ROOT, '.offline-downloads', 'flvjs');
+    if (fs.existsSync(localFlvDir)) {
+      const flv = path.join(localFlvDir, 'flv.min.js');
+      if (fs.existsSync(flv)) {
+        await exec(conn, `mkdir -p ${STAGE_DIR}/app/video/vendor`);
+        await uploadFile(conn, flv, `${STAGE_DIR}/app/video/vendor/flv.min.js`);
+      }
+    }
+
     // ---------- 6. 上传缺失的本地素材 ----------
     // 用本地版本覆盖（保证模板/脚本是最新的）
     const localInstallAll    = path.join(ROOT, 'scripts', 'install-all.sh');
     const localUninstallAll  = path.join(ROOT, 'scripts', 'uninstall-all.sh');
     const localProtoUnit     = path.join(ROOT, 'systemd', 'webssh-protocol.service.template');
     const localMainUnit      = path.join(ROOT, 'systemd', 'webssh.service.template');
+    const localMediaUnit     = path.join(ROOT, 'systemd', 'webssh-mediaserver.service.template');
     const localInstallProto  = path.join(ROOT, 'scripts', 'install-protocol.sh');
 
     await uploadFile(conn, localInstallAll,    `${STAGE_DIR}/install-all.sh`);
     await uploadFile(conn, localUninstallAll,  `${STAGE_DIR}/uninstall-all.sh`);
     await uploadFile(conn, localMainUnit,      `${STAGE_DIR}/systemd/webssh.service.template`);
     await uploadFile(conn, localProtoUnit,     `${STAGE_DIR}/systemd/webssh-protocol.service.template`);
+    if (fs.existsSync(localMediaUnit)) {
+      await uploadFile(conn, localMediaUnit,   `${STAGE_DIR}/systemd/webssh-mediaserver.service.template`);
+    }
     await uploadFile(conn, localInstallProto,  `${STAGE_DIR}/scripts/install-protocol.sh`);
 
     // ---------- 7. 生成 INSTALL.md ----------

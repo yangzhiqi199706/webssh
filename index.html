@@ -613,6 +613,131 @@
     .about-grid { display: grid; grid-template-columns: minmax(120px, max-content) 1fr; gap: 8px 16px; font-size: 13px; }
     .about-grid .k { color: var(--muted); }
     .about-grid .v { color: #e2e8f0; word-break: break-all; }
+
+    /* ===== 防火墙面板 ===== */
+    .fw-status-card { display: grid; gap: 10px; }
+    .fw-status-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .fw-tag {
+      display: inline-block; padding: 3px 10px; border-radius: 999px;
+      font-size: 12px; font-weight: 700; letter-spacing: .5px;
+      background: rgba(34, 197, 94, .15); color: #4ade80;
+      border: 1px solid rgba(34, 197, 94, .3);
+    }
+    .fw-tag.off { background: rgba(148, 163, 184, .15); color: #94a3b8; border-color: rgba(148, 163, 184, .3); }
+    .fw-tag.err { background: rgba(239, 68, 68, .15); color: #f87171; border-color: rgba(239, 68, 68, .3); }
+    .fw-state {
+      display: inline-block; padding: 2px 10px; border-radius: 8px;
+      background: #0b1220; border: 1px solid #1f2937; color: #cbd5e1; font-size: 12px;
+    }
+    .fw-version { font-size: 12px; color: var(--muted); margin-left: auto; }
+    .fw-action-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .fw-link { color: #22d3ee; text-decoration: none; font-size: 13px; }
+    .fw-link:hover { text-decoration: underline; }
+    .fw-link.disabled { color: #475569; pointer-events: none; }
+    .fw-sep { color: #334155; }
+    .fw-icmp { display: inline-flex; align-items: center; gap: 8px; margin-left: 4px; font-size: 13px; }
+    .fw-switch { position: relative; display: inline-block; width: 36px; height: 20px; }
+    .fw-switch input { opacity: 0; width: 0; height: 0; }
+    .fw-switch span {
+      position: absolute; cursor: pointer; inset: 0; background: #334155;
+      border-radius: 999px; transition: .2s;
+    }
+    .fw-switch span::before {
+      content: ''; position: absolute; height: 14px; width: 14px; left: 3px; top: 3px;
+      background: #cbd5e1; border-radius: 50%; transition: .2s;
+    }
+    .fw-switch input:checked + span { background: #06b6d4; }
+    .fw-switch input:checked + span::before { transform: translateX(16px); background: #082f49; }
+    .fw-msg { font-size: 12px; color: var(--muted); min-height: 16px; }
+    .fw-msg.ok { color: #4ade80; }
+    .fw-msg.err { color: #f87171; }
+
+    .fw-tabs {
+      display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin: 14px 0 12px;
+    }
+    .fw-tab {
+      background: transparent; border: 0; color: var(--muted);
+      padding: 9px 16px; cursor: pointer; font-size: 13px;
+      border-bottom: 2px solid transparent; transition: .15s ease;
+    }
+    .fw-tab:hover { color: #e2e8f0; }
+    .fw-tab.active { color: #cffafe; border-bottom-color: #22d3ee; }
+    .fw-help {
+      margin-left: auto; align-self: center;
+      width: 22px; height: 22px; border-radius: 50%;
+      background: rgba(34, 211, 238, .12); color: #67e8f9;
+      border: 1px solid rgba(34, 211, 238, .35);
+      font-size: 12px; font-weight: 700; cursor: pointer;
+      display: inline-flex; align-items: center; justify-content: center;
+      transition: .15s ease; padding: 0; line-height: 1;
+    }
+    .fw-help:hover { background: rgba(34, 211, 238, .22); color: #cffafe; }
+    .fw-help-modal { width: min(720px, 100%); max-height: min(82vh, 720px); display: flex; flex-direction: column; overflow: hidden; }
+    .fw-help-body { padding: 18px 20px; overflow: auto; font-size: 13px; line-height: 1.75; color: #cbd5e1; }
+    .fw-help-body h4 { margin: 18px 0 8px; font-size: 14px; color: #e2e8f0; display: flex; align-items: center; gap: 8px; }
+    .fw-help-body h4:first-child { margin-top: 0; }
+    .fw-help-body h4 .fw-help-num {
+      display: inline-flex; width: 22px; height: 22px; border-radius: 50%;
+      align-items: center; justify-content: center; background: rgba(34, 211, 238, .14);
+      color: #22d3ee; font-size: 12px; font-weight: 700; border: 1px solid rgba(34, 211, 238, .3);
+    }
+    .fw-help-body p { margin: 6px 0; }
+    .fw-help-body ul { margin: 6px 0 6px 20px; padding: 0; }
+    .fw-help-body li { margin: 3px 0; }
+    .fw-help-body table { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 12px; }
+    .fw-help-body table th, .fw-help-body table td {
+      padding: 6px 10px; text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+    .fw-help-body table th { background: rgba(2, 6, 23, .5); color: #cbd5e1; font-weight: 600; }
+    .fw-help-body code {
+      background: #020617; border: 1px solid #1f2937; border-radius: 4px;
+      padding: 1px 6px; font-size: 12px; color: #93c5fd;
+    }
+    .fw-help-body .tip {
+      margin: 8px 0; padding: 9px 12px; border-left: 3px solid #f59e0b;
+      background: rgba(251, 191, 36, .07); color: #fcd34d; border-radius: 0 6px 6px 0; font-size: 12px;
+    }
+    :root[data-theme="light"] .fw-help-body { color: var(--text); }
+    :root[data-theme="light"] .fw-help-body h4 { color: var(--text-strong); }
+    :root[data-theme="light"] .fw-help-body code { background: var(--input-bg); border-color: var(--border-strong); color: var(--text); }
+
+    .fw-pane { display: none; }
+    .fw-pane.active { display: block; }
+
+    .fw-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+    .fw-toolbar .fw-search {
+      margin-left: auto; min-width: 200px;
+      border-radius: 10px; border: 1px solid #334155; background: #020617;
+      color: var(--text); padding: 9px 11px; font-size: 13px; outline: none;
+    }
+    .fw-toolbar .fw-search:focus { border-color: rgba(34, 211, 238, .6); box-shadow: 0 0 0 3px rgba(34, 211, 238, .12); }
+
+    .fw-table-wrap { overflow: auto; border: 1px solid var(--border); border-radius: 12px; }
+    .fw-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .fw-table th, .fw-table td {
+      padding: 10px 12px; text-align: left;
+      border-bottom: 1px solid var(--border); white-space: nowrap;
+    }
+    .fw-table thead th { background: rgba(2, 6, 23, .6); color: #cbd5e1; font-weight: 600; font-size: 12px; }
+    .fw-table tbody tr:last-child td { border-bottom: 0; }
+    .fw-table tbody tr:hover { background: rgba(34, 211, 238, .04); }
+    .fw-table .fw-empty { text-align: center; color: var(--muted); padding: 28px 0; }
+    .fw-table .fw-strategy {
+      display: inline-block; padding: 2px 9px; border-radius: 999px;
+      font-size: 11px; font-weight: 700; letter-spacing: .3px;
+    }
+    .fw-table .fw-strategy.accept { background: rgba(34, 197, 94, .14); color: #4ade80; }
+    .fw-table .fw-strategy.drop { background: rgba(239, 68, 68, .14); color: #f87171; }
+    .fw-table .fw-del { background: transparent; color: #f87171; border: 1px solid rgba(239, 68, 68, .35); border-radius: 8px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
+    .fw-table .fw-del:hover { background: rgba(239, 68, 68, .12); }
+
+    /* light theme tweaks */
+    :root[data-theme="light"] .fw-state { background: var(--input-bg); border-color: var(--border-strong); color: var(--text); }
+    :root[data-theme="light"] .fw-table-wrap { border-color: var(--border-strong); }
+    :root[data-theme="light"] .fw-table thead th { background: rgba(2, 6, 23, .04); color: var(--text-strong); }
+    :root[data-theme="light"] .fw-toolbar .fw-search { background: var(--input-bg); border-color: var(--border-strong); color: var(--text); }
+
     @media (max-width: 640px) {
       .settings-body { flex-direction: column; }
       .settings-tabs { width: 100%; flex-direction: row; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--border); }
@@ -829,6 +954,9 @@
     </div>
     <div class="serial-view" id="protoConvView">
       <iframe id="protoConvFrame" title="协议转换" loading="lazy" src="about:blank"></iframe>
+    </div>
+    <div class="serial-view" id="videoView">
+      <iframe id="videoFrame" title="视频监控" loading="lazy" src="about:blank" allowfullscreen></iframe>
     </div>
       </div>
     </div>
@@ -1175,6 +1303,114 @@
             </div>
           </section>
 
+          <section class="settings-section" data-pane="firewall">
+            <h3 class="settings-section-title">防火墙</h3>
+            <div class="settings-section-desc">基于 firewalld 的端口规则、端口转发、IP 规则；所有改动 --permanent 生效，重启不丢</div>
+
+            <div class="settings-card fw-status-card">
+              <div class="fw-status-row">
+                <span class="fw-tag" id="fwTag">检测中</span>
+                <span class="fw-state" id="fwState">未加载</span>
+                <span class="fw-version" id="fwVersion"></span>
+              </div>
+              <div class="fw-action-row">
+                <a class="fw-link" id="fwBtnStart" href="javascript:void(0)">开启</a>
+                <span class="fw-sep">|</span>
+                <a class="fw-link" id="fwBtnStop" href="javascript:void(0)">关闭</a>
+                <span class="fw-sep">|</span>
+                <a class="fw-link" id="fwBtnRestart" href="javascript:void(0)">重启</a>
+                <span class="fw-sep">|</span>
+                <span class="fw-icmp">
+                  <span style="color:var(--muted)">禁 ping</span>
+                  <label class="fw-switch"><input type="checkbox" id="fwIcmp" /><span></span></label>
+                </span>
+              </div>
+              <div class="fw-msg" id="fwMsg"></div>
+            </div>
+
+            <div class="fw-tabs">
+              <button type="button" class="fw-tab active" data-fw-tab="ports">端口规则</button>
+              <button type="button" class="fw-tab" data-fw-tab="forwards">端口转发</button>
+              <button type="button" class="fw-tab" data-fw-tab="addresses">IP 规则</button>
+              <button type="button" class="fw-help" id="fwHelp" title="规则说明" aria-label="规则说明">?</button>
+            </div>
+
+            <div class="settings-card fw-pane active" data-fw-pane="ports">
+              <div class="fw-toolbar">
+                <button type="button" class="btn primary" id="fwAddPort">创建端口规则</button>
+                <button type="button" class="btn" id="fwRefreshPort">刷新</button>
+                <input type="search" class="fw-search" id="fwSearchPort" placeholder="搜索端口/IP" />
+              </div>
+              <div class="fw-table-wrap">
+                <table class="fw-table" id="fwPortTable">
+                  <thead>
+                    <tr>
+                      <th style="width:90px">协议</th>
+                      <th style="width:140px">端口</th>
+                      <th style="width:120px">策略</th>
+                      <th>指定 IP</th>
+                      <th style="width:100px">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody><tr><td colspan="5" class="fw-empty">暂无数据</td></tr></tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="settings-card fw-pane" data-fw-pane="forwards">
+              <div class="fw-toolbar">
+                <button type="button" class="btn primary" id="fwAddForward">创建端口转发</button>
+                <button type="button" class="btn" id="fwRefreshForward">刷新</button>
+                <input type="search" class="fw-search" id="fwSearchForward" placeholder="搜索端口/IP" />
+              </div>
+              <div class="fw-table-wrap">
+                <table class="fw-table" id="fwForwardTable">
+                  <thead>
+                    <tr>
+                      <th style="width:90px">协议</th>
+                      <th style="width:120px">源端口</th>
+                      <th style="width:120px">目标端口</th>
+                      <th>目标 IP（空=本机）</th>
+                      <th style="width:100px">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody><tr><td colspan="5" class="fw-empty">暂无数据</td></tr></tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="settings-card fw-pane" data-fw-pane="addresses">
+              <div class="fw-toolbar">
+                <button type="button" class="btn primary" id="fwAddAddress">创建 IP 规则</button>
+                <button type="button" class="btn" id="fwRefreshAddress">刷新</button>
+                <input type="search" class="fw-search" id="fwSearchAddress" placeholder="搜索 IP" />
+              </div>
+              <div class="fw-table-wrap">
+                <table class="fw-table" id="fwAddrTable">
+                  <thead>
+                    <tr>
+                      <th style="width:120px">族</th>
+                      <th>IP / 网段</th>
+                      <th style="width:120px">策略</th>
+                      <th style="width:100px">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody><tr><td colspan="4" class="fw-empty">暂无数据</td></tr></tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="settings-placeholder" style="margin-top:14px">
+              <h4>说明</h4>
+              <ul>
+                <li>所有改动均使用 <code>firewall-cmd --permanent</code> + <code>--reload</code>，重启服务器后仍生效</li>
+                <li>策略 <b>允许</b> 不带源 IP 时走 <code>--add-port</code>，否则走 <code>rich-rule</code></li>
+                <li>禁用 / 删除规则会立即从内核生效，操作前请评估对当前 SSH 连接的影响</li>
+                <li>仅支持 Linux firewalld（Kylin V10 默认）；Docker 端口映射不受 firewalld 管理</li>
+              </ul>
+            </div>
+          </section>
+
           <section class="settings-section" data-pane="update">
             <h3 class="settings-section-title">更新</h3>
             <div class="settings-section-desc">8081src 更新（连接服务器后，上传一个 tar.gz 包覆盖远端 src 目录）</div>
@@ -1233,6 +1469,113 @@
           </section>
 
         </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-mask" id="fwModalMask" aria-hidden="true">
+    <div class="modal" id="fwModal">
+      <div class="modal-head">
+        <div>
+          <div class="head-title" id="fwModalTitle">创建规则</div>
+          <div class="head-sub" id="fwModalSub">填写规则参数</div>
+        </div>
+        <button class="btn" type="button" id="fwModalClose">关闭</button>
+      </div>
+      <div class="form" id="fwModalBody"></div>
+    </div>
+  </div>
+
+  <div class="modal-mask" id="fwHelpMask" aria-hidden="true">
+    <div class="modal fw-help-modal">
+      <div class="modal-head">
+        <div>
+          <div class="head-title">防火墙规则说明</div>
+          <div class="head-sub">端口规则 / 端口转发 / IP 规则 字段含义与场景</div>
+        </div>
+        <button class="btn" type="button" id="fwHelpClose">关闭</button>
+      </div>
+      <div class="fw-help-body">
+        <h4><span class="fw-help-num">1</span>端口规则（Port Rules）</h4>
+        <p>控制哪些<b>入站端口</b>对外开放或拒绝，最常用的一类规则。</p>
+        <table>
+          <thead><tr><th style="width:90px">字段</th><th>含义</th></tr></thead>
+          <tbody>
+            <tr><td>协议</td><td>TCP / UDP（HTTP/SSH 选 TCP，DNS/SNMP 选 UDP）</td></tr>
+            <tr><td>端口</td><td>单端口 <code>8080</code>，或范围 <code>8000-8100</code></td></tr>
+            <tr><td>策略</td><td><b>允许</b> = accept；<b>拒绝</b> = drop（直接丢包不回应）</td></tr>
+            <tr><td>指定 IP</td><td>留空 = 对所有来源生效；填了 = 只对该 IP 或网段生效（支持 CIDR）</td></tr>
+          </tbody>
+        </table>
+        <p><b>典型场景：</b></p>
+        <ul>
+          <li>给 webssh 自己开放 3010：允许 + TCP + 3010 + 留空</li>
+          <li>只让公司网段访问数据库：允许 + TCP + 3306 + <code>192.168.0.0/24</code></li>
+          <li>屏蔽某端口对外暴露：拒绝 + TCP + 8080 + 留空</li>
+          <li>只开 SSH 给运维一人：允许 + TCP + 22 + <code>192.168.0.88/32</code></li>
+        </ul>
+        <p><b>底层命令：</b></p>
+        <ul>
+          <li>简单放行（无源 IP + accept）→ <code>firewall-cmd --add-port=80/tcp</code></li>
+          <li>带源 IP / 拒绝策略 → 走 rich-rule：<br><code>--add-rich-rule='rule family="ipv4" source address="192.168.0.0/24" port port="3306" protocol="tcp" accept'</code></li>
+        </ul>
+        <div class="tip">⚠ Docker 用 iptables 自己的链（DOCKER），firewalld 控制不了 <code>docker run -p</code> 暴露的端口，需在容器层处理。</div>
+
+        <h4><span class="fw-help-num">2</span>端口转发（Port Forwarding）</h4>
+        <p>把进入本机的 A 端口流量<b>转发</b>到另一个端口（本机或远端）。等价于"端口映射 / 隧道"。</p>
+        <table>
+          <thead><tr><th style="width:90px">字段</th><th>含义</th></tr></thead>
+          <tbody>
+            <tr><td>协议</td><td>TCP / UDP</td></tr>
+            <tr><td>源端口</td><td>用户访问的端口（本机入口）</td></tr>
+            <tr><td>目标端口</td><td>实际转发去的端口</td></tr>
+            <tr><td>目标 IP</td><td>留空 = 本机；填了 = 转发到另一台机器（前提系统已开 IP forward）</td></tr>
+          </tbody>
+        </table>
+        <p><b>典型场景：</b></p>
+        <ul>
+          <li>特权端口转到非 root 服务：80 → 8080，避免以 root 启动 Node</li>
+          <li>本机当跳板：5020 → <code>192.168.0.50:5020</code>，把内网设备暴露给外网某机</li>
+          <li>协议隔离：对外 443 → 内部 8443</li>
+          <li>上位机简化配置：上位机连 502，由 502 → 5020 转发到 modbus 子服务</li>
+        </ul>
+        <p><b>底层命令：</b></p>
+        <ul>
+          <li><code>firewall-cmd --add-forward-port=port=80:proto=tcp:toport=8080</code></li>
+          <li><code>firewall-cmd --add-forward-port=port=5020:proto=tcp:toport=5020:toaddr=192.168.0.50</code></li>
+        </ul>
+        <div class="tip">⚠ 跨机器转发（填了目标 IP）需打开内核 IP forward：<br><code>sysctl -w net.ipv4.ip_forward=1</code> 并写入 <code>/etc/sysctl.conf</code>。本机内转不需要。</div>
+
+        <h4><span class="fw-help-num">3</span>IP 规则（IP Rules）</h4>
+        <p>基于<b>来源 IP</b> 整体放行或拉黑某台机器 / 某网段，不区分端口，比端口规则维度更高。</p>
+        <table>
+          <thead><tr><th style="width:90px">字段</th><th>含义</th></tr></thead>
+          <tbody>
+            <tr><td>族</td><td>IPv4 / IPv6（程序按地址里有没有 <code>:</code> 自动判断）</td></tr>
+            <tr><td>IP / 网段</td><td>单 IP <code>1.2.3.4</code> 或 CIDR <code>1.2.3.0/24</code></td></tr>
+            <tr><td>策略</td><td><b>允许</b> = 白名单；<b>拒绝</b> = 黑名单</td></tr>
+          </tbody>
+        </table>
+        <p><b>典型场景：</b></p>
+        <ul>
+          <li>黑名单：屏蔽爆破 SSH 的 IP</li>
+          <li>白名单：只允许办公网段访问</li>
+          <li>临时封网段，比一条条端口拒绝省事</li>
+        </ul>
+        <p><b>底层命令：</b></p>
+        <ul>
+          <li><code>--add-rich-rule='rule family="ipv4" source address="203.0.113.55" drop'</code></li>
+          <li><code>--add-rich-rule='rule family="ipv4" source address="192.168.0.0/24" accept'</code></li>
+        </ul>
+        <div class="tip">⚠ firewalld 没有"匹配到 accept 就拒绝其他全部"的隐式 default-deny，单独建白名单不会把其他人挡掉。要严格白名单需把 zone 的 target 改为 DROP：<code>firewall-cmd --set-target=DROP --permanent</code>，本面板暂未暴露此项。</div>
+
+        <h4><span class="fw-help-num">4</span>三者关系速记</h4>
+        <ul>
+          <li><b>IP 规则</b> → 整台机器维度，不管端口</li>
+          <li><b>端口规则</b> → 端口维度，可选限定来源 IP</li>
+          <li><b>端口转发</b> → 流量改道，不是允许/拒绝，是把 A 端口的包送到 B 端口</li>
+        </ul>
+        <p>实战建议：日常以<b>端口规则</b>为主，<b>IP 规则</b>做封禁/白名单，<b>端口转发</b>仅在确实需要端口映射时再用。所有改动都是 <code>--permanent</code> 写盘，重启不丢；删除是立刻从内核生效，操作 SSH（22 / 3010）端口时务必小心，别把自己关在外面。</p>
       </div>
     </div>
   </div>
@@ -1675,6 +2018,8 @@
       haFrame: document.getElementById('haFrame'),
       protoConvView: document.getElementById('protoConvView'),
       protoConvFrame: document.getElementById('protoConvFrame'),
+      videoView: document.getElementById('videoView'),
+      videoFrame: document.getElementById('videoFrame'),
     };
 
     // 左侧功能菜单：后续新增功能直接在此数组追加一项即可
@@ -1684,6 +2029,7 @@
       { id: 'sms', label: '信创短信猫', icon: 'SMS', title: '数据库监测 + 短信猫推送' },
       { id: 'ha', label: '双机热备', icon: 'HA', title: '主备服务器心跳监测与告警' },
       { id: 'proto-conv', label: '协议转换', icon: 'PC', title: '8082 接口可视化调用与协议转换' },
+      { id: 'video', label: '视频监控', icon: 'VID', title: 'GB/T 28181 视频接入与 1/4/9/16 分屏' },
       { id: 'protocol', label: '协议助手', icon: 'PRO', title: 'XLS 处理 / 故障码填充 / PDF 对照 / MBP 生成 / 协议批处理' },
     ];
     state.activeMenu = 'ssh';
@@ -2385,6 +2731,7 @@
       { id: 'files', label: '文件' },
       { id: 'serial', label: '串口' },
       { id: 'ops', label: '运维' },
+      { id: 'firewall', label: '防火墙' },
       { id: 'update', label: '更新' },
       { id: 'about', label: '关于' },
     ];
@@ -2412,6 +2759,9 @@
           initSftp(state.fileCwd);
         }
         refreshUpdatePane();
+      }
+      if (id === 'firewall') {
+        refreshFirewallAll();
       }
     }
 
@@ -2599,6 +2949,368 @@
       } catch (err) {
         alert('操作失败：' + err.message);
       }
+    }
+
+    // ===== 防火墙管理（设置 → 防火墙 分页） =====
+    const fwState = {
+      activeTab: 'ports',
+      ports: [],
+      forwards: [],
+      addresses: [],
+      status: null,
+    };
+
+    function fwSetMsg(text, type) {
+      const n = document.getElementById('fwMsg');
+      if (!n) return;
+      n.textContent = text || '';
+      n.className = 'fw-msg' + (type ? ' ' + type : '');
+      if (text && type === 'ok') {
+        setTimeout(() => { if (n.textContent === text) { n.textContent = ''; n.className = 'fw-msg'; } }, 2500);
+      }
+    }
+
+    async function fwApi(url, method, body) {
+      const opts = { method: method || 'GET', headers: { 'Content-Type': 'application/json' } };
+      if (body !== undefined) opts.body = JSON.stringify(body);
+      const resp = await fetch(url, opts);
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok && data && data.message) throw new Error(data.message);
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      return data;
+    }
+
+    async function refreshFirewallStatus() {
+      try {
+        const data = await fwApi('/api/firewall/status');
+        fwState.status = data;
+        renderFirewallStatus();
+      } catch (err) {
+        fwState.status = { available: false, reason: err.message };
+        renderFirewallStatus();
+      }
+    }
+
+    function renderFirewallStatus() {
+      const d = fwState.status || {};
+      const tag = document.getElementById('fwTag');
+      const stateNode = document.getElementById('fwState');
+      const verNode = document.getElementById('fwVersion');
+      const icmp = document.getElementById('fwIcmp');
+      if (!tag || !stateNode) return;
+      if (!d.available) {
+        tag.textContent = 'firewalld'; tag.className = 'fw-tag err';
+        stateNode.textContent = d.reason || '不可用';
+        if (verNode) verNode.textContent = '';
+        if (icmp) icmp.disabled = true;
+      } else {
+        const running = d.running || /^active$/i.test(d.activeRaw || '');
+        tag.textContent = 'firewalld';
+        tag.className = 'fw-tag ' + (running ? '' : 'off');
+        stateNode.textContent = running ? '运行中' : '已停止';
+        if (verNode) verNode.textContent = d.version ? '版本 ' + d.version + ' · zone=' + (d.defaultZone || d.zone || 'public') : '';
+        if (icmp) {
+          icmp.disabled = !running;
+          icmp.checked = !!d.icmpBlocked;
+        }
+      }
+      ['fwBtnStart', 'fwBtnStop', 'fwBtnRestart'].forEach((id) => {
+        const n = document.getElementById(id);
+        if (n) n.classList.toggle('disabled', !d.available);
+      });
+    }
+
+    async function refreshFirewallPorts() {
+      try {
+        const data = await fwApi('/api/firewall/ports');
+        fwState.ports = (data && data.items) || [];
+        renderFwPorts();
+      } catch (err) {
+        fwSetMsg('加载端口规则失败：' + err.message, 'err');
+      }
+    }
+    async function refreshFirewallForwards() {
+      try {
+        const data = await fwApi('/api/firewall/forwards');
+        fwState.forwards = (data && data.items) || [];
+        renderFwForwards();
+      } catch (err) {
+        fwSetMsg('加载端口转发失败：' + err.message, 'err');
+      }
+    }
+    async function refreshFirewallAddresses() {
+      try {
+        const data = await fwApi('/api/firewall/addresses');
+        fwState.addresses = (data && data.items) || [];
+        renderFwAddresses();
+      } catch (err) {
+        fwSetMsg('加载 IP 规则失败：' + err.message, 'err');
+      }
+    }
+    function refreshFirewallAll() {
+      refreshFirewallStatus();
+      refreshFirewallPorts();
+      refreshFirewallForwards();
+      refreshFirewallAddresses();
+    }
+
+    function fwFilter(items, kw, fields) {
+      if (!kw) return items;
+      const k = kw.toLowerCase();
+      return items.filter((it) => fields.some((f) => String(it[f] || '').toLowerCase().includes(k)));
+    }
+
+    function renderFwPorts() {
+      const tbody = document.querySelector('#fwPortTable tbody');
+      if (!tbody) return;
+      const kw = (document.getElementById('fwSearchPort') || {}).value || '';
+      const items = fwFilter(fwState.ports, kw, ['port', 'address', 'protocol']);
+      if (!items.length) { tbody.innerHTML = '<tr><td colspan="5" class="fw-empty">暂无数据</td></tr>'; return; }
+      tbody.innerHTML = items.map((it) => `
+        <tr>
+          <td>${esc((it.protocol || '').toUpperCase())}</td>
+          <td>${esc(it.port)}</td>
+          <td><span class="fw-strategy ${it.strategy === 'accept' ? 'accept' : 'drop'}">${it.strategy === 'accept' ? '允许' : '拒绝'}</span></td>
+          <td>${esc(it.address || '所有')}</td>
+          <td><button type="button" class="fw-del" data-fw-del-port="${esc(it.id)}">删除</button></td>
+        </tr>`).join('');
+      tbody.querySelectorAll('[data-fw-del-port]').forEach((n) => {
+        n.onclick = () => fwDeletePort(n.dataset.fwDelPort);
+      });
+    }
+    function renderFwForwards() {
+      const tbody = document.querySelector('#fwForwardTable tbody');
+      if (!tbody) return;
+      const kw = (document.getElementById('fwSearchForward') || {}).value || '';
+      const items = fwFilter(fwState.forwards, kw, ['srcPort', 'dstPort', 'dstAddr', 'protocol']);
+      if (!items.length) { tbody.innerHTML = '<tr><td colspan="5" class="fw-empty">暂无数据</td></tr>'; return; }
+      tbody.innerHTML = items.map((it) => `
+        <tr>
+          <td>${esc((it.protocol || '').toUpperCase())}</td>
+          <td>${esc(it.srcPort)}</td>
+          <td>${esc(it.dstPort)}</td>
+          <td>${esc(it.dstAddr || '本机')}</td>
+          <td><button type="button" class="fw-del" data-fw-del-fwd="${esc(it.id)}">删除</button></td>
+        </tr>`).join('');
+      tbody.querySelectorAll('[data-fw-del-fwd]').forEach((n) => {
+        n.onclick = () => fwDeleteForward(n.dataset.fwDelFwd);
+      });
+    }
+    function renderFwAddresses() {
+      const tbody = document.querySelector('#fwAddrTable tbody');
+      if (!tbody) return;
+      const kw = (document.getElementById('fwSearchAddress') || {}).value || '';
+      const items = fwFilter(fwState.addresses, kw, ['address', 'family']);
+      if (!items.length) { tbody.innerHTML = '<tr><td colspan="4" class="fw-empty">暂无数据</td></tr>'; return; }
+      tbody.innerHTML = items.map((it) => `
+        <tr>
+          <td>${esc((it.family || 'ipv4').toUpperCase())}</td>
+          <td>${esc(it.address)}</td>
+          <td><span class="fw-strategy ${it.strategy === 'accept' ? 'accept' : 'drop'}">${it.strategy === 'accept' ? '允许' : '拒绝'}</span></td>
+          <td><button type="button" class="fw-del" data-fw-del-addr="${esc(it.id)}">删除</button></td>
+        </tr>`).join('');
+      tbody.querySelectorAll('[data-fw-del-addr]').forEach((n) => {
+        n.onclick = () => fwDeleteAddress(n.dataset.fwDelAddr);
+      });
+    }
+
+    async function fwDeletePort(id) {
+      if (!confirm('确认删除该端口规则？')) return;
+      try { const r = await fwApi('/api/firewall/ports', 'DELETE', { id });
+        if (!r.ok) throw new Error(r.message || '删除失败');
+        fwSetMsg('已删除', 'ok'); await refreshFirewallPorts();
+      } catch (err) { fwSetMsg('删除失败：' + err.message, 'err'); }
+    }
+    async function fwDeleteForward(id) {
+      if (!confirm('确认删除该端口转发？')) return;
+      try { const r = await fwApi('/api/firewall/forwards', 'DELETE', { id });
+        if (!r.ok) throw new Error(r.message || '删除失败');
+        fwSetMsg('已删除', 'ok'); await refreshFirewallForwards();
+      } catch (err) { fwSetMsg('删除失败：' + err.message, 'err'); }
+    }
+    async function fwDeleteAddress(id) {
+      if (!confirm('确认删除该 IP 规则？')) return;
+      try { const r = await fwApi('/api/firewall/addresses', 'DELETE', { id });
+        if (!r.ok) throw new Error(r.message || '删除失败');
+        fwSetMsg('已删除', 'ok'); await refreshFirewallAddresses();
+      } catch (err) { fwSetMsg('删除失败：' + err.message, 'err'); }
+    }
+
+    function fwOpenModal(title, sub, html, onSubmit) {
+      const mask = document.getElementById('fwModalMask');
+      const body = document.getElementById('fwModalBody');
+      const titleNode = document.getElementById('fwModalTitle');
+      const subNode = document.getElementById('fwModalSub');
+      if (!mask || !body) return;
+      titleNode.textContent = title || '创建规则';
+      subNode.textContent = sub || '';
+      body.innerHTML = html + `
+        <div style="display:flex;justify-content:flex-end;gap:10px;padding-top:6px">
+          <button type="button" class="btn" id="fwModalCancel">取消</button>
+          <button type="button" class="btn primary" id="fwModalSubmit">确定</button>
+        </div>`;
+      mask.classList.add('open');
+      mask.setAttribute('aria-hidden', 'false');
+      document.getElementById('fwModalCancel').onclick = fwCloseModal;
+      document.getElementById('fwModalClose').onclick = fwCloseModal;
+      document.getElementById('fwModalSubmit').onclick = async function () {
+        try { await onSubmit(); fwCloseModal(); }
+        catch (err) { fwSetMsg(err.message || '保存失败', 'err'); }
+      };
+    }
+    function fwCloseModal() {
+      const mask = document.getElementById('fwModalMask');
+      if (!mask) return;
+      mask.classList.remove('open');
+      mask.setAttribute('aria-hidden', 'true');
+    }
+
+    function fwOpenAddPort() {
+      fwOpenModal('创建端口规则', '允许或拒绝某个端口的访问', `
+        <label class="field"><span>协议</span>
+          <select id="fwPortProto"><option value="tcp">TCP</option><option value="udp">UDP</option></select>
+        </label>
+        <label class="field"><span>端口（支持单端口或范围 80 / 8000-8100）</span>
+          <input id="fwPortVal" type="text" placeholder="例如 8080 或 8000-8100" />
+        </label>
+        <label class="field"><span>策略</span>
+          <select id="fwPortStrategy"><option value="accept">允许</option><option value="drop">拒绝</option></select>
+        </label>
+        <label class="field"><span>指定源 IP（可选，留空表示所有）</span>
+          <input id="fwPortAddr" type="text" placeholder="例如 192.168.0.0/24" />
+        </label>
+      `, async function () {
+        const port = (document.getElementById('fwPortVal').value || '').trim();
+        const protocol = document.getElementById('fwPortProto').value;
+        const strategy = document.getElementById('fwPortStrategy').value;
+        const address = (document.getElementById('fwPortAddr').value || '').trim();
+        if (!port) throw new Error('请填写端口');
+        const r = await fwApi('/api/firewall/ports', 'POST', { port, protocol, strategy, address });
+        if (!r.ok) throw new Error(r.message || '保存失败');
+        fwSetMsg('已新增端口规则', 'ok');
+        await refreshFirewallPorts();
+      });
+    }
+
+    function fwOpenAddForward() {
+      fwOpenModal('创建端口转发', '本机端口转到本机或远端的另一端口', `
+        <label class="field"><span>协议</span>
+          <select id="fwFwdProto"><option value="tcp">TCP</option><option value="udp">UDP</option></select>
+        </label>
+        <div class="grid2">
+          <label class="field"><span>源端口（本机入口）</span>
+            <input id="fwFwdSrc" type="text" placeholder="例如 80" />
+          </label>
+          <label class="field"><span>目标端口</span>
+            <input id="fwFwdDst" type="text" placeholder="例如 8080" />
+          </label>
+        </div>
+        <label class="field"><span>目标 IP（可选，留空=本机）</span>
+          <input id="fwFwdAddr" type="text" placeholder="例如 192.168.0.50" />
+        </label>
+      `, async function () {
+        const protocol = document.getElementById('fwFwdProto').value;
+        const srcPort = (document.getElementById('fwFwdSrc').value || '').trim();
+        const dstPort = (document.getElementById('fwFwdDst').value || '').trim();
+        const dstAddr = (document.getElementById('fwFwdAddr').value || '').trim();
+        if (!srcPort || !dstPort) throw new Error('请填写源端口和目标端口');
+        const r = await fwApi('/api/firewall/forwards', 'POST', { srcPort, dstPort, protocol, dstAddr });
+        if (!r.ok) throw new Error(r.message || '保存失败');
+        fwSetMsg('已新增端口转发', 'ok');
+        await refreshFirewallForwards();
+      });
+    }
+
+    function fwOpenAddAddress() {
+      fwOpenModal('创建 IP 规则', '把 IP 或网段加入白/黑名单', `
+        <label class="field"><span>IP / 网段（IPv4 或 IPv6，支持 CIDR）</span>
+          <input id="fwAddrVal" type="text" placeholder="例如 192.168.0.10 或 10.0.0.0/24" />
+        </label>
+        <label class="field"><span>策略</span>
+          <select id="fwAddrStrategy"><option value="drop">拒绝（黑名单）</option><option value="accept">允许（白名单）</option></select>
+        </label>
+      `, async function () {
+        const address = (document.getElementById('fwAddrVal').value || '').trim();
+        const strategy = document.getElementById('fwAddrStrategy').value;
+        if (!address) throw new Error('请填写 IP');
+        const r = await fwApi('/api/firewall/addresses', 'POST', { address, strategy });
+        if (!r.ok) throw new Error(r.message || '保存失败');
+        fwSetMsg('已新增 IP 规则', 'ok');
+        await refreshFirewallAddresses();
+      });
+    }
+
+    async function fwServiceAction(action) {
+      if (!fwState.status || !fwState.status.available) return;
+      const labels = { start: '开启', stop: '关闭', restart: '重启' };
+      if (!confirm('确认' + (labels[action] || action) + ' firewalld？操作可能影响当前网络连接。')) return;
+      try {
+        const r = await fwApi('/api/firewall/service', 'POST', { action });
+        if (!r.ok) throw new Error(r.message || '操作失败');
+        fwSetMsg(r.message || '已操作', 'ok');
+        setTimeout(refreshFirewallAll, 800);
+      } catch (err) { fwSetMsg('操作失败：' + err.message, 'err'); }
+    }
+
+    async function fwToggleIcmp(block) {
+      try {
+        const r = await fwApi('/api/firewall/icmp', 'POST', { block });
+        if (!r.ok) throw new Error(r.message || '操作失败');
+        fwSetMsg('禁 ping ' + (block ? '已开启' : '已关闭'), 'ok');
+        await refreshFirewallStatus();
+      } catch (err) {
+        fwSetMsg('设置 ping 拦截失败：' + err.message, 'err');
+        await refreshFirewallStatus();
+      }
+    }
+
+    function bindFirewallUi() {
+      // 子 tab 切换
+      document.querySelectorAll('.fw-tab').forEach((node) => {
+        node.onclick = () => {
+          fwState.activeTab = node.dataset.fwTab;
+          document.querySelectorAll('.fw-tab').forEach((n) => n.classList.toggle('active', n === node));
+          document.querySelectorAll('.fw-pane').forEach((n) => n.classList.toggle('active', n.dataset.fwPane === fwState.activeTab));
+        };
+      });
+      // 顶部操作
+      const bind = (id, fn) => { const n = document.getElementById(id); if (n) n.onclick = fn; };
+      bind('fwBtnStart', () => fwServiceAction('start'));
+      bind('fwBtnStop', () => fwServiceAction('stop'));
+      bind('fwBtnRestart', () => fwServiceAction('restart'));
+      const icmp = document.getElementById('fwIcmp');
+      if (icmp) icmp.onchange = () => fwToggleIcmp(icmp.checked);
+      // 工具栏
+      bind('fwAddPort', fwOpenAddPort);
+      bind('fwRefreshPort', refreshFirewallPorts);
+      bind('fwAddForward', fwOpenAddForward);
+      bind('fwRefreshForward', refreshFirewallForwards);
+      bind('fwAddAddress', fwOpenAddAddress);
+      bind('fwRefreshAddress', refreshFirewallAddresses);
+      // 搜索
+      const sp = document.getElementById('fwSearchPort'); if (sp) sp.oninput = renderFwPorts;
+      const sf = document.getElementById('fwSearchForward'); if (sf) sf.oninput = renderFwForwards;
+      const sa = document.getElementById('fwSearchAddress'); if (sa) sa.oninput = renderFwAddresses;
+      // 弹窗背景点击关闭
+      const mask = document.getElementById('fwModalMask');
+      if (mask) mask.addEventListener('click', (e) => { if (e.target === mask) fwCloseModal(); });
+      // 帮助弹窗
+      const helpMask = document.getElementById('fwHelpMask');
+      const helpBtn = document.getElementById('fwHelp');
+      const helpClose = document.getElementById('fwHelpClose');
+      function openHelp() {
+        if (!helpMask) return;
+        helpMask.classList.add('open');
+        helpMask.setAttribute('aria-hidden', 'false');
+      }
+      function closeHelp() {
+        if (!helpMask) return;
+        helpMask.classList.remove('open');
+        helpMask.setAttribute('aria-hidden', 'true');
+      }
+      if (helpBtn) helpBtn.onclick = openHelp;
+      if (helpClose) helpClose.onclick = closeHelp;
+      if (helpMask) helpMask.addEventListener('click', (e) => { if (e.target === helpMask) closeHelp(); });
     }
 
     // ===== 8081src 更新（设置 → 更新 分页） =====
@@ -3706,12 +4418,14 @@
       const isProtocol = view === 'protocol';
       const isHa = view === 'ha';
       const isProtoConv = view === 'proto-conv';
+      const isVideo = view === 'video';
       el.sshView.style.display = isSsh ? '' : 'none';
       el.serialView.classList.toggle('active', isSerial);
       el.smsView.classList.toggle('active', isSms);
       if (el.protocolView) el.protocolView.classList.toggle('active', isProtocol);
       if (el.haView) el.haView.classList.toggle('active', isHa);
       if (el.protoConvView) el.protoConvView.classList.toggle('active', isProtoConv);
+      if (el.videoView) el.videoView.classList.toggle('active', isVideo);
       renderMenu();
       if (isSerial) {
         if (!el.serialFrame.dataset.loaded) {
@@ -3737,6 +4451,11 @@
         if (el.protoConvFrame && !el.protoConvFrame.dataset.loaded) {
           el.protoConvFrame.src = './proto-conv/index.html';
           el.protoConvFrame.dataset.loaded = '1';
+        }
+      } else if (isVideo) {
+        if (el.videoFrame && !el.videoFrame.dataset.loaded) {
+          el.videoFrame.src = './video/index.html';
+          el.videoFrame.dataset.loaded = '1';
         }
       } else {
         setTimeout(() => el.cmdInput?.focus(), 0);
@@ -3783,6 +4502,7 @@
     renderSettingsTabs();
     applySettings();
     bindSettingsForm();
+    bindFirewallUi();
     initCodeEditor();
     syncAuthFields();
     syncEditorView();
