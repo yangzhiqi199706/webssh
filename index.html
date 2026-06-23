@@ -1306,6 +1306,77 @@
             </div>
           </section>
 
+          <section class="settings-section" data-pane="time">
+            <h3 class="settings-section-title">时间</h3>
+            <div class="settings-section-desc">读取服务器系统时间和 BIOS 硬件时钟，支持一键同步当前主机时间或手动设置到秒</div>
+            <div class="settings-card">
+              <div class="grid2">
+                <label class="field">
+                  <span>SSH 主机</span>
+                  <input id="timeHost" type="text" placeholder="192.168.0.100" />
+                </label>
+                <label class="field">
+                  <span>SSH 端口</span>
+                  <input id="timePort" type="number" min="1" max="65535" value="22" />
+                </label>
+                <label class="field">
+                  <span>用户名</span>
+                  <input id="timeUser" type="text" placeholder="root" />
+                </label>
+                <label class="field">
+                  <span>密码</span>
+                  <input id="timePassword" type="password" placeholder="password" />
+                </label>
+              </div>
+              <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px;flex-wrap:wrap">
+                <button class="btn primary" id="timeReadBtn" type="button">读取服务器时间</button>
+              </div>
+            </div>
+            <div class="settings-card">
+              <div class="grid2">
+                <label class="field">
+                  <span>当前主机时间</span>
+                  <div id="timeLocalNow" style="font-size:13px;color:#cbd5e1;padding:8px 10px;background:#0b1220;border:1px solid #1f2937;border-radius:10px;min-height:20px">未加载</div>
+                </label>
+                <label class="field">
+                  <span>服务器系统时间</span>
+                  <div id="timeServerNow" style="font-size:13px;color:#cbd5e1;padding:8px 10px;background:#0b1220;border:1px solid #1f2937;border-radius:10px;min-height:20px">未读取</div>
+                </label>
+                <label class="field">
+                  <span>时区 / 同步状态</span>
+                  <div id="timeZoneInfo" style="font-size:13px;color:#cbd5e1;padding:8px 10px;background:#0b1220;border:1px solid #1f2937;border-radius:10px;min-height:20px">未读取</div>
+                </label>
+                <label class="field">
+                  <span>BIOS 硬件时钟</span>
+                  <div id="timeHardwareClock" style="font-size:13px;color:#cbd5e1;padding:8px 10px;background:#0b1220;border:1px solid #1f2937;border-radius:10px;min-height:20px;word-break:break-all">未读取</div>
+                </label>
+              </div>
+              <div class="field" style="margin-top:10px">
+                <span>状态</span>
+                <div id="timeStatus" style="font-size:13px;color:#cbd5e1;padding:8px 10px;background:#0b1220;border:1px solid #1f2937;border-radius:10px;min-height:20px">请先读取服务器时间</div>
+              </div>
+              <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px;flex-wrap:wrap">
+                <button class="btn primary" id="timeSyncHostBtn" type="button">一键同步当前主机时间</button>
+              </div>
+            </div>
+            <div class="settings-card">
+              <div class="grid2">
+                <label class="field">
+                  <span>手动设置时间</span>
+                  <input id="timeManual" type="datetime-local" step="1" />
+                </label>
+                <label class="field">
+                  <span>星期</span>
+                  <div id="timeManualWeekday" style="font-size:13px;color:#cbd5e1;padding:8px 10px;background:#0b1220;border:1px solid #1f2937;border-radius:10px;min-height:20px">未选择</div>
+                </label>
+              </div>
+              <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px;flex-wrap:wrap">
+                <button class="btn" id="timeFillLocalBtn" type="button">填入当前主机时间</button>
+                <button class="btn primary" id="timeApplyManualBtn" type="button">手动修改并写入 BIOS</button>
+              </div>
+            </div>
+          </section>
+
           <section class="settings-section" data-pane="ip">
             <h3 class="settings-section-title">IP 管理</h3>
             <div class="settings-section-desc">通过 SSH 验证目标主机后查看与修改 IP、子网掩码、网关以及开机自动连接设置</div>
@@ -2146,6 +2217,21 @@
       ipStatus: document.getElementById('ipStatus'),
       ipRestartBtn: document.getElementById('ipRestartBtn'),
       ipSaveBtn: document.getElementById('ipSaveBtn'),
+      timeHost: document.getElementById('timeHost'),
+      timePort: document.getElementById('timePort'),
+      timeUser: document.getElementById('timeUser'),
+      timePassword: document.getElementById('timePassword'),
+      timeReadBtn: document.getElementById('timeReadBtn'),
+      timeLocalNow: document.getElementById('timeLocalNow'),
+      timeServerNow: document.getElementById('timeServerNow'),
+      timeZoneInfo: document.getElementById('timeZoneInfo'),
+      timeHardwareClock: document.getElementById('timeHardwareClock'),
+      timeStatus: document.getElementById('timeStatus'),
+      timeSyncHostBtn: document.getElementById('timeSyncHostBtn'),
+      timeManual: document.getElementById('timeManual'),
+      timeManualWeekday: document.getElementById('timeManualWeekday'),
+      timeFillLocalBtn: document.getElementById('timeFillLocalBtn'),
+      timeApplyManualBtn: document.getElementById('timeApplyManualBtn'),
     };
 
     // 左侧功能菜单：后续新增功能直接在此数组追加一项即可
@@ -2857,6 +2943,7 @@
       { id: 'files', label: '文件' },
       { id: 'serial', label: '串口' },
       { id: 'ops', label: '运维' },
+      { id: 'time', label: '时间' },
       { id: 'ip', label: 'IP 管理' },
       { id: 'firewall', label: '防火墙' },
       { id: 'update', label: '更新' },
@@ -2892,6 +2979,10 @@
       }
       if (id === 'ip') {
         updateIpModeFields();
+      }
+      if (id === 'time') {
+        updateLocalTimePanel();
+        updateManualWeekday();
       }
     }
 
@@ -2994,6 +3085,11 @@
       const ipInterface = document.getElementById('ipInterface');
       const ipConnectionName = document.getElementById('ipConnectionName');
       const ipDnsEnabled = document.getElementById('ipDnsEnabled');
+      const timeReadBtn = document.getElementById('timeReadBtn');
+      const timeSyncHostBtn = document.getElementById('timeSyncHostBtn');
+      const timeFillLocalBtn = document.getElementById('timeFillLocalBtn');
+      const timeApplyManualBtn = document.getElementById('timeApplyManualBtn');
+      const timeManual = document.getElementById('timeManual');
       if (ipVerifyBtn) ipVerifyBtn.onclick = () => fetchIpInfo();
       if (ipRefreshBtn) ipRefreshBtn.onclick = () => fetchIpInfo();
       if (ipRestartBtn) ipRestartBtn.onclick = () => restartIpInterface();
@@ -3010,12 +3106,139 @@
         if (node) node.addEventListener('change', markIpDirty);
         if (node && node.tagName === 'INPUT') node.addEventListener('input', markIpDirty);
       });
+      if (timeReadBtn) timeReadBtn.onclick = () => fetchTimeInfo();
+      if (timeSyncHostBtn) timeSyncHostBtn.onclick = () => syncHostTimeToServer();
+      if (timeFillLocalBtn) timeFillLocalBtn.onclick = () => fillManualTimeFromLocal();
+      if (timeApplyManualBtn) timeApplyManualBtn.onclick = () => applyManualTime();
+      if (timeManual) timeManual.oninput = () => updateManualWeekday();
     }
     function closeSettings() {
       if (!el.settingsMask) return;
       el.settingsMask.classList.remove('open');
       el.settingsMask.setAttribute('aria-hidden', 'true');
       if (drRefreshTimer) { clearInterval(drRefreshTimer); drRefreshTimer = null; }
+    }
+    function pad2(n) {
+      return String(n).padStart(2, '0');
+    }
+    function formatDateTimeLocal(date) {
+      const d = date instanceof Date ? date : new Date();
+      return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) + 'T' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
+    }
+    function formatDateTimeText(date) {
+      const d = date instanceof Date ? date : new Date();
+      const week = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'][d.getDay()];
+      return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) + ' ' + week + ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
+    }
+    function formatServerDateForSet(date) {
+      const d = date instanceof Date ? date : new Date();
+      return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) + ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
+    }
+    function updateLocalTimePanel() {
+      if (el.timeLocalNow) el.timeLocalNow.textContent = formatDateTimeText(new Date());
+    }
+    function updateManualWeekday() {
+      if (!el.timeManualWeekday) return;
+      const raw = el.timeManual ? el.timeManual.value : '';
+      if (!raw) {
+        el.timeManualWeekday.textContent = '未选择';
+        return;
+      }
+      const d = new Date(raw);
+      el.timeManualWeekday.textContent = Number.isNaN(d.getTime()) ? '时间格式无效' : formatDateTimeText(d);
+    }
+    function setTimeStatus(text, isError) {
+      if (!el.timeStatus) return;
+      el.timeStatus.textContent = text || '';
+      el.timeStatus.style.color = isError ? '#fda4af' : '#cbd5e1';
+    }
+    function fetchTimeForm() {
+      return {
+        host: fetchIpFormValue('timeHost'),
+        port: Number(fetchIpFormValue('timePort')) || 22,
+        user: fetchIpFormValue('timeUser'),
+        password: fetchIpFormValue('timePassword'),
+      };
+    }
+    function renderTimeInfo(data) {
+      updateLocalTimePanel();
+      if (el.timeServerNow) el.timeServerNow.textContent = data.serverText || '未读取';
+      if (el.timeZoneInfo) {
+        const drift = typeof data.driftSeconds === 'number' ? ('差值 ' + data.driftSeconds + ' 秒') : '差值未知';
+        el.timeZoneInfo.textContent = (data.timezone || '时区未知') + ' / ' + (data.ntp || 'NTP未知') + ' / ' + drift;
+      }
+      if (el.timeHardwareClock) el.timeHardwareClock.textContent = data.hardwareClock || '未读取';
+    }
+    async function fetchTimeInfo() {
+      const form = fetchTimeForm();
+      if (!form.host || !form.user || !form.password) {
+        setTimeStatus('请先填写 SSH 主机、用户名和密码', true);
+        return;
+      }
+      updateLocalTimePanel();
+      setTimeStatus('正在读取服务器时间...');
+      const btn = el.timeReadBtn;
+      if (btn) { btn.disabled = true; btn.textContent = '读取中...'; }
+      try {
+        const resp = await fetch('/api/time/info', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(Object.assign({}, form, { clientEpochMs: Date.now() })),
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.ok) throw new Error(data && data.message ? data.message : ('HTTP ' + resp.status));
+        renderTimeInfo(data);
+        setTimeStatus('服务器时间已读取');
+      } catch (err) {
+        setTimeStatus('读取失败：' + err.message, true);
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '读取服务器时间'; }
+      }
+    }
+    function fillManualTimeFromLocal() {
+      if (el.timeManual) el.timeManual.value = formatDateTimeLocal(new Date());
+      updateManualWeekday();
+      updateLocalTimePanel();
+    }
+    async function setServerTimeFromDate(date, sourceLabel) {
+      const form = fetchTimeForm();
+      if (!form.host || !form.user || !form.password) {
+        setTimeStatus('请先填写 SSH 主机、用户名和密码', true);
+        return;
+      }
+      const value = formatServerDateForSet(date);
+      if (!confirm('确认把服务器系统时间和 BIOS 硬件时钟设置为：' + formatDateTimeText(date) + '？')) return;
+      setTimeStatus('正在设置服务器时间并写入 BIOS...');
+      try {
+        const resp = await fetch('/api/time/set', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(Object.assign({}, form, { datetime: value, source: sourceLabel, clientEpochMs: Date.now() })),
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.ok) throw new Error(data && data.message ? data.message : ('HTTP ' + resp.status));
+        renderTimeInfo(data);
+        setTimeStatus('时间已设置并写入 BIOS 硬件时钟');
+      } catch (err) {
+        setTimeStatus('设置失败：' + err.message, true);
+      }
+    }
+    function syncHostTimeToServer() {
+      updateLocalTimePanel();
+      setServerTimeFromDate(new Date(), 'local');
+    }
+    function applyManualTime() {
+      const raw = el.timeManual ? el.timeManual.value : '';
+      if (!raw) {
+        setTimeStatus('请先选择手动设置时间', true);
+        return;
+      }
+      const d = new Date(raw);
+      if (Number.isNaN(d.getTime())) {
+        setTimeStatus('手动时间格式无效', true);
+        return;
+      }
+      setServerTimeFromDate(d, 'manual');
     }
     function updateIpModeFields() {
       const mode = el.ipMode?.value || 'manual';
