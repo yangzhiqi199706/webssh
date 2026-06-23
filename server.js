@@ -274,6 +274,7 @@ app.post('/api/ip/info', function (req, res) {
     'autoconnect=0',
     'conn=""',
     'dns=""',
+    'routeMetric=""',
     'carrier=""',
     'operstate=""',
     'defaultGW=$(ip route show default 0.0.0.0/0 2>/dev/null | awk \'/default/ {gw=""; dev=""; for(i=1;i<=NF;i++){ if($i=="via"){gw=$(i+1)} if($i=="dev"){dev=$(i+1)} } if(gw && dev){print gw "|" dev; exit}}\')',
@@ -290,17 +291,24 @@ app.post('/api/ip/info', function (req, res) {
     '  ac=0',
     '  d=""',
     '  g=""',
+    '  rm=""',
     '  [ "$gwIface" = "$dev" ] && g="$gw"',
     '  if [ "$nmcli" = "1" ]; then',
     '    cn=$(nmcli -t -f GENERAL.CONNECTION device show "$dev" 2>/dev/null | sed -n "1p" | cut -d: -f2-)',
+    '    if [ -z "$cn" ]; then cn=$(nmcli -t -f NAME,connection.interface-name connection show 2>/dev/null | awk -F: -v ifc="$dev" \'$2==ifc{print $1; exit}\'); fi',
     '    if [ -n "$cn" ]; then',
+    '      ca=$(nmcli -t -f ipv4.addresses connection show "$cn" 2>/dev/null | sed -n "1p" | cut -d: -f2-)',
+    '      [ -z "$a" ] && a="$ca"',
+    '      cg=$(nmcli -t -f ipv4.gateway connection show "$cn" 2>/dev/null | sed -n "1p" | cut -d: -f2-)',
+    '      [ -z "$g" ] && g="$cg"',
     '      m=$(nmcli -t -f ipv4.method connection show "$cn" 2>/dev/null | sed -n "1p" | cut -d: -f2-)',
     '      acv=$(nmcli -t -f connection.autoconnect connection show "$cn" 2>/dev/null | sed -n "1p" | cut -d: -f2-)',
     '      [ "$acv" = "yes" ] && ac=1',
     '      d=$(nmcli -t -f ipv4.dns connection show "$cn" 2>/dev/null | sed -n "1p" | cut -d: -f2-)',
+    '      rm=$(nmcli -t -f ipv4.route-metric connection show "$cn" 2>/dev/null | sed -n "1p" | cut -d: -f2-)',
     '    fi',
     '  fi',
-    '  printf "%s|%s|%s|%s|%s|%s|%s|%s|%s\\n" "$dev" "$a" "$c" "$o" "$cn" "$m" "$ac" "$d" "$g"',
+    '  printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\\n" "$dev" "$a" "$c" "$o" "$cn" "$m" "$ac" "$d" "$g" "$rm"',
     'done)',
     'selectedIface=' + shellEscape(iface),
     "if [ -z \"$selectedIface\" ]; then selectedIface=$(printf \"%s\\n\" \"$interfaces\" | awk -F\"|\" 'NR==1{print $1}'); fi",
@@ -315,10 +323,11 @@ app.post('/api/ip/info', function (req, res) {
     '  autoconnect=$(printf "%s" "$selectedLine" | cut -d"|" -f7)',
     '  dns=$(printf "%s" "$selectedLine" | cut -d"|" -f8)',
     '  gw=$(printf "%s" "$selectedLine" | cut -d"|" -f9)',
+    '  routeMetric=$(printf "%s" "$selectedLine" | cut -d"|" -f10)',
     'fi',
     '[ -z "$method" ] && method=manual',
     '[ -z "$autoconnect" ] && autoconnect=0',
-    'printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n" "$iface" "$addr" "$gw" "$nmcli" "$method" "$autoconnect" "$conn" "$dns" "$carrier" "$operstate"',
+    'printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n" "$iface" "$addr" "$gw" "$nmcli" "$method" "$autoconnect" "$conn" "$dns" "$carrier" "$operstate" "$routeMetric"',
     'printf "INTERFACES:\n"',
     'printf "%s\n" "$interfaces"',
   ].join('\n');
@@ -350,6 +359,8 @@ app.post('/api/ip/info', function (req, res) {
         autoConnect: parts[6] === '1',
         dns: parts[7] || '',
         gateway: parts[8] || '',
+        routeMetric: parts[9] || '',
+        role: roleFromRouteMetric(parts[9] || ''),
       };
     }).filter(function (item) {
       return item.name;
@@ -368,6 +379,8 @@ app.post('/api/ip/info', function (req, res) {
       dns: info.dns,
       carrier: info.carrier,
       operstate: info.operstate,
+      routeMetric: info.routeMetric,
+      role: info.role,
       interfaces: interfaces,
     });
   });
@@ -388,6 +401,8 @@ app.post('/api/ip/set', function (req, res) {
   const dnsEnabled = Boolean(body.dnsEnabled);
   const dns = String(body.dns || '').trim();
   const autoConnect = Boolean(body.autoConnect);
+  const role = String(body.role || 'normal').trim();
+  const routeMetric = routeMetricFromRole(role);
   if (!host || !user || !password || !iface) {
     res.status(400).json({ ok: false, message: '缺少 SSH 或网络接口参数' });
     return;
@@ -402,13 +417,17 @@ app.post('/api/ip/set', function (req, res) {
   if (mode === 'auto') {
     cmd.push('if ! command -v nmcli >/dev/null 2>&1; then echo "ERROR|nmcli-unavailable"; exit 2; fi');
     cmd.push('newConn=' + (connectionName ? shellEscape(connectionName) : ''));
+    cmd.push('fallbackConn=' + shellEscape(iface));
     cmd.push('conn=$(nmcli -t -f GENERAL.CONNECTION device show ' + shellEscape(iface) + ' 2>/dev/null | sed -n "1p" | cut -d: -f2)');
-    cmd.push('if [ -z "$conn" ] && [ -n "$newConn" ]; then conn="$newConn"; fi');
-    cmd.push('if [ -z "$conn" ]; then echo "ERROR|connection-not-found"; exit 2; fi');
+    cmd.push('if [ -z "$conn" ]; then conn=$(nmcli -t -f NAME,connection.interface-name connection show 2>/dev/null | awk -F: -v ifc=' + shellEscape(iface) + ' \'$2==ifc{print $1; exit}\'); fi');
+    cmd.push('if [ -z "$conn" ] && [ -n "$newConn" ] && nmcli connection show "$newConn" >/dev/null 2>&1; then conn="$newConn"; fi');
+    cmd.push('if [ -z "$conn" ]; then conn="$newConn"; [ -n "$conn" ] || conn="$fallbackConn"; nmcli connection add type ethernet ifname ' + shellEscape(iface) + ' con-name "$conn"; fi');
     cmd.push('if [ -n "$newConn" ] && [ "$newConn" != "$conn" ]; then nmcli connection modify "$conn" connection.id "$newConn"; conn="$newConn"; fi');
+    cmd.push('nmcli connection modify "$conn" connection.interface-name ' + shellEscape(iface));
     cmd.push('nmcli connection modify "$conn" ipv4.method auto');
     cmd.push('if [ ' + (dnsEnabled ? '1' : '0') + ' -eq 1 ]; then nmcli connection modify "$conn" ipv4.ignore-auto-dns yes ipv4.dns ' + shellEscape(dns) + '; else nmcli connection modify "$conn" ipv4.ignore-auto-dns no ipv4.dns ""; fi');
     cmd.push('nmcli connection modify "$conn" connection.autoconnect ' + (autoConnect ? 'yes' : 'no'));
+    cmd.push('nmcli connection modify "$conn" ipv4.route-metric ' + shellEscape(routeMetric));
     cmd.push('nmcli connection up "$conn"');
     cmd.push('echo "OK|auto"');
   } else {
@@ -420,26 +439,22 @@ app.post('/api/ip/set', function (req, res) {
     cmd.push('if ! command -v ip >/dev/null 2>&1; then echo "ERROR|ip-unavailable"; exit 2; fi');
     cmd.push('if command -v nmcli >/dev/null 2>&1; then');
     cmd.push('  newConn=' + (connectionName ? shellEscape(connectionName) : ''));
+    cmd.push('  fallbackConn=' + shellEscape(iface));
     cmd.push('  conn=$(nmcli -t -f GENERAL.CONNECTION device show ' + shellEscape(iface) + ' 2>/dev/null | sed -n "1p" | cut -d: -f2)');
-    cmd.push('  if [ -z "$conn" ] && [ -n "$newConn" ]; then conn="$newConn"; fi');
-    cmd.push('  if [ -n "$conn" ]; then');
-    cmd.push('    if [ -n "$newConn" ] && [ "$newConn" != "$conn" ]; then nmcli connection modify "$conn" connection.id "$newConn"; conn="$newConn"; fi');
-    cmd.push('    nmcli connection modify "$conn" ipv4.method manual ipv4.addresses ' + shellEscape(address + '/' + cidr) + ' ipv4.gateway ' + shellEscape(gateway) + ' connection.autoconnect ' + (autoConnect ? 'yes' : 'no'));
-    cmd.push('    if [ ' + (dnsEnabled ? '1' : '0') + ' -eq 1 ]; then nmcli connection modify "$conn" ipv4.ignore-auto-dns yes ipv4.dns ' + shellEscape(dns) + '; else nmcli connection modify "$conn" ipv4.ignore-auto-dns no ipv4.dns ""; fi');
-    cmd.push('    nmcli connection up "$conn"');
-    cmd.push('  else');
-    cmd.push('    ip link set dev ' + shellEscape(iface) + ' up');
-    cmd.push('    ip addr flush dev ' + shellEscape(iface));
-    cmd.push('    ip addr add ' + shellEscape(address + '/' + cidr) + ' dev ' + shellEscape(iface));
-    cmd.push('    ip route del default 2>/dev/null || true');
-    cmd.push('    ip route add default via ' + shellEscape(gateway) + ' dev ' + shellEscape(iface));
-    cmd.push('  fi');
+    cmd.push('  if [ -z "$conn" ]; then conn=$(nmcli -t -f NAME,connection.interface-name connection show 2>/dev/null | awk -F: -v ifc=' + shellEscape(iface) + ' \'$2==ifc{print $1; exit}\'); fi');
+    cmd.push('  if [ -z "$conn" ] && [ -n "$newConn" ] && nmcli connection show "$newConn" >/dev/null 2>&1; then conn="$newConn"; fi');
+    cmd.push('  if [ -z "$conn" ]; then conn="$newConn"; [ -n "$conn" ] || conn="$fallbackConn"; nmcli connection add type ethernet ifname ' + shellEscape(iface) + ' con-name "$conn"; fi');
+    cmd.push('  if [ -n "$newConn" ] && [ "$newConn" != "$conn" ]; then nmcli connection modify "$conn" connection.id "$newConn"; conn="$newConn"; fi');
+    cmd.push('  nmcli connection modify "$conn" connection.interface-name ' + shellEscape(iface));
+    cmd.push('  nmcli connection modify "$conn" ipv4.method manual ipv4.addresses ' + shellEscape(address + '/' + cidr) + ' ipv4.gateway ' + shellEscape(gateway) + ' connection.autoconnect ' + (autoConnect ? 'yes' : 'no'));
+    cmd.push('  if [ ' + (dnsEnabled ? '1' : '0') + ' -eq 1 ]; then nmcli connection modify "$conn" ipv4.ignore-auto-dns yes ipv4.dns ' + shellEscape(dns) + '; else nmcli connection modify "$conn" ipv4.ignore-auto-dns no ipv4.dns ""; fi');
+    cmd.push('  nmcli connection modify "$conn" ipv4.route-metric ' + shellEscape(routeMetric));
+    cmd.push('  nmcli connection up "$conn" || true');
     cmd.push('else');
     cmd.push('  ip link set dev ' + shellEscape(iface) + ' up');
     cmd.push('  ip addr flush dev ' + shellEscape(iface));
     cmd.push('  ip addr add ' + shellEscape(address + '/' + cidr) + ' dev ' + shellEscape(iface));
-    cmd.push('  ip route del default 2>/dev/null || true');
-    cmd.push('  ip route add default via ' + shellEscape(gateway) + ' dev ' + shellEscape(iface));
+    cmd.push('  ip route replace default via ' + shellEscape(gateway) + ' dev ' + shellEscape(iface) + ' metric ' + shellEscape(routeMetric));
     cmd.push('fi');
     cmd.push('echo "OK|manual"');
   }
@@ -477,7 +492,8 @@ app.post('/api/ip/restart', function (req, res) {
     'newConn=' + (connectionName ? shellEscape(connectionName) : ''),
     'if command -v nmcli >/dev/null 2>&1; then',
     '  conn=$(nmcli -t -f GENERAL.CONNECTION device show "$iface" 2>/dev/null | sed -n "1p" | cut -d: -f2)',
-    '  if [ -z "$conn" ] && [ -n "$newConn" ]; then conn="$newConn"; fi',
+    '  if [ -z "$conn" ]; then conn=$(nmcli -t -f NAME,connection.interface-name connection show 2>/dev/null | awk -F: -v ifc="$iface" \'$2==ifc{print $1; exit}\'); fi',
+    '  if [ -z "$conn" ] && [ -n "$newConn" ] && nmcli connection show "$newConn" >/dev/null 2>&1; then conn="$newConn"; fi',
     '  if [ -n "$conn" ] && [ -n "$newConn" ] && [ "$newConn" != "$conn" ]; then nmcli connection modify "$conn" connection.id "$newConn"; conn="$newConn"; fi',
     '  if [ -n "$conn" ]; then nmcli connection down "$conn" || true; nmcli connection up "$conn"; echo "OK|nmcli|$conn"; exit 0; fi',
     'fi',
@@ -540,6 +556,20 @@ function maskToPrefix(value) {
   return String(bits.indexOf('0') === -1 ? 32 : bits.indexOf('0'));
 }
 
+function routeMetricFromRole(role) {
+  if (role === 'primary') return '100';
+  if (role === 'backup') return '500';
+  return '300';
+}
+
+function roleFromRouteMetric(metric) {
+  const value = Number(String(metric || '').trim());
+  if (!Number.isFinite(value) || value <= 0) return 'normal';
+  if (value <= 150) return 'primary';
+  if (value >= 450) return 'backup';
+  return 'normal';
+}
+
 function parseIpInfoLine(line) {
   if (!line) return null;
   const parts = String(line || '').split('|');
@@ -564,6 +594,8 @@ function parseIpInfoLine(line) {
     dns: parts[7] || '',
     carrier: parts[8] || '',
     operstate: parts[9] || '',
+    routeMetric: parts[10] || '',
+    role: roleFromRouteMetric(parts[10] || ''),
   };
 }
 
