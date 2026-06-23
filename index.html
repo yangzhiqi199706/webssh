@@ -1303,6 +1303,102 @@
             </div>
           </section>
 
+          <section class="settings-section" data-pane="ip">
+            <h3 class="settings-section-title">IP 管理</h3>
+            <div class="settings-section-desc">通过 SSH 验证目标主机后查看与修改 IP、子网掩码、网关以及开机自动连接设置</div>
+            <div class="settings-card">
+              <div class="grid2">
+                <label class="field">
+                  <span>SSH 主机</span>
+                  <input id="ipHost" type="text" placeholder="192.168.0.100" />
+                </label>
+                <label class="field">
+                  <span>SSH 端口</span>
+                  <input id="ipPort" type="number" min="1" max="65535" value="22" />
+                </label>
+                <label class="field">
+                  <span>用户名</span>
+                  <input id="ipUser" type="text" placeholder="root" />
+                </label>
+                <label class="field">
+                  <span>密码</span>
+                  <input id="ipPassword" type="password" placeholder="password" />
+                </label>
+              </div>
+              <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px">
+                <button class="btn primary" id="ipVerifyBtn" type="button">验证并读取</button>
+                <button class="btn" id="ipRefreshBtn" type="button">刷新</button>
+              </div>
+            </div>
+            <div class="settings-card">
+              <div class="grid2">
+                <label class="field">
+                  <span>网络接口</span>
+                  <select id="ipInterface">
+                    <option value="">请先验证 SSH 连接</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>网卡名称</span>
+                  <input id="ipConnectionName" type="text" placeholder="NetworkManager 连接名称" />
+                </label>
+              </div>
+              <div class="grid2" style="margin-top:10px">
+                <label class="field">
+                  <span>配置方式</span>
+                  <select id="ipMode">
+                    <option value="auto">自动</option>
+                    <option value="manual">手动</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>DNS</span>
+                  <select id="ipDnsEnabled">
+                    <option value="0">不填写</option>
+                    <option value="1">填写</option>
+                  </select>
+                </label>
+              </div>
+              <div class="grid2" style="margin-top:10px">
+                <label class="field">
+                  <span>IP 地址</span>
+                  <input id="ipAddress" type="text" placeholder="192.168.0.100" />
+                </label>
+                <label class="field">
+                  <span>子网掩码</span>
+                  <input id="ipMask" type="text" placeholder="255.255.255.0" />
+                </label>
+              </div>
+              <div class="grid2" style="margin-top:10px">
+                <label class="field">
+                  <span>网关</span>
+                  <input id="ipGateway" type="text" placeholder="192.168.0.1" />
+                </label>
+                <label class="field">
+                  <span>DNS 地址</span>
+                  <input id="ipDns" type="text" placeholder="8.8.8.8,114.114.114.114" />
+                </label>
+              </div>
+              <div class="grid2" style="margin-top:10px">
+                <label class="field">
+                  <span>开机自动连接</span>
+                  <select id="ipAutoConnect">
+                    <option value="1">是</option>
+                    <option value="0">否</option>
+                  </select>
+                </label>
+              </div>
+              <div class="field" style="margin-top:10px">
+                <span>状态</span>
+                <div id="ipStatus" style="font-size:13px;color:#cbd5e1;padding:8px 10px;background:#0b1220;border:1px solid #1f2937;border-radius:10px;min-height:20px">请先验证 SSH 连接</div>
+              </div>
+              <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px;flex-wrap:wrap">
+                <button class="btn" id="ipRestartBtn" type="button">重启网卡</button>
+                <button class="btn primary" id="ipSaveBtn" type="button">应用配置</button>
+              </div>
+            </div>
+          </section>
+
           <section class="settings-section" data-pane="firewall">
             <h3 class="settings-section-title">防火墙</h3>
             <div class="settings-section-desc">基于 firewalld 的端口规则、端口转发、IP 规则；所有改动 --permanent 生效，重启不丢</div>
@@ -2020,6 +2116,24 @@
       protoConvFrame: document.getElementById('protoConvFrame'),
       videoView: document.getElementById('videoView'),
       videoFrame: document.getElementById('videoFrame'),
+      ipHost: document.getElementById('ipHost'),
+      ipPort: document.getElementById('ipPort'),
+      ipUser: document.getElementById('ipUser'),
+      ipPassword: document.getElementById('ipPassword'),
+      ipVerifyBtn: document.getElementById('ipVerifyBtn'),
+      ipRefreshBtn: document.getElementById('ipRefreshBtn'),
+      ipInterface: document.getElementById('ipInterface'),
+      ipConnectionName: document.getElementById('ipConnectionName'),
+      ipMode: document.getElementById('ipMode'),
+      ipDnsEnabled: document.getElementById('ipDnsEnabled'),
+      ipAddress: document.getElementById('ipAddress'),
+      ipMask: document.getElementById('ipMask'),
+      ipGateway: document.getElementById('ipGateway'),
+      ipDns: document.getElementById('ipDns'),
+      ipAutoConnect: document.getElementById('ipAutoConnect'),
+      ipStatus: document.getElementById('ipStatus'),
+      ipRestartBtn: document.getElementById('ipRestartBtn'),
+      ipSaveBtn: document.getElementById('ipSaveBtn'),
     };
 
     // 左侧功能菜单：后续新增功能直接在此数组追加一项即可
@@ -2731,6 +2845,7 @@
       { id: 'files', label: '文件' },
       { id: 'serial', label: '串口' },
       { id: 'ops', label: '运维' },
+      { id: 'ip', label: 'IP 管理' },
       { id: 'firewall', label: '防火墙' },
       { id: 'update', label: '更新' },
       { id: 'about', label: '关于' },
@@ -2762,6 +2877,9 @@
       }
       if (id === 'firewall') {
         refreshFirewallAll();
+      }
+      if (id === 'ip') {
+        updateIpModeFields();
       }
     }
 
@@ -2856,12 +2974,251 @@
         }
         state.transferStatus = '已刷新串口调试子页，切换到"串口调试"查看';
       };
+      const ipVerifyBtn = document.getElementById('ipVerifyBtn');
+      const ipRefreshBtn = document.getElementById('ipRefreshBtn');
+      const ipRestartBtn = document.getElementById('ipRestartBtn');
+      const ipSaveBtn = document.getElementById('ipSaveBtn');
+      const ipMode = document.getElementById('ipMode');
+      const ipInterface = document.getElementById('ipInterface');
+      const ipConnectionName = document.getElementById('ipConnectionName');
+      const ipDnsEnabled = document.getElementById('ipDnsEnabled');
+      if (ipVerifyBtn) ipVerifyBtn.onclick = () => fetchIpInfo();
+      if (ipRefreshBtn) ipRefreshBtn.onclick = () => fetchIpInfo();
+      if (ipRestartBtn) ipRestartBtn.onclick = () => restartIpInterface();
+      if (ipSaveBtn) ipSaveBtn.onclick = () => applyIpConfig();
+      if (ipMode) ipMode.onchange = () => updateIpModeFields();
+      if (ipInterface) ipInterface.onchange = () => syncSelectedIpInterface(true);
+      if (ipConnectionName) ipConnectionName.oninput = () => refreshIpInterfaceLabels();
+      if (ipDnsEnabled) ipDnsEnabled.onchange = () => updateIpModeFields();
     }
     function closeSettings() {
       if (!el.settingsMask) return;
       el.settingsMask.classList.remove('open');
       el.settingsMask.setAttribute('aria-hidden', 'true');
       if (drRefreshTimer) { clearInterval(drRefreshTimer); drRefreshTimer = null; }
+    }
+    function updateIpModeFields() {
+      const mode = el.ipMode?.value || 'manual';
+      const manual = mode === 'manual';
+      if (el.ipAddress) el.ipAddress.disabled = !manual;
+      if (el.ipMask) el.ipMask.disabled = !manual;
+      if (el.ipGateway) el.ipGateway.disabled = !manual;
+      if (el.ipInterface) el.ipInterface.disabled = false;
+      if (el.ipDns) el.ipDns.disabled = (el.ipDnsEnabled?.value || '0') !== '1';
+    }
+    function setIpStatus(text, isError) {
+      if (!el.ipStatus) return;
+      el.ipStatus.textContent = text || '';
+      el.ipStatus.style.color = isError ? '#fda4af' : '#cbd5e1';
+    }
+    function fetchIpFormValue(id) {
+      const elNode = document.getElementById(id);
+      return elNode ? String(elNode.value || '').trim() : '';
+    }
+    function prefixLengthToMask(prefix) {
+      const p = Number(String(prefix || '').replace(/^\/+/, ''));
+      if (!Number.isFinite(p) || p < 0 || p > 32) return '';
+      const bits = '1'.repeat(p).padEnd(32, '0');
+      return [0, 8, 16, 24].map((start) => parseInt(bits.slice(start, start + 8), 2)).join('.');
+    }
+    function ipInterfaceStatusLabel(item) {
+      if (!item) return '';
+      const plugged = item.carrier === '1' || String(item.operstate || '').toLowerCase() === 'up';
+      const hasAddress = !!item.address;
+      const mode = String(item.configMode || '').toLowerCase();
+      if (plugged && mode === 'auto') return '已插入 自动';
+      if (plugged && !hasAddress) return '已插入 未配置';
+      if (plugged) return '已插入';
+      return '未插入';
+    }
+    function ipOptionText(item, overrideName) {
+      const conn = overrideName || item.connectionName || item.name;
+      const status = ipInterfaceStatusLabel(item);
+      const addr = item.address ? ' ' + item.address : '';
+      const connText = conn && conn !== item.name ? ' / ' + conn : '';
+      return item.name + connText + ' - ' + status + addr;
+    }
+    function refreshIpInterfaceLabels() {
+      if (!el.ipInterface || !Array.isArray(state.ipInterfaces)) return;
+      const selected = el.ipInterface.value;
+      const overrideName = fetchIpFormValue('ipConnectionName');
+      Array.from(el.ipInterface.options).forEach(function (opt) {
+        const item = state.ipInterfaces.find((entry) => entry.name === opt.value);
+        if (!item) return;
+        opt.textContent = item.name === selected ? ipOptionText(item, overrideName) : ipOptionText(item);
+      });
+    }
+    function syncSelectedIpInterface(includeName) {
+      if (!el.ipInterface || !Array.isArray(state.ipInterfaces)) return;
+      const item = state.ipInterfaces.find((entry) => entry.name === el.ipInterface.value);
+      if (!item) return;
+      if (includeName && el.ipConnectionName) el.ipConnectionName.value = item.connectionName || item.name || '';
+      if (el.ipAddress) el.ipAddress.value = item.ipAddress || item.address || '';
+      if (el.ipMask) el.ipMask.value = item.netmask || '';
+      if (el.ipGateway) el.ipGateway.value = item.gateway || '';
+      if (el.ipMode) el.ipMode.value = String(item.configMode || '').toLowerCase() === 'auto' ? 'auto' : 'manual';
+      if (el.ipAutoConnect) el.ipAutoConnect.value = item.autoConnect ? '1' : '0';
+      if (el.ipDnsEnabled) el.ipDnsEnabled.value = item.dns ? '1' : '0';
+      if (el.ipDns) el.ipDns.value = item.dns || '';
+      updateIpModeFields();
+      refreshIpInterfaceLabels();
+    }
+    function applyIpConfig() {
+      if (!el.ipHost || !el.ipUser || !el.ipPassword) return;
+      const host = fetchIpFormValue('ipHost');
+      const port = Number(fetchIpFormValue('ipPort')) || 22;
+      const user = fetchIpFormValue('ipUser');
+      const password = fetchIpFormValue('ipPassword');
+      const iface = fetchIpFormValue('ipInterface');
+      const connectionName = fetchIpFormValue('ipConnectionName');
+      const mode = fetchIpFormValue('ipMode') || 'manual';
+      const address = fetchIpFormValue('ipAddress');
+      const mask = fetchIpFormValue('ipMask');
+      const gateway = fetchIpFormValue('ipGateway');
+      const dnsEnabled = fetchIpFormValue('ipDnsEnabled') === '1';
+      const dns = fetchIpFormValue('ipDns');
+      const autoConnect = fetchIpFormValue('ipAutoConnect') === '1';
+      if (!host || !user || !password) {
+        setIpStatus('请先填写 SSH 主机、用户名和密码', true);
+        return;
+      }
+      if (!iface) {
+        setIpStatus('请先验证 SSH 连接并读取网络接口', true);
+        return;
+      }
+      if (mode === 'manual' && (!address || !mask || !gateway)) {
+        setIpStatus('手动模式下 IP、子网掩码、网关不能为空', true);
+        return;
+      }
+      if (dnsEnabled && !dns) {
+        setIpStatus('选择填写 DNS 时，DNS 地址不能为空', true);
+        return;
+      }
+      setIpStatus('正在应用 IP 配置，请稍候...');
+      const btn = el.ipSaveBtn;
+      if (btn) { btn.disabled = true; btn.textContent = '应用中...'; }
+      fetch('/api/ip/set', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ host, port, user, password, interface: iface, connectionName, mode, address, mask, gateway, dnsEnabled, dns, autoConnect }),
+      }).then(async (resp) => {
+        const data = await resp.json();
+        if (!resp.ok || !data.ok) {
+          throw new Error(data && data.message ? data.message : ('HTTP ' + resp.status));
+        }
+        setIpStatus('配置已应用：' + (data.message || '成功'));
+      }).catch((err) => {
+        setIpStatus('保存失败：' + err.message, true);
+      }).finally(() => {
+        if (btn) { btn.disabled = false; btn.textContent = '应用配置'; }
+      });
+    }
+    async function restartIpInterface() {
+      if (!el.ipHost || !el.ipUser || !el.ipPassword) return;
+      const host = fetchIpFormValue('ipHost');
+      const port = Number(fetchIpFormValue('ipPort')) || 22;
+      const user = fetchIpFormValue('ipUser');
+      const password = fetchIpFormValue('ipPassword');
+      const iface = fetchIpFormValue('ipInterface');
+      const connectionName = fetchIpFormValue('ipConnectionName');
+      if (!host || !user || !password || !iface) {
+        setIpStatus('请先填写 SSH 信息并选择网络接口', true);
+        return;
+      }
+      if (!confirm('确认重启网卡 ' + iface + '？当前连接可能短暂中断。')) return;
+      setIpStatus('正在重启网卡，请稍候...');
+      const btn = el.ipRestartBtn;
+      if (btn) { btn.disabled = true; btn.textContent = '重启中...'; }
+      try {
+        const resp = await fetch('/api/ip/restart', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ host, port, user, password, interface: iface, connectionName }),
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.ok) {
+          throw new Error(data && data.message ? data.message : ('HTTP ' + resp.status));
+        }
+        setIpStatus('网卡已重启：' + (data.message || iface));
+      } catch (err) {
+        setIpStatus('重启失败：' + err.message, true);
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '重启网卡'; }
+      }
+    }
+    async function fetchIpInfo() {
+      if (!el.ipHost || !el.ipUser || !el.ipPassword) return;
+      const host = fetchIpFormValue('ipHost');
+      const port = Number(fetchIpFormValue('ipPort')) || 22;
+      const user = fetchIpFormValue('ipUser');
+      const password = fetchIpFormValue('ipPassword');
+      const iface = fetchIpFormValue('ipInterface');
+      if (!host || !user || !password) {
+        setIpStatus('请填写 SSH 主机、用户名和密码', true);
+        return;
+      }
+      setIpStatus('正在验证 SSH 登录并读取网络信息...');
+      const btn = el.ipVerifyBtn;
+      if (btn) { btn.disabled = true; btn.textContent = '验证中...'; }
+      try {
+        const resp = await fetch('/api/ip/info', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ host, port, user, password, interface: iface }),
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.ok) {
+          throw new Error(data && data.message ? data.message : ('HTTP ' + resp.status));
+        }
+        const selectedInterface = data.selectedInterface || data.interface || '';
+        if (data.interfaces && Array.isArray(data.interfaces)) {
+          state.ipInterfaces = data.interfaces.map(function (item) {
+            const copy = Object.assign({}, item);
+            if (copy.address && copy.address.indexOf('/') !== -1) {
+              const parts = copy.address.split('/');
+              copy.ipAddress = parts[0] || '';
+              copy.netmask = prefixLengthToMask(parts[1] || '');
+            } else {
+              copy.ipAddress = copy.address || '';
+              copy.netmask = '';
+            }
+            return copy;
+          });
+          if (el.ipInterface) {
+            el.ipInterface.innerHTML = '';
+            state.ipInterfaces.forEach(function (item) {
+              if (!item || !item.name) return;
+              const opt = document.createElement('option');
+              opt.value = item.name;
+              opt.textContent = ipOptionText(item);
+              el.ipInterface.appendChild(opt);
+            });
+            if (!el.ipInterface.options.length) {
+              const opt = document.createElement('option');
+              opt.value = '';
+              opt.textContent = '未读取到网络接口';
+              el.ipInterface.appendChild(opt);
+            }
+          }
+        }
+        if (el.ipInterface) el.ipInterface.value = selectedInterface;
+        syncSelectedIpInterface(true);
+        if (el.ipConnectionName) el.ipConnectionName.value = data.connectionName || selectedInterface || el.ipConnectionName.value;
+        if (el.ipAddress) el.ipAddress.value = data.ipAddress || el.ipAddress.value;
+        if (el.ipMask) el.ipMask.value = data.netmask || el.ipMask.value;
+        if (el.ipGateway) el.ipGateway.value = data.gateway || el.ipGateway.value;
+        if (el.ipMode) el.ipMode.value = data.configMode || el.ipMode.value || 'manual';
+        if (el.ipAutoConnect) el.ipAutoConnect.value = data.autoConnect ? '1' : '0';
+        if (el.ipDnsEnabled) el.ipDnsEnabled.value = data.dns ? '1' : '0';
+        if (el.ipDns) el.ipDns.value = data.dns || el.ipDns.value || '';
+        updateIpModeFields();
+        refreshIpInterfaceLabels();
+        setIpStatus('验证成功，网络配置已加载' + (data.nmcli ? '' : '（目标机未检测到 NetworkManager，保存时仅支持手动运行时修改）'));
+      } catch (err) {
+        setIpStatus('读取失败：' + err.message, true);
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '验证并读取'; }
+      }
     }
     async function refreshDockerRestart(preserveInputs) {
       try {

@@ -918,6 +918,54 @@ WEBSSH_HOST=192.168.0.22 WEBSSH_DEPLOY_PASS='REDACTED_DEPLOY_PASS' \
 
 ------------------------------------------------------------
 
+## 十之一、IP 管理分页（大框架设置，2026-06-23 新增）
+
+### 11.1 是什么
+设置弹窗里的「IP 管理」分页，和「运维 / 防火墙 / 更新」同属于 webssh 主壳的大框架设置。
+它不是左侧一级菜单，也不是独立子站；入口在 [index.html](index.html) 的 settings modal：
+
+- `settingsTabs` 增加 `{ id: 'ip', label: 'IP 管理' }`
+- 页面 DOM 是 `<section class="settings-section" data-pane="ip">...`
+- 切到该分页时只做表单状态同步，不加载 iframe
+
+### 11.2 功能范围
+- 用户填写 SSH 主机、端口、用户名、密码
+- 后端用 `ssh2` 登录目标机，读取全部非 lo 网口、当前 IPv4、子网掩码、默认网关、NetworkManager 连接名称、配置方式、autoconnect
+- 「网络接口」是真实设备名（如 `ens33` / `p3p1`），用下拉选择；下拉项要显示链路状态：已插入 / 未插入 / 已插入未配置 / 已插入自动
+- 切换「网络接口」时，必须自动同步 IP、子网掩码、网关、配置方式、DNS、网卡名称、开机自动连接到下面输入栏
+- 「网卡名称」是 NetworkManager 连接名称，保存时可通过 `nmcli connection modify <old> connection.id <new>` 重命名；编辑后要同步刷新下拉项显示，方便查看
+- 支持手动配置 IP / 子网掩码 / 网关
+- 支持自动模式（NetworkManager `ipv4.method auto`）
+- 支持 DNS 选择填写/不填写；填写时设置 `ipv4.ignore-auto-dns yes ipv4.dns <value>`，不填写时恢复自动 DNS
+- 支持设置 `connection.autoconnect`
+- 支持「重启网卡」：优先 `nmcli connection down/up`，无连接时退回 `ip link down/up`
+
+### 11.3 后端路由
+后端在 [server.js](server.js) 的「大框架设置：IP 管理」块里实现：
+
+| Method | Path | 用途 |
+|---|---|---|
+| POST | `/api/ip/info` | SSH 验证并读取目标机网卡/IP/网关信息 |
+| POST | `/api/ip/set` | 应用目标机网络配置 |
+| POST | `/api/ip/restart` | 重启选中的真实网口 / NetworkManager 连接 |
+
+实现约定：
+- 远程命令必须通过 `shellEscape()` 拼接用户输入，避免命令注入
+- 子网掩码支持点分十进制（如 `255.255.255.0`）和前缀长度（如 `24`）
+- `nmcli` 存在时优先读取/修改 NetworkManager 连接；不存在时手动模式仅用 `ip` 命令做运行时修改
+- 网口列表不能只取“已有 IPv4 地址”的接口，必须从 `ip -o link` 或 `/sys/class/net` 枚举，否则未配置 IP 的网口不会显示
+- 改 IP 可能导致当前 SSH 连接断开，前端只显示后端返回结果，不做自动重连假设
+
+### 11.4 部署
+属于 webssh 主壳改动，走 `deploy-upgrade.js`：
+```bash
+WEBSSH_HOST=192.168.0.22 WEBSSH_DEPLOY_PASS='REDACTED_DEPLOY_PASS' \
+  node scripts/deploy-upgrade.js
+```
+或者用 `deploy-protocol.js`（会顺带同步主壳代码）。
+
+------------------------------------------------------------
+
 
 
 
