@@ -1,0 +1,11 @@
+{
+  "iface": "p3p1",
+  "addr_cidr": "192.168.50.10/24",
+  "address": "192.168.50.10",
+  "prefix": 24,
+  "gateway": "192.168.50.1",
+  "nmcli": true,
+  "method": "manual",
+  "autoconnect": true,
+  "collected_at": "2026-06-22T17:28:20Z"
+}
