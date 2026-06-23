@@ -938,7 +938,9 @@ WEBSSH_HOST=192.168.0.22 WEBSSH_DEPLOY_PASS='smt@2023' \
 - 支持自动模式（NetworkManager `ipv4.method auto`）
 - 支持 DNS 选择填写/不填写；填写时设置 `ipv4.ignore-auto-dns yes ipv4.dns <value>`，不填写时恢复自动 DNS
 - 支持设置 `connection.autoconnect`
+- 支持「网络类型」：普通网络 / 主网络 / 备用网络；后端写 `ipv4.route-metric`，主网络 100、普通网络 300、备用网络 500，用于多网口主备切换并减少同网段默认路由互相干扰
 - 支持「重启网卡」：优先 `nmcli connection down/up`，无连接时退回 `ip link down/up`
+- 未插网线的接口也必须能持久化配置：有 NetworkManager 时按 `connection.interface-name=<iface>` 查找连接，找不到就创建绑定该接口的 ethernet connection，不能只用 `ip addr` 临时改
 
 ### 11.3 后端路由
 后端在 [server.js](server.js) 的「大框架设置：IP 管理」块里实现：
@@ -953,6 +955,8 @@ WEBSSH_HOST=192.168.0.22 WEBSSH_DEPLOY_PASS='smt@2023' \
 - 远程命令必须通过 `shellEscape()` 拼接用户输入，避免命令注入
 - 子网掩码支持点分十进制（如 `255.255.255.0`）和前缀长度（如 `24`）
 - `nmcli` 存在时优先读取/修改 NetworkManager 连接；不存在时手动模式仅用 `ip` 命令做运行时修改
+- 未插线接口读取不到 `GENERAL.CONNECTION` 时，要从 `nmcli connection show` 按 `connection.interface-name` 反查配置，并读取 `ipv4.addresses/gateway/dns/route-metric`
+- 保存 NetworkManager 连接时必须写入 `connection.interface-name` 和 `ipv4.route-metric`；主备切换只靠路由 metric，不另起守护进程
 - 网口列表不能只取“已有 IPv4 地址”的接口，必须从 `ip -o link` 或 `/sys/class/net` 枚举，否则未配置 IP 的网口不会显示
 - 改 IP 可能导致当前 SSH 连接断开，前端只显示后端返回结果，不做自动重连假设
 
