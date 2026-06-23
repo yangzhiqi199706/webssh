@@ -982,6 +982,7 @@ WEBSSH_HOST=192.168.0.22 WEBSSH_DEPLOY_PASS='smt@2023' \
 - 显示当前浏览器主机时间，包含年月日、星期几、时分秒，并计算服务器时间与主机时间差值
 - 支持「一键同步当前主机时间」：把浏览器当前时间传给后端设置服务器系统时间
 - 支持「手动修改时间」：`datetime-local` 精确到秒，显示对应星期，提交后写入服务器系统时间和 BIOS 硬件时钟
+- 支持配置 NTP 时间服务器：输入一个或多个服务器地址，保存后写入目标机 NTP 服务配置并立即尝试同步
 
 ### 12.2 后端路由
 
@@ -991,6 +992,7 @@ WEBSSH_HOST=192.168.0.22 WEBSSH_DEPLOY_PASS='smt@2023' \
 |---|---|---|
 | POST | `/api/time/info` | SSH 验证并读取目标机系统时间 / 时区 / NTP / BIOS 时钟 |
 | POST | `/api/time/set` | 设置目标机系统时间，并执行 `hwclock --systohc` 写入 BIOS 硬件时钟 |
+| POST | `/api/time/ntp` | 保存目标机 NTP 时间服务器，优先 chrony，退回 systemd-timesyncd / ntpd |
 
 实现约定：
 
@@ -998,6 +1000,8 @@ WEBSSH_HOST=192.168.0.22 WEBSSH_DEPLOY_PASS='smt@2023' \
 - 写入时间前优先 `timedatectl set-ntp false`，避免 NTP 立刻把手动时间改回去
 - 设置系统时间用 `date -s "YYYY-MM-DD HH:mm:ss"`，写 BIOS 用 `hwclock --systohc`
 - 如果缺少 `hwclock`，必须返回错误，不能只改系统时间，否则重启后可能回退
+- NTP 服务器输入必须用 `parseNtpServers()` 校验，只允许主机名 / IPv4 / IPv6 类字符，最多 8 个；不能把原始输入直接拼到远程 shell
+- 保存 NTP 优先改 `/etc/chrony.conf` 并重启 `chronyd/chrony`；无 chrony 时改 `/etc/systemd/timesyncd.conf`；再退到 `/etc/ntp.conf`
 
 ------------------------------------------------------------
 
