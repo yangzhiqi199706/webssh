@@ -249,6 +249,259 @@ app.get('/api/serial/ports', function (req, res) {
   res.json({ ports: ports, probed: doProbe });
 });
 
+// ===== 大框架设置：IP 管理 =====
+// 入口在 index.html 的设置弹窗「IP 管理」分页。这里通过用户填写的 SSH 凭据
+// 连接目标机，读取/修改网卡 IPv4、网关、NetworkManager autoconnect。
+app.post('/api/ip/info', function (req, res) {
+  const body = req.body || {};
+  const host = String(body.host || '').trim();
+  const port = Number(body.port || 22) || 22;
+  const user = String(body.user || '').trim();
+  const password = String(body.password || '');
+  const iface = String(body.interface || '').trim();
+  if (!host || !user || !password) {
+    res.status(400).json({ ok: false, message: '缺少 SSH 主机、用户名或密码' });
+    return;
+  }
+  const script = [
+    'set +e',
+    'iface=""',
+    'addr=""',
+    'gw=""',
+    'gwIface=""',
+    'nmcli=0',
+    'method=manual',
+    'autoconnect=0',
+    'conn=""',
+    'dns=""',
+    'carrier=""',
+    'operstate=""',
+    'defaultGW=$(ip route show default 0.0.0.0/0 2>/dev/null | awk \'/default/ {gw=""; dev=""; for(i=1;i<=NF;i++){ if($i=="via"){gw=$(i+1)} if($i=="dev"){dev=$(i+1)} } if(gw && dev){print gw "|" dev; exit}}\')',
+    'if [ -n "$defaultGW" ]; then gw="${defaultGW%%|*}"; gwIface="${defaultGW#*|}"; fi',
+    'if command -v nmcli >/dev/null 2>&1; then nmcli=1; fi',
+    'listIfaces() { if command -v ip >/dev/null 2>&1; then ip -o link show 2>/dev/null | awk -F": " \'$2 !~ /^lo(@|$)/ {split($2,a,"@"); print a[1]}\'; else ls /sys/class/net 2>/dev/null | awk \'$1!="lo"{print $1}\'; fi; }',
+    'interfaces=$(for dev in $(listIfaces); do',
+    '  [ -n "$dev" ] || continue',
+    '  a=$(ip -4 -o addr show dev "$dev" scope global 2>/dev/null | awk \'NR==1{print $4}\')',
+    '  c=$(cat "/sys/class/net/$dev/carrier" 2>/dev/null)',
+    '  o=$(cat "/sys/class/net/$dev/operstate" 2>/dev/null)',
+    '  cn=""',
+    '  m=""',
+    '  ac=0',
+    '  d=""',
+    '  g=""',
+    '  [ "$gwIface" = "$dev" ] && g="$gw"',
+    '  if [ "$nmcli" = "1" ]; then',
+    '    cn=$(nmcli -t -f GENERAL.CONNECTION device show "$dev" 2>/dev/null | sed -n "1p" | cut -d: -f2-)',
+    '    if [ -n "$cn" ]; then',
+    '      m=$(nmcli -t -f ipv4.method connection show "$cn" 2>/dev/null | sed -n "1p" | cut -d: -f2-)',
+    '      acv=$(nmcli -t -f connection.autoconnect connection show "$cn" 2>/dev/null | sed -n "1p" | cut -d: -f2-)',
+    '      [ "$acv" = "yes" ] && ac=1',
+    '      d=$(nmcli -t -f ipv4.dns connection show "$cn" 2>/dev/null | sed -n "1p" | cut -d: -f2-)',
+    '    fi',
+    '  fi',
+    '  printf "%s|%s|%s|%s|%s|%s|%s|%s|%s\\n" "$dev" "$a" "$c" "$o" "$cn" "$m" "$ac" "$d" "$g"',
+    'done)',
+    'selectedIface=' + shellEscape(iface),
+    "if [ -z \"$selectedIface\" ]; then selectedIface=$(printf \"%s\\n\" \"$interfaces\" | awk -F\"|\" 'NR==1{print $1}'); fi",
+    'selectedLine=$(printf "%s\\n" "$interfaces" | awk -F"|" -v ifc="$selectedIface" \'$1==ifc{print; exit}\')',
+    'if [ -n "$selectedLine" ]; then',
+    '  iface=$(printf "%s" "$selectedLine" | cut -d"|" -f1)',
+    '  addr=$(printf "%s" "$selectedLine" | cut -d"|" -f2)',
+    '  carrier=$(printf "%s" "$selectedLine" | cut -d"|" -f3)',
+    '  operstate=$(printf "%s" "$selectedLine" | cut -d"|" -f4)',
+    '  conn=$(printf "%s" "$selectedLine" | cut -d"|" -f5)',
+    '  method=$(printf "%s" "$selectedLine" | cut -d"|" -f6)',
+    '  autoconnect=$(printf "%s" "$selectedLine" | cut -d"|" -f7)',
+    '  dns=$(printf "%s" "$selectedLine" | cut -d"|" -f8)',
+    '  gw=$(printf "%s" "$selectedLine" | cut -d"|" -f9)',
+    'fi',
+    '[ -z "$method" ] && method=manual',
+    '[ -z "$autoconnect" ] && autoconnect=0',
+    'printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n" "$iface" "$addr" "$gw" "$nmcli" "$method" "$autoconnect" "$conn" "$dns" "$carrier" "$operstate"',
+    'printf "INTERFACES:\n"',
+    'printf "%s\n" "$interfaces"',
+  ].join('\n');
+  sshExecCommand({ host: host, port: port, username: user, password: password }, script, function (err, result) {
+    if (err) {
+      res.status(500).json({ ok: false, message: 'SSH 连接失败：' + err.message });
+      return;
+    }
+    const stdout = String(result.stdout || '');
+    const lines = stdout.split(/\r?\n/).filter((item) => String(item || '').trim() !== '');
+    const splitIndex = lines.indexOf('INTERFACES:');
+    const ifaceLines = splitIndex >= 0 ? lines.slice(splitIndex + 1) : [];
+    const summaryLine = lines[0] || '';
+    const info = parseIpInfoLine(summaryLine);
+    if (!info || !info.interface) {
+      let reason = result.stderr || '未能从目标机读取网络接口信息';
+      res.status(500).json({ ok: false, message: reason });
+      return;
+    }
+    const interfaces = ifaceLines.map(function (line) {
+      const parts = String(line || '').split('|');
+      return {
+        name: parts[0] || '',
+        address: parts[1] || '',
+        carrier: parts[2] || '',
+        operstate: parts[3] || '',
+        connectionName: parts[4] || '',
+        configMode: parts[5] || '',
+        autoConnect: parts[6] === '1',
+        dns: parts[7] || '',
+        gateway: parts[8] || '',
+      };
+    }).filter(function (item) {
+      return item.name;
+    });
+    res.json({
+      ok: true,
+      interface: info.interface,
+      selectedInterface: info.interface,
+      ipAddress: info.ipAddress,
+      netmask: info.netmask,
+      gateway: info.gateway,
+      nmcli: info.nmcli,
+      configMode: info.configMode,
+      autoConnect: info.autoConnect,
+      connectionName: info.connectionName,
+      dns: info.dns,
+      carrier: info.carrier,
+      operstate: info.operstate,
+      interfaces: interfaces,
+    });
+  });
+});
+
+app.post('/api/ip/set', function (req, res) {
+  const body = req.body || {};
+  const host = String(body.host || '').trim();
+  const port = Number(body.port || 22) || 22;
+  const user = String(body.user || '').trim();
+  const password = String(body.password || '');
+  const iface = String(body.interface || '').trim();
+  const connectionName = String(body.connectionName || '').trim();
+  const mode = String(body.mode || 'manual').trim();
+  const address = String(body.address || '').trim();
+  const mask = String(body.mask || '').trim();
+  const gateway = String(body.gateway || '').trim();
+  const dnsEnabled = Boolean(body.dnsEnabled);
+  const dns = String(body.dns || '').trim();
+  const autoConnect = Boolean(body.autoConnect);
+  if (!host || !user || !password || !iface) {
+    res.status(400).json({ ok: false, message: '缺少 SSH 或网络接口参数' });
+    return;
+  }
+  if (mode === 'manual' && (!address || !mask || !gateway)) {
+    res.status(400).json({ ok: false, message: '手动模式下 IP、子网掩码和网关不能为空' });
+    return;
+  }
+  const prefix = mask.indexOf('.') === -1 ? mask : '';
+  const cmd = [];
+  cmd.push('set -e');
+  if (mode === 'auto') {
+    cmd.push('if ! command -v nmcli >/dev/null 2>&1; then echo "ERROR|nmcli-unavailable"; exit 2; fi');
+    cmd.push('newConn=' + (connectionName ? shellEscape(connectionName) : ''));
+    cmd.push('conn=$(nmcli -t -f GENERAL.CONNECTION device show ' + shellEscape(iface) + ' 2>/dev/null | sed -n "1p" | cut -d: -f2)');
+    cmd.push('if [ -z "$conn" ] && [ -n "$newConn" ]; then conn="$newConn"; fi');
+    cmd.push('if [ -z "$conn" ]; then echo "ERROR|connection-not-found"; exit 2; fi');
+    cmd.push('if [ -n "$newConn" ] && [ "$newConn" != "$conn" ]; then nmcli connection modify "$conn" connection.id "$newConn"; conn="$newConn"; fi');
+    cmd.push('nmcli connection modify "$conn" ipv4.method auto');
+    cmd.push('if [ ' + (dnsEnabled ? '1' : '0') + ' -eq 1 ]; then nmcli connection modify "$conn" ipv4.ignore-auto-dns yes ipv4.dns ' + shellEscape(dns) + '; else nmcli connection modify "$conn" ipv4.ignore-auto-dns no ipv4.dns ""; fi');
+    cmd.push('nmcli connection modify "$conn" connection.autoconnect ' + (autoConnect ? 'yes' : 'no'));
+    cmd.push('nmcli connection up "$conn"');
+    cmd.push('echo "OK|auto"');
+  } else {
+    const cidr = prefix || maskToPrefix(mask);
+    if (!cidr) {
+      res.status(400).json({ ok: false, message: '无法识别子网掩码，请使用前缀长度或点分十进制格式' });
+      return;
+    }
+    cmd.push('if ! command -v ip >/dev/null 2>&1; then echo "ERROR|ip-unavailable"; exit 2; fi');
+    cmd.push('if command -v nmcli >/dev/null 2>&1; then');
+    cmd.push('  newConn=' + (connectionName ? shellEscape(connectionName) : ''));
+    cmd.push('  conn=$(nmcli -t -f GENERAL.CONNECTION device show ' + shellEscape(iface) + ' 2>/dev/null | sed -n "1p" | cut -d: -f2)');
+    cmd.push('  if [ -z "$conn" ] && [ -n "$newConn" ]; then conn="$newConn"; fi');
+    cmd.push('  if [ -n "$conn" ]; then');
+    cmd.push('    if [ -n "$newConn" ] && [ "$newConn" != "$conn" ]; then nmcli connection modify "$conn" connection.id "$newConn"; conn="$newConn"; fi');
+    cmd.push('    nmcli connection modify "$conn" ipv4.method manual ipv4.addresses ' + shellEscape(address + '/' + cidr) + ' ipv4.gateway ' + shellEscape(gateway) + ' connection.autoconnect ' + (autoConnect ? 'yes' : 'no'));
+    cmd.push('    if [ ' + (dnsEnabled ? '1' : '0') + ' -eq 1 ]; then nmcli connection modify "$conn" ipv4.ignore-auto-dns yes ipv4.dns ' + shellEscape(dns) + '; else nmcli connection modify "$conn" ipv4.ignore-auto-dns no ipv4.dns ""; fi');
+    cmd.push('    nmcli connection up "$conn"');
+    cmd.push('  else');
+    cmd.push('    ip link set dev ' + shellEscape(iface) + ' up');
+    cmd.push('    ip addr flush dev ' + shellEscape(iface));
+    cmd.push('    ip addr add ' + shellEscape(address + '/' + cidr) + ' dev ' + shellEscape(iface));
+    cmd.push('    ip route del default 2>/dev/null || true');
+    cmd.push('    ip route add default via ' + shellEscape(gateway) + ' dev ' + shellEscape(iface));
+    cmd.push('  fi');
+    cmd.push('else');
+    cmd.push('  ip link set dev ' + shellEscape(iface) + ' up');
+    cmd.push('  ip addr flush dev ' + shellEscape(iface));
+    cmd.push('  ip addr add ' + shellEscape(address + '/' + cidr) + ' dev ' + shellEscape(iface));
+    cmd.push('  ip route del default 2>/dev/null || true');
+    cmd.push('  ip route add default via ' + shellEscape(gateway) + ' dev ' + shellEscape(iface));
+    cmd.push('fi');
+    cmd.push('echo "OK|manual"');
+  }
+  sshExecCommand({ host: host, port: port, username: user, password: password }, cmd.join('\n'), function (err, result) {
+    if (err) {
+      res.status(500).json({ ok: false, message: 'SSH 连接失败：' + err.message });
+      return;
+    }
+    const stdout = String(result.stdout || '');
+    const stderr = String(result.stderr || '');
+    if (stdout.indexOf('OK|') === -1) {
+      const message = stderr || stdout || '远程命令执行失败';
+      res.status(500).json({ ok: false, message: message });
+      return;
+    }
+    res.json({ ok: true, message: '已应用远程网络配置' });
+  });
+});
+
+app.post('/api/ip/restart', function (req, res) {
+  const body = req.body || {};
+  const host = String(body.host || '').trim();
+  const port = Number(body.port || 22) || 22;
+  const user = String(body.user || '').trim();
+  const password = String(body.password || '');
+  const iface = String(body.interface || '').trim();
+  const connectionName = String(body.connectionName || '').trim();
+  if (!host || !user || !password || !iface) {
+    res.status(400).json({ ok: false, message: '缺少 SSH 或网络接口参数' });
+    return;
+  }
+  const cmd = [
+    'set -e',
+    'iface=' + shellEscape(iface),
+    'newConn=' + (connectionName ? shellEscape(connectionName) : ''),
+    'if command -v nmcli >/dev/null 2>&1; then',
+    '  conn=$(nmcli -t -f GENERAL.CONNECTION device show "$iface" 2>/dev/null | sed -n "1p" | cut -d: -f2)',
+    '  if [ -z "$conn" ] && [ -n "$newConn" ]; then conn="$newConn"; fi',
+    '  if [ -n "$conn" ] && [ -n "$newConn" ] && [ "$newConn" != "$conn" ]; then nmcli connection modify "$conn" connection.id "$newConn"; conn="$newConn"; fi',
+    '  if [ -n "$conn" ]; then nmcli connection down "$conn" || true; nmcli connection up "$conn"; echo "OK|nmcli|$conn"; exit 0; fi',
+    'fi',
+    'if ! command -v ip >/dev/null 2>&1; then echo "ERROR|ip-unavailable"; exit 2; fi',
+    'ip link set dev "$iface" down',
+    'sleep 1',
+    'ip link set dev "$iface" up',
+    'echo "OK|ip|$iface"',
+  ].join('\n');
+  sshExecCommand({ host: host, port: port, username: user, password: password }, cmd, function (err, result) {
+    if (err) {
+      res.status(500).json({ ok: false, message: 'SSH 连接失败：' + err.message });
+      return;
+    }
+    const stdout = String(result.stdout || '');
+    const stderr = String(result.stderr || '');
+    if (stdout.indexOf('OK|') === -1) {
+      res.status(500).json({ ok: false, message: stderr || stdout || '远程命令执行失败' });
+      return;
+    }
+    res.json({ ok: true, message: stdout.replace(/^OK\|/, '') });
+  });
+});
+
 const demoConfig = {
   host: process.env.SSH_HOST || '127.0.0.1',
   port: Number(process.env.SSH_PORT || 22),
@@ -256,6 +509,98 @@ const demoConfig = {
   password: process.env.SSH_PASSWORD || '',
   privateKey: process.env.SSH_PRIVATE_KEY ? fs.readFileSync(process.env.SSH_PRIVATE_KEY) : undefined,
 };
+
+function shellEscape(value) {
+  return "'" + String(value || '').replace(/'/g, "'\"'\"'") + "'";
+}
+
+function normalizeMask(value) {
+  if (!value) return '';
+  const text = String(value).trim();
+  if (text.indexOf('.') !== -1) return text;
+  const prefix = Number(text.replace(/^\/+/, ''));
+  if (!Number.isFinite(prefix) || prefix < 0 || prefix > 32) return '';
+  const bits = '1'.repeat(prefix).padEnd(32, '0');
+  return [0, 8, 16, 24].map(function (start) {
+    return parseInt(bits.slice(start, start + 8), 2);
+  }).join('.');
+}
+
+function maskToPrefix(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  if (text.indexOf('.') === -1) {
+    const prefix = Number(text.replace(/^\/+/, ''));
+    return Number.isFinite(prefix) ? String(prefix) : '';
+  }
+  const parts = text.split('.').map(function (item) { return Number(item); });
+  if (parts.length !== 4 || parts.some(function (n) { return !Number.isFinite(n) || n < 0 || n > 255; })) return '';
+  const bits = parts.map(function (n) { return ('00000000' + n.toString(2)).slice(-8); }).join('');
+  if (!/^1*0*$/.test(bits)) return '';
+  return String(bits.indexOf('0') === -1 ? 32 : bits.indexOf('0'));
+}
+
+function parseIpInfoLine(line) {
+  if (!line) return null;
+  const parts = String(line || '').split('|');
+  if (parts.length < 6) return null;
+  let addr = parts[1] || '';
+  let ipAddress = addr;
+  let netmask = '';
+  const slashIndex = addr.indexOf('/');
+  if (slashIndex !== -1) {
+    ipAddress = addr.slice(0, slashIndex);
+    netmask = normalizeMask(addr.slice(slashIndex + 1));
+  }
+  return {
+    interface: parts[0] || '',
+    ipAddress: ipAddress,
+    netmask: netmask,
+    gateway: parts[2] || '',
+    nmcli: parts[3] === '1',
+    configMode: parts[4] || 'manual',
+    autoConnect: parts[5] === '1',
+    connectionName: parts[6] || '',
+    dns: parts[7] || '',
+    carrier: parts[8] || '',
+    operstate: parts[9] || '',
+  };
+}
+
+function sshExecCommand(cfg, cmd, callback) {
+  const client = new Client();
+  let finished = false;
+  function done(err, result) {
+    if (finished) return;
+    finished = true;
+    try { client.end(); } catch (_e) {}
+    callback(err, result);
+  }
+  client.on('ready', function () {
+    client.exec(cmd, function (err, stream) {
+      if (err) { done(err); return; }
+      let stdout = '';
+      let stderr = '';
+      stream.on('data', function (data) { stdout += data.toString('utf8'); });
+      stream.stderr.on('data', function (data) { stderr += data.toString('utf8'); });
+      stream.on('close', function (code, signal) {
+        done(null, { code: typeof code === 'number' ? code : -1, signal: signal || null, stdout: stdout.trim(), stderr: stderr.trim() });
+      });
+      stream.on('error', done);
+    });
+  });
+  client.on('error', done);
+  client.on('end', function () {
+    if (!finished) done(new Error('SSH connection ended prematurely'));
+  });
+  client.connect({
+    host: cfg.host,
+    port: cfg.port,
+    username: cfg.username,
+    password: cfg.password,
+    readyTimeout: 10000,
+  });
+}
 
 function remoteJoin(basePath, name) {
   if (!basePath || basePath === '/') return '/' + name;
