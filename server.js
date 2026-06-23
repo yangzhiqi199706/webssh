@@ -518,6 +518,92 @@ app.post('/api/ip/restart', function (req, res) {
   });
 });
 
+// ===== 大框架设置：时间 =====
+// 通过 SSH 读取目标机系统时间 / BIOS 硬件时钟，并支持把浏览器主机时间或手动时间
+// 写入目标机系统时间后执行 hwclock --systohc，避免服务器重启后时间回退。
+app.post('/api/time/info', function (req, res) {
+  const body = req.body || {};
+  const host = String(body.host || '').trim();
+  const port = Number(body.port || 22) || 22;
+  const user = String(body.user || '').trim();
+  const password = String(body.password || '');
+  const clientEpochMs = Number(body.clientEpochMs || 0);
+  if (!host || !user || !password) {
+    res.status(400).json({ ok: false, message: '缺少 SSH 主机、用户名或密码' });
+    return;
+  }
+  const script = [
+    'set +e',
+    'epoch=$(date +%s 2>/dev/null)',
+    'text=$(date "+%Y-%m-%d %H:%M:%S %A %Z" 2>/dev/null)',
+    'tz=$(timedatectl show -p Timezone --value 2>/dev/null)',
+    '[ -n "$tz" ] || tz=$(date +%Z 2>/dev/null)',
+    'ntp=$(timedatectl show -p NTP -p NTPSynchronized --value 2>/dev/null | paste -sd "/" -)',
+    '[ -n "$ntp" ] || ntp="unknown"',
+    'hw=$(hwclock --show 2>&1)',
+    'printf "EPOCH|%s\\n" "$epoch"',
+    'printf "TEXT|%s\\n" "$text"',
+    'printf "TZ|%s\\n" "$tz"',
+    'printf "NTP|%s\\n" "$ntp"',
+    'printf "HW|%s\\n" "$hw"',
+  ].join('\n');
+  sshExecCommand({ host: host, port: port, username: user, password: password }, script, function (err, result) {
+    if (err) {
+      res.status(500).json({ ok: false, message: 'SSH 连接失败：' + err.message });
+      return;
+    }
+    res.json(buildTimeInfoResponse(result.stdout, clientEpochMs));
+  });
+});
+
+app.post('/api/time/set', function (req, res) {
+  const body = req.body || {};
+  const host = String(body.host || '').trim();
+  const port = Number(body.port || 22) || 22;
+  const user = String(body.user || '').trim();
+  const password = String(body.password || '');
+  const datetime = String(body.datetime || '').trim();
+  const clientEpochMs = Number(body.clientEpochMs || 0);
+  if (!host || !user || !password) {
+    res.status(400).json({ ok: false, message: '缺少 SSH 主机、用户名或密码' });
+    return;
+  }
+  if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(datetime)) {
+    res.status(400).json({ ok: false, message: '时间格式无效，请使用 YYYY-MM-DD HH:mm:ss' });
+    return;
+  }
+  const script = [
+    'set -e',
+    'target=' + shellEscape(datetime),
+    'if command -v timedatectl >/dev/null 2>&1; then timedatectl set-ntp false >/dev/null 2>&1 || true; fi',
+    'date -s "$target" >/dev/null',
+    'if command -v hwclock >/dev/null 2>&1; then hwclock --systohc; else echo "ERROR|hwclock-unavailable"; exit 2; fi',
+    'epoch=$(date +%s 2>/dev/null)',
+    'text=$(date "+%Y-%m-%d %H:%M:%S %A %Z" 2>/dev/null)',
+    'tz=$(timedatectl show -p Timezone --value 2>/dev/null)',
+    '[ -n "$tz" ] || tz=$(date +%Z 2>/dev/null)',
+    'ntp=$(timedatectl show -p NTP -p NTPSynchronized --value 2>/dev/null | paste -sd "/" -)',
+    '[ -n "$ntp" ] || ntp="unknown"',
+    'hw=$(hwclock --show 2>&1)',
+    'printf "EPOCH|%s\\n" "$epoch"',
+    'printf "TEXT|%s\\n" "$text"',
+    'printf "TZ|%s\\n" "$tz"',
+    'printf "NTP|%s\\n" "$ntp"',
+    'printf "HW|%s\\n" "$hw"',
+  ].join('\n');
+  sshExecCommand({ host: host, port: port, username: user, password: password }, script, function (err, result) {
+    if (err) {
+      res.status(500).json({ ok: false, message: 'SSH 连接失败：' + err.message });
+      return;
+    }
+    if (result.code !== 0) {
+      res.status(500).json({ ok: false, message: result.stderr || result.stdout || '远程时间设置失败' });
+      return;
+    }
+    res.json(buildTimeInfoResponse(result.stdout, clientEpochMs));
+  });
+});
+
 const demoConfig = {
   host: process.env.SSH_HOST || '127.0.0.1',
   port: Number(process.env.SSH_PORT || 22),
@@ -596,6 +682,28 @@ function parseIpInfoLine(line) {
     operstate: parts[9] || '',
     routeMetric: parts[10] || '',
     role: roleFromRouteMetric(parts[10] || ''),
+  };
+}
+
+function buildTimeInfoResponse(stdout, clientEpochMs) {
+  const info = {};
+  String(stdout || '').split(/\r?\n/).forEach(function (line) {
+    const idx = String(line || '').indexOf('|');
+    if (idx === -1) return;
+    const key = line.slice(0, idx);
+    const value = line.slice(idx + 1);
+    info[key] = value;
+  });
+  const serverEpoch = Number(info.EPOCH || 0);
+  const driftSeconds = serverEpoch && clientEpochMs ? Math.round(serverEpoch - (clientEpochMs / 1000)) : null;
+  return {
+    ok: true,
+    serverEpoch: serverEpoch || null,
+    serverText: info.TEXT || '',
+    timezone: info.TZ || '',
+    ntp: info.NTP || '',
+    hardwareClock: info.HW || '',
+    driftSeconds: driftSeconds,
   };
 }
 

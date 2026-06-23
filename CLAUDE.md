@@ -970,6 +970,37 @@ WEBSSH_HOST=192.168.0.22 WEBSSH_DEPLOY_PASS='REDACTED_DEPLOY_PASS' \
 
 ------------------------------------------------------------
 
+## 十之二、时间分页（大框架设置，2026-06-23 新增）
+
+设置弹窗左边栏增加「时间」分页，和「运维 / IP 管理 / 防火墙 / 更新」同属于 webssh 主壳的大框架设置。
+
+### 12.1 前端约定
+
+- `settingsTabs` 增加 `{ id: 'time', label: '时间' }`
+- 页面 DOM 是 `<section class="settings-section" data-pane="time">...`
+- 通过 SSH 凭据读取目标服务器系统时间、时区、NTP 状态和 BIOS 硬件时钟
+- 显示当前浏览器主机时间，包含年月日、星期几、时分秒，并计算服务器时间与主机时间差值
+- 支持「一键同步当前主机时间」：把浏览器当前时间传给后端设置服务器系统时间
+- 支持「手动修改时间」：`datetime-local` 精确到秒，显示对应星期，提交后写入服务器系统时间和 BIOS 硬件时钟
+
+### 12.2 后端路由
+
+后端在 [server.js](server.js) 的「大框架设置：时间」块里实现：
+
+| Method | Path | 用途 |
+|---|---|---|
+| POST | `/api/time/info` | SSH 验证并读取目标机系统时间 / 时区 / NTP / BIOS 时钟 |
+| POST | `/api/time/set` | 设置目标机系统时间，并执行 `hwclock --systohc` 写入 BIOS 硬件时钟 |
+
+实现约定：
+
+- 远程命令必须通过 `shellEscape()` 拼接用户输入
+- 写入时间前优先 `timedatectl set-ntp false`，避免 NTP 立刻把手动时间改回去
+- 设置系统时间用 `date -s "YYYY-MM-DD HH:mm:ss"`，写 BIOS 用 `hwclock --systohc`
+- 如果缺少 `hwclock`，必须返回错误，不能只改系统时间，否则重启后可能回退
+
+------------------------------------------------------------
+
 
 
 
