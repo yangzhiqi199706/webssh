@@ -3101,6 +3101,24 @@
       updateIpModeFields();
       refreshIpInterfaceLabels();
     }
+    function updateSelectedIpInterfaceCache() {
+      if (!el.ipInterface || !Array.isArray(state.ipInterfaces)) return;
+      const item = state.ipInterfaces.find((entry) => entry.name === el.ipInterface.value);
+      if (!item) return;
+      const mode = fetchIpFormValue('ipMode') || 'manual';
+      const address = fetchIpFormValue('ipAddress');
+      const mask = fetchIpFormValue('ipMask');
+      item.connectionName = fetchIpFormValue('ipConnectionName') || item.connectionName || item.name || '';
+      item.configMode = mode;
+      item.ipAddress = address;
+      item.netmask = mask;
+      item.address = address && mask ? (address + '/' + mask) : address;
+      item.gateway = fetchIpFormValue('ipGateway');
+      item.autoConnect = fetchIpFormValue('ipAutoConnect') === '1';
+      item.role = fetchIpFormValue('ipRole') || 'normal';
+      item.dns = fetchIpFormValue('ipDnsEnabled') === '1' ? fetchIpFormValue('ipDns') : '';
+      refreshIpInterfaceLabels();
+    }
     function applyIpConfig() {
       if (!el.ipHost || !el.ipUser || !el.ipPassword) return;
       const host = fetchIpFormValue('ipHost');
@@ -3146,6 +3164,7 @@
           throw new Error(data && data.message ? data.message : ('HTTP ' + resp.status));
         }
         setIpStatus('配置已应用：' + (data.message || '成功'));
+        updateSelectedIpInterfaceCache();
         clearIpDirty();
       }).catch((err) => {
         setIpStatus('保存失败：' + err.message, true);
