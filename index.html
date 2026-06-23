@@ -565,6 +565,9 @@
     .form { padding: 16px; display: grid; gap: 12px; }
     .field { display: grid; gap: 7px; font-size: 13px; }
     .field input, .field select {
+      min-width: 0;
+      width: 100%;
+      max-width: 100%;
       border-radius: 12px;
       border: 1px solid #334155;
       background: #020617;
@@ -3058,9 +3061,8 @@
     function ipOptionText(item, overrideName) {
       const conn = overrideName || item.connectionName || item.name;
       const status = ipInterfaceStatusLabel(item);
-      const addr = item.address ? ' ' + item.address : '';
       const connText = conn && conn !== item.name ? ' / ' + conn : '';
-      return item.name + connText + ' - ' + status + addr;
+      return item.name + connText + ' - ' + status;
     }
     function refreshIpInterfaceLabels() {
       if (!el.ipInterface || !Array.isArray(state.ipInterfaces)) return;
