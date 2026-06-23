@@ -362,6 +362,8 @@
     .shortcut.exec:hover { background: rgba(34, 211, 238, .15); }
     .shortcut.danger { border-color: rgba(239, 68, 68, .55); color: #fecaca; }
     .shortcut.danger:hover { background: rgba(239, 68, 68, .18); border-color: rgba(239, 68, 68, .8); }
+    .shortcuts-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
+    .shortcuts-scroll { flex: 1; min-height: 0; overflow: auto; padding-right: 2px; }
     .shortcut-groups { display: flex; flex-direction: column; gap: 8px; }
     .shortcut-group { border: 1px solid var(--border); border-radius: 10px; background: rgba(15, 23, 42, .6); overflow: hidden; }
     .shortcut-group-header {
@@ -2559,9 +2561,11 @@
         `;
       }).join('');
       return `
-        <div>
+        <div class="shortcuts-panel">
           <div class="section-title">快捷命令</div>
-          <div class="shortcut-groups" style="margin-top:10px">${groupsHtml}</div>
+          <div class="shortcuts-scroll">
+            <div class="shortcut-groups">${groupsHtml}</div>
+          </div>
         </div>
         <div>
           <div class="section-title">连接信息</div>
