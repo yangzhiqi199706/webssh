@@ -1375,6 +1375,21 @@
                 <button class="btn primary" id="timeApplyManualBtn" type="button">手动修改并写入 BIOS</button>
               </div>
             </div>
+            <div class="settings-card">
+              <div class="grid2">
+                <label class="field">
+                  <span>NTP 时间服务器</span>
+                  <input id="timeNtpServers" type="text" placeholder="ntp.aliyun.com time.windows.com" />
+                </label>
+                <label class="field">
+                  <span>当前 NTP 配置</span>
+                  <div id="timeNtpInfo" style="font-size:13px;color:#cbd5e1;padding:8px 10px;background:#0b1220;border:1px solid #1f2937;border-radius:10px;min-height:20px;word-break:break-all">未读取</div>
+                </label>
+              </div>
+              <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px;flex-wrap:wrap">
+                <button class="btn primary" id="timeSaveNtpBtn" type="button">保存 NTP 并同步</button>
+              </div>
+            </div>
           </section>
 
           <section class="settings-section" data-pane="ip">
@@ -2232,6 +2247,9 @@
       timeManualWeekday: document.getElementById('timeManualWeekday'),
       timeFillLocalBtn: document.getElementById('timeFillLocalBtn'),
       timeApplyManualBtn: document.getElementById('timeApplyManualBtn'),
+      timeNtpServers: document.getElementById('timeNtpServers'),
+      timeNtpInfo: document.getElementById('timeNtpInfo'),
+      timeSaveNtpBtn: document.getElementById('timeSaveNtpBtn'),
     };
 
     // 左侧功能菜单：后续新增功能直接在此数组追加一项即可
@@ -3090,6 +3108,7 @@
       const timeFillLocalBtn = document.getElementById('timeFillLocalBtn');
       const timeApplyManualBtn = document.getElementById('timeApplyManualBtn');
       const timeManual = document.getElementById('timeManual');
+      const timeSaveNtpBtn = document.getElementById('timeSaveNtpBtn');
       if (ipVerifyBtn) ipVerifyBtn.onclick = () => fetchIpInfo();
       if (ipRefreshBtn) ipRefreshBtn.onclick = () => fetchIpInfo();
       if (ipRestartBtn) ipRestartBtn.onclick = () => restartIpInterface();
@@ -3111,6 +3130,7 @@
       if (timeFillLocalBtn) timeFillLocalBtn.onclick = () => fillManualTimeFromLocal();
       if (timeApplyManualBtn) timeApplyManualBtn.onclick = () => applyManualTime();
       if (timeManual) timeManual.oninput = () => updateManualWeekday();
+      if (timeSaveNtpBtn) timeSaveNtpBtn.onclick = () => saveNtpServers();
     }
     function closeSettings() {
       if (!el.settingsMask) return;
@@ -3168,6 +3188,12 @@
         el.timeZoneInfo.textContent = (data.timezone || '时区未知') + ' / ' + (data.ntp || 'NTP未知') + ' / ' + drift;
       }
       if (el.timeHardwareClock) el.timeHardwareClock.textContent = data.hardwareClock || '未读取';
+      if (el.timeNtpInfo) {
+        const service = data.ntpService || '未识别';
+        const servers = data.ntpServers || '';
+        el.timeNtpInfo.textContent = service + (servers ? (' / ' + servers) : ' / 未配置服务器');
+      }
+      if (el.timeNtpServers && data.ntpServers) el.timeNtpServers.value = data.ntpServers;
     }
     async function fetchTimeInfo() {
       const form = fetchTimeForm();
@@ -3239,6 +3265,37 @@
         return;
       }
       setServerTimeFromDate(d, 'manual');
+    }
+    async function saveNtpServers() {
+      const form = fetchTimeForm();
+      const servers = fetchIpFormValue('timeNtpServers');
+      if (!form.host || !form.user || !form.password) {
+        setTimeStatus('请先填写 SSH 主机、用户名和密码', true);
+        return;
+      }
+      if (!servers) {
+        setTimeStatus('请先填写 NTP 时间服务器', true);
+        return;
+      }
+      if (!confirm('确认保存 NTP 时间服务器并立即尝试同步？')) return;
+      const btn = el.timeSaveNtpBtn;
+      if (btn) { btn.disabled = true; btn.textContent = '保存中...'; }
+      setTimeStatus('正在保存 NTP 时间服务器...');
+      try {
+        const resp = await fetch('/api/time/ntp', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(Object.assign({}, form, { servers, clientEpochMs: Date.now() })),
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.ok) throw new Error(data && data.message ? data.message : ('HTTP ' + resp.status));
+        renderTimeInfo(data);
+        setTimeStatus('NTP 时间服务器已保存并触发同步');
+      } catch (err) {
+        setTimeStatus('保存 NTP 失败：' + err.message, true);
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '保存 NTP 并同步'; }
+      }
     }
     function updateIpModeFields() {
       const mode = el.ipMode?.value || 'manual';

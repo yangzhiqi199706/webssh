@@ -540,11 +540,25 @@ app.post('/api/time/info', function (req, res) {
     '[ -n "$tz" ] || tz=$(date +%Z 2>/dev/null)',
     'ntp=$(timedatectl show -p NTP -p NTPSynchronized --value 2>/dev/null | paste -sd "/" -)',
     '[ -n "$ntp" ] || ntp="unknown"',
+    'ntpService="unknown"',
+    'ntpServers=""',
+    'if command -v chronyc >/dev/null 2>&1 || [ -f /etc/chrony.conf ]; then',
+    '  ntpService="chrony"',
+    '  ntpServers=$(awk \'/^(server|pool)[[:space:]]+/ {print $2}\' /etc/chrony.conf 2>/dev/null | paste -sd " " -)',
+    'elif command -v timedatectl >/dev/null 2>&1 || [ -f /etc/systemd/timesyncd.conf ]; then',
+    '  ntpService="systemd-timesyncd"',
+    '  ntpServers=$(awk -F= \'/^NTP=/ {print $2}\' /etc/systemd/timesyncd.conf 2>/dev/null | tail -1)',
+    'elif [ -f /etc/ntp.conf ]; then',
+    '  ntpService="ntpd"',
+    '  ntpServers=$(awk \'/^(server|pool)[[:space:]]+/ {print $2}\' /etc/ntp.conf 2>/dev/null | paste -sd " " -)',
+    'fi',
     'hw=$(hwclock --show 2>&1)',
     'printf "EPOCH|%s\\n" "$epoch"',
     'printf "TEXT|%s\\n" "$text"',
     'printf "TZ|%s\\n" "$tz"',
     'printf "NTP|%s\\n" "$ntp"',
+    'printf "NTPSERVICE|%s\\n" "$ntpService"',
+    'printf "NTPSERVERS|%s\\n" "$ntpServers"',
     'printf "HW|%s\\n" "$hw"',
   ].join('\n');
   sshExecCommand({ host: host, port: port, username: user, password: password }, script, function (err, result) {
@@ -584,11 +598,25 @@ app.post('/api/time/set', function (req, res) {
     '[ -n "$tz" ] || tz=$(date +%Z 2>/dev/null)',
     'ntp=$(timedatectl show -p NTP -p NTPSynchronized --value 2>/dev/null | paste -sd "/" -)',
     '[ -n "$ntp" ] || ntp="unknown"',
+    'ntpService="unknown"',
+    'ntpServers=""',
+    'if command -v chronyc >/dev/null 2>&1 || [ -f /etc/chrony.conf ]; then',
+    '  ntpService="chrony"',
+    '  ntpServers=$(awk \'/^(server|pool)[[:space:]]+/ {print $2}\' /etc/chrony.conf 2>/dev/null | paste -sd " " -)',
+    'elif command -v timedatectl >/dev/null 2>&1 || [ -f /etc/systemd/timesyncd.conf ]; then',
+    '  ntpService="systemd-timesyncd"',
+    '  ntpServers=$(awk -F= \'/^NTP=/ {print $2}\' /etc/systemd/timesyncd.conf 2>/dev/null | tail -1)',
+    'elif [ -f /etc/ntp.conf ]; then',
+    '  ntpService="ntpd"',
+    '  ntpServers=$(awk \'/^(server|pool)[[:space:]]+/ {print $2}\' /etc/ntp.conf 2>/dev/null | paste -sd " " -)',
+    'fi',
     'hw=$(hwclock --show 2>&1)',
     'printf "EPOCH|%s\\n" "$epoch"',
     'printf "TEXT|%s\\n" "$text"',
     'printf "TZ|%s\\n" "$tz"',
     'printf "NTP|%s\\n" "$ntp"',
+    'printf "NTPSERVICE|%s\\n" "$ntpService"',
+    'printf "NTPSERVERS|%s\\n" "$ntpServers"',
     'printf "HW|%s\\n" "$hw"',
   ].join('\n');
   sshExecCommand({ host: host, port: port, username: user, password: password }, script, function (err, result) {
@@ -598,6 +626,105 @@ app.post('/api/time/set', function (req, res) {
     }
     if (result.code !== 0) {
       res.status(500).json({ ok: false, message: result.stderr || result.stdout || '远程时间设置失败' });
+      return;
+    }
+    res.json(buildTimeInfoResponse(result.stdout, clientEpochMs));
+  });
+});
+
+app.post('/api/time/ntp', function (req, res) {
+  const body = req.body || {};
+  const host = String(body.host || '').trim();
+  const port = Number(body.port || 22) || 22;
+  const user = String(body.user || '').trim();
+  const password = String(body.password || '');
+  const clientEpochMs = Number(body.clientEpochMs || 0);
+  const servers = parseNtpServers(body.servers);
+  if (!host || !user || !password) {
+    res.status(400).json({ ok: false, message: '缺少 SSH 主机、用户名或密码' });
+    return;
+  }
+  if (!servers.length) {
+    res.status(400).json({ ok: false, message: 'NTP 时间服务器不能为空，且只能包含主机名、IP 或 IPv6 地址' });
+    return;
+  }
+  const serverList = servers.join(' ');
+  const chronyLines = servers.map(function (item) {
+    return 'server ' + item + ' iburst';
+  }).join('\n');
+  const script = [
+    'set -e',
+    'servers=' + shellEscape(serverList),
+    'chronyLines=' + shellEscape(chronyLines),
+    'ntpService=""',
+    'if command -v timedatectl >/dev/null 2>&1; then timedatectl set-ntp true >/dev/null 2>&1 || true; fi',
+    'if command -v chronyc >/dev/null 2>&1 || [ -f /etc/chrony.conf ]; then',
+    '  ntpService="chrony"',
+    '  conf=/etc/chrony.conf',
+    '  [ -f "$conf" ] || touch "$conf"',
+    '  cp -a "$conf" "$conf.webssh.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true',
+    '  tmp=$(mktemp)',
+    '  awk \'$1!="server" && $1!="pool" {print}\' "$conf" > "$tmp"',
+    '  printf "\\n# webssh managed NTP servers\\n%s\\n" "$chronyLines" >> "$tmp"',
+    '  cat "$tmp" > "$conf"',
+    '  rm -f "$tmp"',
+    '  systemctl enable --now chronyd >/dev/null 2>&1 || systemctl enable --now chrony >/dev/null 2>&1 || true',
+    '  systemctl restart chronyd >/dev/null 2>&1 || systemctl restart chrony >/dev/null 2>&1 || true',
+    '  chronyc -a makestep >/dev/null 2>&1 || true',
+    'elif command -v timedatectl >/dev/null 2>&1 || [ -d /etc/systemd ]; then',
+    '  ntpService="systemd-timesyncd"',
+    '  conf=/etc/systemd/timesyncd.conf',
+    '  mkdir -p /etc/systemd',
+    '  [ -f "$conf" ] || printf "[Time]\\n" > "$conf"',
+    '  cp -a "$conf" "$conf.webssh.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true',
+    '  tmp=$(mktemp)',
+    '  awk -F= \'$1!="NTP" {print}\' "$conf" > "$tmp"',
+    '  if ! grep -q "^\\[Time\\]" "$tmp"; then printf "[Time]\\n" >> "$tmp"; fi',
+    '  printf "NTP=%s\\n" "$servers" >> "$tmp"',
+    '  cat "$tmp" > "$conf"',
+    '  rm -f "$tmp"',
+    '  systemctl enable --now systemd-timesyncd >/dev/null 2>&1 || true',
+    '  systemctl restart systemd-timesyncd >/dev/null 2>&1 || true',
+    '  timedatectl set-ntp true >/dev/null 2>&1 || true',
+    'elif [ -f /etc/ntp.conf ] || command -v ntpd >/dev/null 2>&1; then',
+    '  ntpService="ntpd"',
+    '  conf=/etc/ntp.conf',
+    '  [ -f "$conf" ] || touch "$conf"',
+    '  cp -a "$conf" "$conf.webssh.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true',
+    '  tmp=$(mktemp)',
+    '  awk \'$1!="server" && $1!="pool" {print}\' "$conf" > "$tmp"',
+    '  for s in $servers; do printf "server %s iburst\\n" "$s" >> "$tmp"; done',
+    '  cat "$tmp" > "$conf"',
+    '  rm -f "$tmp"',
+    '  systemctl enable --now ntpd >/dev/null 2>&1 || true',
+    '  systemctl restart ntpd >/dev/null 2>&1 || true',
+    'else',
+    '  echo "ERROR|ntp-service-not-found"',
+    '  exit 2',
+    'fi',
+    'sleep 1',
+    'epoch=$(date +%s 2>/dev/null)',
+    'text=$(date "+%Y-%m-%d %H:%M:%S %A %Z" 2>/dev/null)',
+    'tz=$(timedatectl show -p Timezone --value 2>/dev/null)',
+    '[ -n "$tz" ] || tz=$(date +%Z 2>/dev/null)',
+    'ntp=$(timedatectl show -p NTP -p NTPSynchronized --value 2>/dev/null | paste -sd "/" -)',
+    '[ -n "$ntp" ] || ntp="unknown"',
+    'hw=$(hwclock --show 2>&1)',
+    'printf "EPOCH|%s\\n" "$epoch"',
+    'printf "TEXT|%s\\n" "$text"',
+    'printf "TZ|%s\\n" "$tz"',
+    'printf "NTP|%s\\n" "$ntp"',
+    'printf "NTPSERVICE|%s\\n" "$ntpService"',
+    'printf "NTPSERVERS|%s\\n" "$servers"',
+    'printf "HW|%s\\n" "$hw"',
+  ].join('\n');
+  sshExecCommand({ host: host, port: port, username: user, password: password }, script, function (err, result) {
+    if (err) {
+      res.status(500).json({ ok: false, message: 'SSH 连接失败：' + err.message });
+      return;
+    }
+    if (result.code !== 0) {
+      res.status(500).json({ ok: false, message: result.stderr || result.stdout || '远程 NTP 配置失败' });
       return;
     }
     res.json(buildTimeInfoResponse(result.stdout, clientEpochMs));
@@ -656,6 +783,24 @@ function roleFromRouteMetric(metric) {
   return 'normal';
 }
 
+function parseNtpServers(value) {
+  const seen = new Set();
+  return String(value || '')
+    .split(/[\s,;]+/)
+    .map(function (item) { return item.trim(); })
+    .filter(Boolean)
+    .filter(function (item) {
+      if (item.length > 253) return false;
+      if (!/^[A-Za-z0-9_.:-]+$/.test(item)) return false;
+      if (item.indexOf('..') !== -1) return false;
+      const key = item.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 8);
+}
+
 function parseIpInfoLine(line) {
   if (!line) return null;
   const parts = String(line || '').split('|');
@@ -702,6 +847,8 @@ function buildTimeInfoResponse(stdout, clientEpochMs) {
     serverText: info.TEXT || '',
     timezone: info.TZ || '',
     ntp: info.NTP || '',
+    ntpService: info.NTPSERVICE || '',
+    ntpServers: info.NTPSERVERS || '',
     hardwareClock: info.HW || '',
     driftSeconds: driftSeconds,
   };
