@@ -169,6 +169,20 @@ function buildPackage() {
         () => true,
       );
     }
+    // proto-conv/：协议转换板块前端（iframe 子站资源），跟主壳一起部署到 /opt/webssh/app/proto-conv/
+    const protoConvSrc = path.join(ROOT, 'proto-conv');
+    if (fs.existsSync(protoConvSrc)) {
+      copyDirFiltered(
+        protoConvSrc,
+        path.join(releaseDir, 'main-sync', 'proto-conv'),
+        (rel) => {
+          // 排除一些临时/缓存文件
+          if (rel.endsWith('.DS_Store')) return false;
+          if (rel.endsWith('__pycache__') || rel.includes('__pycache__/')) return false;
+          return true;
+        },
+      );
+    }
   }
 
   // 7) 打 tar.gz
@@ -348,6 +362,9 @@ async function main() {
 
       // snmp-bundle：覆盖到 /opt/webssh/app/snmp-bundle/（不存在则跳过）
       await exec(conn, `if [ -d ${mainSync}/snmp-bundle ]; then rm -rf ${INSTALL_DIR}/app/snmp-bundle && cp -a ${mainSync}/snmp-bundle ${INSTALL_DIR}/app/snmp-bundle && ls -la ${INSTALL_DIR}/app/snmp-bundle | head -20; else echo "main-sync 内无 snmp-bundle，跳过"; fi`, { allowNonZero: true });
+
+      // proto-conv/：覆盖到 /opt/webssh/app/proto-conv/（协议转换板块前端 iframe 子站）
+      await exec(conn, `if [ -d ${mainSync}/proto-conv ]; then if [ -d ${INSTALL_DIR}/app/proto-conv ]; then mv ${INSTALL_DIR}/app/proto-conv ${INSTALL_DIR}/app/proto-conv.bak-${stamp}; fi && cp -a ${mainSync}/proto-conv ${INSTALL_DIR}/app/proto-conv && ls ${INSTALL_DIR}/app/proto-conv/index.html >/dev/null && echo "proto-conv 已同步"; else echo "main-sync 内无 proto-conv，跳过"; fi`, { allowNonZero: true });
 
       // 重启主服务
       log(`重启 ${SERVICE} ...`);
