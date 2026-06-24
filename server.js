@@ -7018,6 +7018,10 @@ wssTcp.on('connection', function (ws) {
     if (global.__snmp && global.__snmp.syncFromHolding) {
       try { global.__snmp.syncFromHolding(); } catch (_e) {}
     }
+    // 通知 IEC104 模块刷新点表时间戳（实际推送由周期定时器承担）
+    if (global.__iec104 && global.__iec104.syncFromHolding) {
+      try { global.__iec104.syncFromHolding(); } catch (_e) {}
+    }
   }
 
   function devBaseAddr(deviceId) {
@@ -7088,6 +7092,10 @@ wssTcp.on('connection', function (ws) {
     // 通知 SNMP 重建 OID 树（设备列表变了，SNMP 那边的 oidList 也要跟着变）
     if (global.__snmp && global.__snmp.rebuild) {
       try { global.__snmp.rebuild(); } catch (_e) {}
+    }
+    // 通知 IEC104 重建点表（设备列表变了，IOA 也要重新分配）
+    if (global.__iec104 && global.__iec104.rebuild) {
+      try { global.__iec104.rebuild(); } catch (_e) {}
     }
     res.json({ ok: true, config: cfg, status: status });
   });
@@ -9213,6 +9221,848 @@ wssTcp.on('connection', function (ws) {
   });
 
   appendLog('webssh-video reverse proxy ready, apiBase=' + cfg.apiBase);
+})();
+
+// ===== 协议转换 → IEC 60870-5-104 转发 =====
+// 数据来源复用 setupModbusBridge.cfg.selectedDevices（不重复维护设备列表）
+// 本期只做服务端 + 仅监视方向：
+//   - U-frame: STARTDT_ACT/STOPDT_ACT/TESTFR_ACT 握手与心跳
+//   - I-frame: M_SP_NA_1（开关量 → 遥信）+ M_ME_NC_1（模拟量 → 遥测短浮点）
+//   - C_IC_NA_1: 总召唤 → 全量推送一遍 + ACTTERM
+//   - 遥控类 C_SC/DC/RC/SE_*_1 一律回 negative ACT_CON（本期不做遥控）
+// 编址：遥信、遥测两段 IOA 各自独立起始点号（cfg.ioaBase.singlePoint / measuredFloat），
+//      DeviceStatus 视为开关量并入遥信段。
+(function setupIec104Bridge() {
+  const path = require('path');
+
+  const CONFIG_PATH = process.env.IEC104_CONFIG || path.join(__dirname, 'config', 'proto-conv-iec104.json');
+  const LOG_PATH = process.env.IEC104_LOG || path.join(__dirname, 'logs', 'proto-conv-iec104.log');
+
+  const defaults = {
+    enabled: false,
+    port: 2405,             // 默认 2405（避开 dcim/其他系统可能占用的标准 2404）
+    commonAddr: 1,          // ASDU 公共地址（站号），16 位
+    cotSize: 2,             // 传送原因字节数：固定 2（含源发地址）
+    caSize: 2,              // 公共地址字节数：固定 2
+    ioaSize: 3,             // 信息对象地址字节数：固定 3
+    k: 12,                  // 最大未确认 I-frame 数（IEC 104 规约推荐 12）
+    w: 8,                   // 接收方累计未确认 I-frame 后必发 S-frame
+    t1Sec: 30,              // 发送或测试 APDU 的超时（默认 30s，规约推荐 15s 但要 >= 客户端 t2 避免抢断）
+    t2Sec: 10,              // 无数据时的确认超时（必须 t2 < t1）
+    t3Sec: 20,              // 长闲置情况下的测试帧超时
+    cyclicIntervalSec: 30,  // 周期上送间隔（秒）
+    enableSpont: true,      // 变化数据主动上送（COT=3 SPONT），由 modbus 轮询触发
+    deadbandFloat: 0.01,    // 模拟量死区：变化幅度 ≥ 此值才视为"有变化"，避免浮点抖动刷屏
+    ipWhitelist: [],
+    ioaBase: {
+      singlePoint: 1,       // 遥信段起始点号（M_SP_NA_1）
+      measuredFloat: 16385, // 遥测段起始点号（M_ME_NC_1，0x4001 行业惯例）
+    },
+  };
+
+  let cfg = JSON.parse(JSON.stringify(defaults));
+  function readCfg() {
+    try {
+      const raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+      cfg = Object.assign({}, defaults, raw);
+      cfg.ioaBase = Object.assign({}, defaults.ioaBase, raw.ioaBase || {});
+      if (!Array.isArray(cfg.ipWhitelist)) cfg.ipWhitelist = [];
+    } catch (_e) {
+      cfg = JSON.parse(JSON.stringify(defaults));
+    }
+  }
+  function writeCfg() {
+    try {
+      fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
+      fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+      try { fs.chmodSync(CONFIG_PATH, 0o600); } catch (_e) {}
+    } catch (err) { console.error('[iec104] 写配置失败:', err.message); }
+  }
+  readCfg();
+
+  function localStamp() {
+    const d = new Date();
+    const pad = (n) => (n < 10 ? '0' + n : '' + n);
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' +
+      pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+  }
+  function appendLog(line) {
+    try {
+      fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true });
+      fs.appendFileSync(LOG_PATH, '[' + localStamp() + '] ' + line + '\n', 'utf8');
+    } catch (_e) {}
+  }
+
+  // ----- 协议常量（参考 mujave/iec104 constant/Ti.java、Cot.java、UFrameControlType.java）-----
+  const TI = { M_SP_NA_1: 1, M_ME_NC_1: 13, C_SC_NA_1: 45, C_DC_NA_1: 46, C_RC_NA_1: 47,
+    C_SE_NA_1: 48, C_SE_NB_1: 49, C_SE_NC_1: 50, C_IC_NA_1: 100, C_CI_NA_1: 101, C_CS_NA_1: 103 };
+  const COT = { PER_CYC: 1, BACK: 2, SPONT: 3, INIT: 4, REQ: 5,
+    ACT: 6, ACTCON: 7, DEACT: 8, DEACTCON: 9, ACTTERM: 10,
+    INTROGEN: 20,
+    UNKNOWN_TYPE: 44, UNKNOWN_COT: 45, UNKNOWN_CA: 46, UNKNOWN_IOA: 47 };
+  const U_FRAME = {
+    STARTDT_ACT: 0x07, STARTDT_CON: 0x0B,
+    STOPDT_ACT:  0x13, STOPDT_CON:  0x23,
+    TESTFR_ACT:  0x43, TESTFR_CON:  0x83,
+  };
+
+  // ----- 点表 -----
+  // pointList：紧凑映射表，按设备顺序展开
+  //   [{ ioa, ti: M_SP_NA_1|M_ME_NC_1, kind: 'DeviceStatus'|'CurValue', deviceId, deviceName, paraName, unit, dataType, modbusAddr }]
+  let pointList = [];
+  let ioaIndex = {}; // ioa -> point（便于快速查找）
+  let lastSentValues = {}; // ioa -> { value, invalid }，SPONT 比对基线
+
+  function buildPointList() {
+    pointList = [];
+    ioaIndex = {};
+    lastSentValues = {}; // 点表重建后基线作废，下一轮 syncFromHolding 会重新初始化
+    const mbCfg = (global.__modbus && global.__modbus.getCfg && global.__modbus.getCfg()) || {};
+    const mapping = (global.__modbus && global.__modbus.getMapping && global.__modbus.getMapping()) || [];
+    const devices = mbCfg.selectedDevices || [];
+
+    // 把 modbus mapping 数据段按 deviceId 分组（拿到每个点在 holding buffer 里的地址）
+    const dataByDevice = {};
+    mapping.forEach(function (m) {
+      if (m.segment !== 'data') return;
+      (dataByDevice[m.deviceId] = dataByDevice[m.deviceId] || []).push(m);
+    });
+
+    let spIoa = (cfg.ioaBase && cfg.ioaBase.singlePoint) || 1;
+    let mfIoa = (cfg.ioaBase && cfg.ioaBase.measuredFloat) || 16385;
+
+    devices.forEach(function (dev) {
+      const items = dataByDevice[dev.deviceId] || [];
+      // 1. 设备状态视为遥信
+      const dsItem = items.find(function (m) { return m.kind === 'DeviceStatus'; });
+      if (dsItem) {
+        const p = {
+          ioa: spIoa++, ti: TI.M_SP_NA_1, kind: 'DeviceStatus',
+          deviceId: dev.deviceId, deviceName: dev.deviceName,
+          paraName: '在线状态', unit: '', dataType: '开关量',
+          modbusAddr: dsItem.addr, modbusLen: dsItem.len,
+        };
+        pointList.push(p);
+        ioaIndex[p.ioa] = p;
+      }
+      // 2. 参数按 dataType 分流：开关量 → 遥信，模拟量（含其他）→ 遥测短浮点
+      (dev.params || []).forEach(function (param) {
+        const dt = String(param.dataType == null ? '' : param.dataType);
+        const pmap = items.find(function (m) {
+          return m.kind === 'CurValue' && m.paraName === param.paraName;
+        });
+        if (!pmap) return;
+        const isSP = (dt === '开关量');
+        const p = {
+          ioa: isSP ? spIoa++ : mfIoa++,
+          ti: isSP ? TI.M_SP_NA_1 : TI.M_ME_NC_1,
+          kind: 'CurValue',
+          deviceId: dev.deviceId, deviceName: dev.deviceName,
+          paraName: param.paraName, unit: param.unit || '',
+          dataType: dt || '模拟量',
+          modbusAddr: pmap.addr, modbusLen: pmap.len,
+        };
+        pointList.push(p);
+        ioaIndex[p.ioa] = p;
+      });
+    });
+
+    status.pointCount = pointList.length;
+    status.singlePointCount = pointList.filter(function (p) { return p.ti === TI.M_SP_NA_1; }).length;
+    status.measuredFloatCount = pointList.filter(function (p) { return p.ti === TI.M_ME_NC_1; }).length;
+    status.deviceCount = devices.length;
+    return pointList.length;
+  }
+
+  function readPointValue(p) {
+    const holding = global.__modbus && global.__modbus.getHolding && global.__modbus.getHolding();
+    if (!holding || p.modbusAddr == null) {
+      return p.ti === TI.M_SP_NA_1 ? { value: 0, invalid: true } : { value: NaN, invalid: true };
+    }
+    if (p.ti === TI.M_SP_NA_1) {
+      // 开关量在 holding 里有两种存储：
+      //   DeviceStatus：1 个寄存器，INT16（1=在线 / 0=离线 / -1=未知）
+      //   开关量参数（CurValue, dataType="开关量"）：2 个寄存器，FLOAT32 BE（同模拟量格式，但值通常是 0.0/1.0）
+      // 用 modbusLen 区分；不命中长度时按 INT16 兜底。
+      if (p.modbusLen === 2) {
+        if ((p.modbusAddr + 2) * 2 > holding.length) return { value: 0, invalid: true };
+        const f = holding.readFloatBE(p.modbusAddr * 2);
+        if (!Number.isFinite(f)) return { value: 0, invalid: true };
+        // 阈值 0.5：dcim 端开关量上送 0.0/1.0 居多，留点余量给 0.99 这类舍入
+        return { value: f >= 0.5 ? 1 : 0, invalid: false };
+      }
+      if ((p.modbusAddr + 1) * 2 > holding.length) return { value: 0, invalid: true };
+      const v = holding.readInt16BE(p.modbusAddr * 2);
+      if (v === 1) return { value: 1, invalid: false };
+      if (v === 0) return { value: 0, invalid: false };
+      return { value: 0, invalid: true };
+    }
+    // M_ME_NC_1：FLOAT32 BE
+    if ((p.modbusAddr + 2) * 2 > holding.length) return { value: NaN, invalid: true };
+    const f = holding.readFloatBE(p.modbusAddr * 2);
+    if (!Number.isFinite(f)) return { value: 0, invalid: true };
+    return { value: f, invalid: false };
+  }
+
+  // ----- APCI 编解码 -----
+  // I-frame: c1 bit0=0；S-frame: c1=0x01；U-frame: c1 低 2 位 = 11
+  function encodeIFrame(sendSeq, recvSeq, asdu) {
+    const len = asdu.length + 4;
+    if (len > 253) throw new Error('APDU 超长 ' + len);
+    const buf = Buffer.alloc(6 + asdu.length);
+    buf[0] = 0x68; buf[1] = len;
+    // 发送序号 N(S) 左移 1 位，bit0=0 标记 I-frame
+    buf[2] = (sendSeq << 1) & 0xFE;
+    buf[3] = (sendSeq >> 7) & 0xFF;
+    buf[4] = (recvSeq << 1) & 0xFE;
+    buf[5] = (recvSeq >> 7) & 0xFF;
+    asdu.copy(buf, 6);
+    return buf;
+  }
+  function encodeSFrame(recvSeq) {
+    const buf = Buffer.alloc(6);
+    buf[0] = 0x68; buf[1] = 4;
+    buf[2] = 0x01; buf[3] = 0x00;
+    buf[4] = (recvSeq << 1) & 0xFE;
+    buf[5] = (recvSeq >> 7) & 0xFF;
+    return buf;
+  }
+  function encodeUFrame(uType) {
+    return Buffer.from([0x68, 4, uType, 0, 0, 0]);
+  }
+  function parseAPCI(buf) {
+    if (buf.length < 6 || buf[0] !== 0x68) throw new Error('bad APCI start');
+    const len = buf[1];
+    const c1 = buf[2], c2 = buf[3], c3 = buf[4], c4 = buf[5];
+    if ((c1 & 0x01) === 0) {
+      return { type: 'I', len: len, sendSeq: ((c2 << 7) | (c1 >> 1)) & 0x7FFF,
+        recvSeq: ((c4 << 7) | (c3 >> 1)) & 0x7FFF, asduLen: len - 4 };
+    }
+    if ((c1 & 0x03) === 0x01) {
+      return { type: 'S', len: len, recvSeq: ((c4 << 7) | (c3 >> 1)) & 0x7FFF };
+    }
+    return { type: 'U', len: len, uType: c1 };
+  }
+
+  // ----- ASDU 编码 -----
+  // ASDU 格式：[TI][VSQ][COT-2字节][CA-2字节][IO信息对象组...]
+  // VSQ = SQ(bit7) | N(bit6..0)；本实现 SQ=0（每个 IO 各自带 IOA）便于稀疏点表
+  function writeIoa(buf, off, ioa) {
+    buf[off]   = ioa & 0xFF;
+    buf[off+1] = (ioa >> 8) & 0xFF;
+    buf[off+2] = (ioa >> 16) & 0xFF;
+  }
+  function buildAsduHeader(ti, n, cot, ca) {
+    const h = Buffer.alloc(6);
+    h[0] = ti; h[1] = n & 0x7F;       // SQ=0
+    h[2] = cot & 0xFF; h[3] = 0x00;   // 源发地址留 0
+    h[4] = ca & 0xFF; h[5] = (ca >> 8) & 0xFF;
+    return h;
+  }
+  // M_SP_NA_1：每个 IO = 3字节 IOA + 1字节 SIQ（bit0=SPI；IV/NT/SB/BL 标志位 4..7）
+  function buildAsduSP(points, cot, ca) {
+    const n = points.length;
+    const h = buildAsduHeader(TI.M_SP_NA_1, n, cot, ca);
+    const body = Buffer.alloc(n * 4);
+    let off = 0;
+    points.forEach(function (it) {
+      writeIoa(body, off, it.point.ioa);
+      let siq = (it.value === 1) ? 0x01 : 0x00;
+      if (it.invalid) siq |= 0x80;    // IV
+      body[off + 3] = siq;
+      off += 4;
+    });
+    return Buffer.concat([h, body]);
+  }
+  // M_ME_NC_1：每个 IO = 3字节 IOA + 4字节 IEEE-754 短浮点（小端）+ 1字节 QDS
+  function buildAsduMF(points, cot, ca) {
+    const n = points.length;
+    const h = buildAsduHeader(TI.M_ME_NC_1, n, cot, ca);
+    const body = Buffer.alloc(n * 8);
+    let off = 0;
+    points.forEach(function (it) {
+      writeIoa(body, off, it.point.ioa);
+      const f = Number.isFinite(it.value) ? it.value : 0;
+      body.writeFloatLE(f, off + 3);
+      body[off + 7] = it.invalid ? 0x80 : 0x00;
+      off += 8;
+    });
+    return Buffer.concat([h, body]);
+  }
+  // C_IC_NA_1 ACTCON / ACTTERM：固定 1 个 IO，IOA=0，QOI=20（站总召唤）
+  function buildAsduInterrogationAck(cot, ca, qoi) {
+    const h = buildAsduHeader(TI.C_IC_NA_1, 1, cot, ca);
+    const body = Buffer.alloc(4);
+    writeIoa(body, 0, 0);
+    body[3] = qoi & 0xFF;
+    return Buffer.concat([h, body]);
+  }
+  // C_CI_NA_1 ACTCON / ACTTERM：固定 1 个 IO，IOA=0，QCC=5（计数器召唤，1 字节）
+  function buildAsduCounterInterrogationAck(cot, ca, qcc) {
+    const h = buildAsduHeader(TI.C_CI_NA_1, 1, cot, ca);
+    const body = Buffer.alloc(4);
+    writeIoa(body, 0, 0);
+    body[3] = qcc & 0xFF;
+    return Buffer.concat([h, body]);
+  }
+  // 通用 negative ACT_CON：用于本期不支持的遥控
+  function buildAsduNegativeActCon(ti, ioa, ca) {
+    const h = buildAsduHeader(ti, 1, COT.ACTCON | 0x40 /* P/N=1 negative */, ca);
+    const body = Buffer.alloc(3);
+    writeIoa(body, 0, ioa || 0);
+    return Buffer.concat([h, body]);
+  }
+
+  function chunk(arr, size) {
+    const out = [];
+    for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+    return out;
+  }
+
+  // ----- 连接会话 -----
+  // 每条 master 连接独立维护：sendSeq / recvSeq / inflight / startDt / t1/t2/t3 计时器 / 缓冲区
+  function createSession(socket, sessionId) {
+    const sess = {
+      id: sessionId,
+      socket: socket,
+      remoteAddr: socket.remoteAddress + ':' + socket.remotePort,
+      buf: Buffer.alloc(0),
+      sendSeq: 0,            // N(S)：本端待发的下一个 I-frame 序号
+      recvSeq: 0,            // N(R)：本端期望对方下一帧的序号 = 已收到的 I-frame 数
+      ackSeq: 0,             // 对方已确认到的本端 N(S)
+      pendingRecvUnack: 0,   // 收到 I-frame 数累计（≥w 时主动发 S-frame）
+      startDt: false,        // 是否处于 STARTDT 数据传输态
+      t1Timer: null,         // 等待对方确认 / 测试帧响应
+      t2Timer: null,         // S-frame 延迟确认
+      t3Timer: null,         // 长闲置测试
+      testFrPending: false,
+      sentIFrames: 0, recvIFrames: 0,
+      txQueue: [],           // 出站 ASDU 队列：inflight ≥ k 时入队，收到 ACK 时 drain
+      giInProgress: false,   // 总召唤进行中（防止周期帧抢窗口）
+      ciInProgress: false,   // 计数器召唤进行中
+      connectAt: localStamp(),
+      lastActivityAt: localStamp(),
+    };
+
+    function clearT1() { if (sess.t1Timer) { clearTimeout(sess.t1Timer); sess.t1Timer = null; } }
+    function clearT2() { if (sess.t2Timer) { clearTimeout(sess.t2Timer); sess.t2Timer = null; } }
+    function clearT3() { if (sess.t3Timer) { clearTimeout(sess.t3Timer); sess.t3Timer = null; } }
+    function armT3() {
+      clearT3();
+      sess.t3Timer = setTimeout(function () {
+        if (socket.destroyed) return;
+        try { socket.write(encodeUFrame(U_FRAME.TESTFR_ACT)); sess.testFrPending = true; armT1(); } catch (_e) {}
+      }, (cfg.t3Sec || 20) * 1000);
+    }
+    function armT1() {
+      clearT1();
+      sess.t1Timer = setTimeout(function () {
+        appendLog('[' + sess.remoteAddr + '] T1 超时（' + (cfg.t1Sec || 30) + 's 未收 ACK），断开');
+        try { socket.destroy(); } catch (_e) {}
+      }, (cfg.t1Sec || 30) * 1000);
+    }
+    function armT2() {
+      clearT2();
+      sess.t2Timer = setTimeout(function () {
+        if (socket.destroyed || !sess.startDt) return;
+        if (sess.pendingRecvUnack > 0) {
+          try { socket.write(encodeSFrame(sess.recvSeq)); sess.pendingRecvUnack = 0; } catch (_e) {}
+        }
+      }, (cfg.t2Sec || 10) * 1000);
+    }
+    sess.armT3 = armT3;
+
+    function inflight() {
+      let n = sess.sendSeq - sess.ackSeq;
+      if (n < 0) n += 0x8000;
+      return n;
+    }
+    sess.canSend = function () { return sess.startDt && inflight() < (cfg.k || 12); };
+
+    // 发送一帧 I-frame；如果 inflight 已满则入队，等收到 ACK 后再 drain
+    sess.sendIFrame = function (asdu) {
+      if (!sess.startDt) return false;
+      sess.txQueue.push(asdu);
+      drainQueue();
+      return true;
+    };
+
+    // 把队列里能发的 I-frame 一次性发出去
+    function drainQueue() {
+      const k = cfg.k || 12;
+      let sent = 0;
+      while (sess.txQueue.length > 0 && sess.startDt && inflight() < k) {
+        const asdu = sess.txQueue.shift();
+        try {
+          socket.write(encodeIFrame(sess.sendSeq, sess.recvSeq, asdu));
+        } catch (e) {
+          appendLog('[' + sess.remoteAddr + '] 发送异常 ' + e.message);
+          sess.txQueue.length = 0;
+          return;
+        }
+        sess.sendSeq = (sess.sendSeq + 1) & 0x7FFF;
+        sess.sentIFrames += 1;
+        status.totalSent += 1;
+        sent += 1;
+        armT3();
+      }
+      // 每轮 drain 后：只要还有未确认帧就刷 T1（让 T1 跟最近一次发送对齐，避免被早期 arm 卡住）
+      if (sent > 0 && inflight() > 0) armT1();
+      if (sess.txQueue.length > 0) {
+        // 仅在堆积较多时打日志，避免刷屏
+        if (sess.txQueue.length % 5 === 0) {
+          appendLog('[' + sess.remoteAddr + '] 队列暂存 ' + sess.txQueue.length + ' 帧（inflight=' + inflight() + '/k=' + k + '）');
+        }
+      }
+    }
+    sess.drainQueue = drainQueue;
+
+    function handleAPDU(apdu) {
+      sess.lastActivityAt = localStamp();
+      let info;
+      try { info = parseAPCI(apdu); }
+      catch (e) { appendLog('[' + sess.remoteAddr + '] APCI 解析失败: ' + e.message); return; }
+      armT3();
+
+      if (info.type === 'U') {
+        handleU(info);
+      } else if (info.type === 'S') {
+        sess.ackSeq = info.recvSeq;
+        if (inflight() === 0) clearT1();
+        // 收到 ACK，可能腾出 inflight 配额，drain 一次
+        drainQueue();
+      } else {
+        // I-frame
+        sess.ackSeq = info.recvSeq;
+        if (inflight() === 0) clearT1();
+        sess.recvSeq = (info.sendSeq + 1) & 0x7FFF;
+        sess.recvIFrames += 1;
+        sess.pendingRecvUnack += 1;
+        if (sess.pendingRecvUnack >= (cfg.w || 8)) {
+          try { socket.write(encodeSFrame(sess.recvSeq)); } catch (_e) {}
+          sess.pendingRecvUnack = 0;
+          clearT2();
+        } else {
+          armT2();
+        }
+        const asdu = apdu.slice(6);
+        handleASDU(asdu);
+        // ASDU 处理可能产生回包；同时对方 N(R) 也可能腾出配额
+        drainQueue();
+      }
+    }
+
+    function handleU(info) {
+      switch (info.uType) {
+        case U_FRAME.STARTDT_ACT:
+          sess.startDt = true;
+          try { socket.write(encodeUFrame(U_FRAME.STARTDT_CON)); } catch (_e) {}
+          appendLog('[' + sess.remoteAddr + '] STARTDT_ACT → CON');
+          break;
+        case U_FRAME.STOPDT_ACT:
+          sess.startDt = false;
+          try { socket.write(encodeUFrame(U_FRAME.STOPDT_CON)); } catch (_e) {}
+          appendLog('[' + sess.remoteAddr + '] STOPDT_ACT → CON');
+          break;
+        case U_FRAME.TESTFR_ACT:
+          try { socket.write(encodeUFrame(U_FRAME.TESTFR_CON)); } catch (_e) {}
+          break;
+        case U_FRAME.TESTFR_CON:
+          sess.testFrPending = false;
+          if (inflight() === 0) clearT1();
+          break;
+        default:
+          appendLog('[' + sess.remoteAddr + '] 未知 U-frame 0x' + info.uType.toString(16));
+      }
+    }
+
+    function handleASDU(asdu) {
+      if (asdu.length < 6) return;
+      const ti = asdu[0];
+      const cot = asdu[2] & 0x3F;
+      const ca = asdu[4] | (asdu[5] << 8);
+      // 公共地址不匹配 → 回 UNKNOWN_CA（仅对 ACT 类）
+      if (ca !== cfg.commonAddr && ca !== 0xFFFF) {
+        appendLog('[' + sess.remoteAddr + '] CA 不匹配 got=' + ca + ' expect=' + cfg.commonAddr);
+        return;
+      }
+      if (ti === TI.C_IC_NA_1 && cot === COT.ACT) {
+        // 总召唤
+        const qoi = asdu.length >= 10 ? asdu[9] : 20;
+        appendLog('[' + sess.remoteAddr + '] C_IC_NA_1 ACT QOI=' + qoi + ' → 全量推送');
+        // 1) ACT_CON
+        sess.sendIFrame(buildAsduInterrogationAck(COT.ACTCON, cfg.commonAddr, qoi));
+        // 2) 全量数据（COT=20 INTROGEN）
+        sendAllPoints(sess, COT.INTROGEN);
+        // 3) ACTTERM（即使 inflight 已满也会进入 txQueue，等 ACK 后由 drainQueue 自动发出）
+        sess.sendIFrame(buildAsduInterrogationAck(COT.ACTTERM, cfg.commonAddr, qoi));
+        return;
+      }
+      if (ti === TI.C_CI_NA_1 && cot === COT.ACT) {
+        // 计数器召唤：本期不维护计数器，按规约要求回 ACT_CON 然后 ACTTERM（无数据帧）
+        const qcc = asdu.length >= 10 ? asdu[9] : 5;
+        appendLog('[' + sess.remoteAddr + '] C_CI_NA_1 ACT QCC=' + qcc + ' → 空响应（本期无计数器）');
+        sess.sendIFrame(buildAsduCounterInterrogationAck(COT.ACTCON, cfg.commonAddr, qcc));
+        sess.sendIFrame(buildAsduCounterInterrogationAck(COT.ACTTERM, cfg.commonAddr, qcc));
+        return;
+      }
+      if (ti === TI.C_CS_NA_1 && cot === COT.ACT) {
+        // 时钟同步：本期不实际同步，回 ACT_CON（带原 IO 但忽略时间值）
+        const ack = buildAsduHeader(TI.C_CS_NA_1, 1, COT.ACTCON, cfg.commonAddr);
+        const body = Buffer.alloc(10);
+        if (asdu.length >= 16) asdu.copy(body, 0, 6, 16);
+        sess.sendIFrame(Buffer.concat([ack, body]));
+        return;
+      }
+      // 遥控类：本期一律拒绝
+      if (ti === TI.C_SC_NA_1 || ti === TI.C_DC_NA_1 || ti === TI.C_RC_NA_1 ||
+          ti === TI.C_SE_NA_1 || ti === TI.C_SE_NB_1 || ti === TI.C_SE_NC_1) {
+        const ioa = asdu[6] | (asdu[7] << 8) | (asdu[8] << 16);
+        appendLog('[' + sess.remoteAddr + '] 收到遥控 TI=' + ti + ' IOA=' + ioa + '，回 negative ACT_CON');
+        sess.sendIFrame(buildAsduNegativeActCon(ti, ioa, cfg.commonAddr));
+        return;
+      }
+      appendLog('[' + sess.remoteAddr + '] 未处理 ASDU TI=' + ti + ' COT=' + cot);
+    }
+
+    sess.handle = function (chunkBuf) {
+      sess.buf = Buffer.concat([sess.buf, chunkBuf]);
+      while (sess.buf.length >= 2) {
+        if (sess.buf[0] !== 0x68) {
+          appendLog('[' + sess.remoteAddr + '] 同步丢失，丢弃 1 字节');
+          sess.buf = sess.buf.slice(1);
+          continue;
+        }
+        const apduLen = sess.buf[1] + 2;
+        if (sess.buf.length < apduLen) break;
+        const apdu = sess.buf.slice(0, apduLen);
+        sess.buf = sess.buf.slice(apduLen);
+        handleAPDU(apdu);
+      }
+    };
+
+    sess.cleanup = function () {
+      clearT1(); clearT2(); clearT3();
+    };
+
+    armT3();
+    return sess;
+  }
+
+  function sendAllPoints(sess, cot) {
+    if (!sess || !sess.startDt) return;
+    if (pointList.length === 0) buildPointList();
+    const sps = [], mfs = [];
+    pointList.forEach(function (p) {
+      const v = readPointValue(p);
+      if (p.ti === TI.M_SP_NA_1) sps.push({ point: p, value: v.value, invalid: v.invalid });
+      else if (p.ti === TI.M_ME_NC_1) mfs.push({ point: p, value: v.value, invalid: v.invalid });
+    });
+    // APDU 长度上限 253 → ASDU 上限 249，N=127 时 SP 仅需 6+127*4=514（超）
+    // 安全分块：SP 50 个/帧（206B），MF 25 个/帧（206B）
+    chunk(sps, 50).forEach(function (g) { sess.sendIFrame(buildAsduSP(g, cot, cfg.commonAddr)); });
+    chunk(mfs, 25).forEach(function (g) { sess.sendIFrame(buildAsduMF(g, cot, cfg.commonAddr)); });
+  }
+
+  // ----- TCP server -----
+  let netServer = null;
+  let sessions = {};
+  let nextSessionId = 1;
+  let cyclicTimer = null;
+  const status = {
+    running: false, port: 0,
+    deviceCount: 0, pointCount: 0, singlePointCount: 0, measuredFloatCount: 0,
+    clientCount: 0, totalSent: 0, totalSpont: 0,
+    lastSyncAt: '', lastSpontAt: '', lastError: '',
+  };
+
+  function stopServer() {
+    if (cyclicTimer) { clearInterval(cyclicTimer); cyclicTimer = null; }
+    Object.keys(sessions).forEach(function (id) {
+      try { sessions[id].cleanup(); sessions[id].socket.destroy(); } catch (_e) {}
+    });
+    sessions = {};
+    if (netServer) {
+      try { netServer.close(); } catch (_e) {}
+      netServer = null;
+    }
+    status.running = false;
+    status.port = 0;
+    status.clientCount = 0;
+    appendLog('IEC104 server stopped');
+  }
+
+  function startServer() {
+    if (netServer) stopServer();
+    if (!cfg.enabled) return;
+    buildPointList();
+    if (pointList.length === 0) {
+      status.lastError = '无可暴露的点（请先在「Modbus 转发」选设备）';
+      appendLog('启动失败：' + status.lastError);
+      return;
+    }
+    netServer = net.createServer(function (socket) {
+      const srcIp = socket.remoteAddress;
+      if (cfg.ipWhitelist && cfg.ipWhitelist.length) {
+        const ok = cfg.ipWhitelist.some(function (w) { return srcIp === w || srcIp === '::ffff:' + w; });
+        if (!ok) {
+          appendLog('IP 拦截 src=' + srcIp);
+          try { socket.destroy(); } catch (_e) {}
+          return;
+        }
+      }
+      const id = nextSessionId++;
+      const sess = createSession(socket, id);
+      sessions[id] = sess;
+      status.clientCount = Object.keys(sessions).length;
+      appendLog('[' + sess.remoteAddr + '] 连接接入 session=' + id);
+
+      socket.on('data', function (b) { try { sess.handle(b); } catch (e) { appendLog('handle err: ' + e.message); } });
+      socket.on('close', function () {
+        sess.cleanup();
+        delete sessions[id];
+        status.clientCount = Object.keys(sessions).length;
+        appendLog('[' + sess.remoteAddr + '] 断开 session=' + id +
+          ' sentI=' + sess.sentIFrames + ' recvI=' + sess.recvIFrames);
+      });
+      socket.on('error', function (err) {
+        appendLog('[' + sess.remoteAddr + '] socket error: ' + err.message);
+      });
+    });
+    netServer.on('error', function (err) {
+      status.lastError = err.message;
+      status.running = false;
+      appendLog('netServer error: ' + err.message);
+    });
+    netServer.listen(cfg.port, '0.0.0.0', function () {
+      status.running = true;
+      status.port = cfg.port;
+      status.lastError = '';
+      appendLog('IEC104 server listening on 0.0.0.0:' + cfg.port +
+        ' points=' + pointList.length +
+        ' (SP=' + status.singlePointCount + ' MF=' + status.measuredFloatCount + ')');
+    });
+    // 周期上送：只检查 txQueue 是否为空（避免新批次叠在没消化的旧批次上），
+    // 不检查 inflight——客户端按 w=8 边界 ACK 时 inflight 几乎永远 > 0，
+    // 卡 inflight 会让周期帧永远轮不上。流控由 drainQueue 的 k 上限保证。
+    cyclicTimer = setInterval(function () {
+      try {
+        Object.keys(sessions).forEach(function (id) {
+          const s = sessions[id];
+          if (!s || !s.startDt) return;
+          if (s.txQueue && s.txQueue.length > 0) return;
+          sendAllPoints(s, COT.PER_CYC);
+        });
+        status.lastSyncAt = localStamp();
+      } catch (e) { appendLog('cyclic err: ' + e.message); }
+    }, Math.max(1, cfg.cyclicIntervalSec || 30) * 1000);
+  }
+
+  // 由 setupModbusBridge.pollOnce 末尾调用（周期 = cfg.pollIntervalSec，默认 5s）：
+  // 比对 holding buffer 当前值与上一次基线，找出变化点，以 COT=3 SPONT 主动推给所有 STARTDT 在线会话。
+  // - 开关量：值翻转或 IV 标志变化即推
+  // - 模拟量：|cur - prev| ≥ deadbandFloat 才推；IV 标志变化也推
+  // - 第一次调用：仅初始化基线，不发 SPONT（避免启动时刷一波）
+  // - 没有 STARTDT 在线会话时跳过比对（节省 CPU；下次有人接入时初始化基线）
+  function syncFromHolding() {
+    status.lastSyncAt = localStamp();
+    if (!cfg.enableSpont) return;
+    if (!pointList || pointList.length === 0) return;
+
+    const activeSessions = Object.keys(sessions).filter(function (id) {
+      return sessions[id] && sessions[id].startDt;
+    });
+    if (activeSessions.length === 0) {
+      // 无在线 master：基线作废，下次再初始化（避免后续连接进来后误把"启动以来累积的变化"全推一遍）
+      lastSentValues = {};
+      return;
+    }
+
+    // 第一次：初始化基线，不发 SPONT
+    if (Object.keys(lastSentValues).length === 0) {
+      pointList.forEach(function (p) {
+        const v = readPointValue(p);
+        lastSentValues[p.ioa] = { value: v.value, invalid: v.invalid };
+      });
+      return;
+    }
+
+    const deadband = (cfg.deadbandFloat != null) ? Number(cfg.deadbandFloat) : 0.01;
+    const changedSps = [];
+    const changedMfs = [];
+
+    pointList.forEach(function (p) {
+      const cur = readPointValue(p);
+      const prev = lastSentValues[p.ioa];
+      let changed = false;
+      if (!prev) {
+        changed = true;
+      } else if (cur.invalid !== prev.invalid) {
+        changed = true;
+      } else if (p.ti === TI.M_SP_NA_1) {
+        if (cur.value !== prev.value) changed = true;
+      } else {
+        // 模拟量：当前有效时按死区比较；都无效时不算变化
+        if (!cur.invalid && Math.abs(cur.value - prev.value) >= deadband) changed = true;
+      }
+      if (changed) {
+        lastSentValues[p.ioa] = { value: cur.value, invalid: cur.invalid };
+        const item = { point: p, value: cur.value, invalid: cur.invalid };
+        if (p.ti === TI.M_SP_NA_1) changedSps.push(item);
+        else if (p.ti === TI.M_ME_NC_1) changedMfs.push(item);
+      }
+    });
+
+    const totalChanged = changedSps.length + changedMfs.length;
+    if (totalChanged === 0) return;
+
+    appendLog('SPONT 检测到变化：SP=' + changedSps.length + ' MF=' + changedMfs.length +
+      ' → 推 ' + activeSessions.length + ' 个会话');
+    status.totalSpont += totalChanged;
+    status.lastSpontAt = localStamp();
+
+    activeSessions.forEach(function (id) {
+      const s = sessions[id];
+      chunk(changedSps, 50).forEach(function (g) {
+        s.sendIFrame(buildAsduSP(g, COT.SPONT, cfg.commonAddr));
+      });
+      chunk(changedMfs, 25).forEach(function (g) {
+        s.sendIFrame(buildAsduMF(g, COT.SPONT, cfg.commonAddr));
+      });
+    });
+  }
+
+  // ----- 路由 -----
+  function aggregateStatus() {
+    const clients = Object.keys(sessions).map(function (id) {
+      const s = sessions[id];
+      return {
+        sessionId: id, remoteAddr: s.remoteAddr,
+        startDt: s.startDt,
+        sendSeq: s.sendSeq, recvSeq: s.recvSeq, ackSeq: s.ackSeq,
+        sentIFrames: s.sentIFrames, recvIFrames: s.recvIFrames,
+        connectAt: s.connectAt, lastActivityAt: s.lastActivityAt,
+      };
+    });
+    return Object.assign({}, status, { enabled: !!cfg.enabled, clients: clients });
+  }
+
+  app.get('/api/proto-conv/iec104/config', function (_req, res) {
+    res.json({ ok: true, config: cfg, status: aggregateStatus() });
+  });
+
+  app.put('/api/proto-conv/iec104/config', function (req, res) {
+    const b = req.body || {};
+    const next = JSON.parse(JSON.stringify(cfg));
+    if (typeof b.enabled === 'boolean') next.enabled = b.enabled;
+    if (b.port != null) {
+      const p = Number(b.port) | 0;
+      if (p < 1 || p > 65535) return res.status(400).json({ ok: false, message: 'port 范围 1-65535' });
+      next.port = p;
+    }
+    if (b.commonAddr != null) {
+      const c = Number(b.commonAddr) | 0;
+      if (c < 1 || c > 65534) return res.status(400).json({ ok: false, message: 'commonAddr 范围 1-65534' });
+      next.commonAddr = c;
+    }
+    if (b.cyclicIntervalSec != null) {
+      const s = Number(b.cyclicIntervalSec) | 0;
+      if (s < 1 || s > 3600) return res.status(400).json({ ok: false, message: 'cyclicIntervalSec 范围 1-3600' });
+      next.cyclicIntervalSec = s;
+    }
+    if (typeof b.enableSpont === 'boolean') next.enableSpont = b.enableSpont;
+    if (b.deadbandFloat != null) {
+      const d = Number(b.deadbandFloat);
+      if (!Number.isFinite(d) || d < 0 || d > 1e9) {
+        return res.status(400).json({ ok: false, message: 'deadbandFloat 必须是 ≥0 的有限数' });
+      }
+      next.deadbandFloat = d;
+    }
+    if (b.ioaBase && typeof b.ioaBase === 'object') {
+      const sp = Number(b.ioaBase.singlePoint);
+      const mf = Number(b.ioaBase.measuredFloat);
+      if (Number.isFinite(sp)) {
+        if (sp < 1 || sp > 0xFFFFFF) return res.status(400).json({ ok: false, message: '遥信起始点号范围 1-16777215' });
+        next.ioaBase.singlePoint = sp | 0;
+      }
+      if (Number.isFinite(mf)) {
+        if (mf < 1 || mf > 0xFFFFFF) return res.status(400).json({ ok: false, message: '遥测起始点号范围 1-16777215' });
+        next.ioaBase.measuredFloat = mf | 0;
+      }
+    }
+    if (Array.isArray(b.ipWhitelist)) {
+      next.ipWhitelist = b.ipWhitelist
+        .map(function (s) { return String(s == null ? '' : s).trim(); })
+        .filter(Boolean);
+    }
+    cfg = next;
+    writeCfg();
+    appendLog('配置已更新 enabled=' + cfg.enabled + ' port=' + cfg.port +
+      ' CA=' + cfg.commonAddr + ' SP起始=' + cfg.ioaBase.singlePoint +
+      ' MF起始=' + cfg.ioaBase.measuredFloat + ' cyclic=' + cfg.cyclicIntervalSec + 's');
+    stopServer();
+    if (cfg.enabled) startServer();
+    res.json({ ok: true, config: cfg, status: aggregateStatus() });
+  });
+
+  app.post('/api/proto-conv/iec104/start', function (_req, res) {
+    cfg.enabled = true; writeCfg();
+    stopServer(); startServer();
+    res.json({ ok: status.running, status: aggregateStatus(), message: status.lastError || '' });
+  });
+
+  app.post('/api/proto-conv/iec104/stop', function (_req, res) {
+    cfg.enabled = false; writeCfg();
+    stopServer();
+    res.json({ ok: true, status: aggregateStatus() });
+  });
+
+  app.get('/api/proto-conv/iec104/status', function (_req, res) {
+    res.json({ ok: true, status: aggregateStatus() });
+  });
+
+  app.get('/api/proto-conv/iec104/clients', function (_req, res) {
+    res.json({ ok: true, clients: aggregateStatus().clients });
+  });
+
+  app.get('/api/proto-conv/iec104/map.csv', function (_req, res) {
+    buildPointList();
+    const lines = ['IOA,类型标识,字段,设备ID,设备名称,参数名,单位,数据类型'];
+    const tiName = function (ti) { return ti === TI.M_SP_NA_1 ? 'M_SP_NA_1(遥信)' : (ti === TI.M_ME_NC_1 ? 'M_ME_NC_1(遥测短浮点)' : String(ti)); };
+    const csvEsc = function (s) {
+      s = String(s == null ? '' : s);
+      if (/[",\n]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+      return s;
+    };
+    pointList.forEach(function (p) {
+      lines.push([
+        csvEsc(p.ioa), csvEsc(tiName(p.ti)), csvEsc(p.kind),
+        csvEsc(p.deviceId), csvEsc(p.deviceName), csvEsc(p.paraName),
+        csvEsc(p.unit || ''), csvEsc(p.dataType || ''),
+      ].join(','));
+    });
+    const buf = Buffer.from('﻿' + lines.join('\r\n'), 'utf8');
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="iec104-point-map.csv"');
+    res.end(buf);
+  });
+
+  // 自启（等 modbus 先就绪以便 buildPointList 拿到 selectedDevices）
+  setTimeout(function () {
+    if (cfg.enabled) {
+      try { startServer(); } catch (e) { appendLog('自启失败: ' + e.message); }
+    }
+    appendLog('IEC104 模块就绪 enabled=' + cfg.enabled + ' port=' + cfg.port +
+      ' SP起始=' + cfg.ioaBase.singlePoint + ' MF起始=' + cfg.ioaBase.measuredFloat);
+  }, 1500);
+
+  global.__iec104 = {
+    syncFromHolding: syncFromHolding,
+    isEnabled: function () { return !!cfg.enabled; },
+    rebuild: function () {
+      try { stopServer(); if (cfg.enabled) startServer(); } catch (_e) {}
+    },
+  };
 })();
 
 const port = Number(process.env.PORT || 3000);

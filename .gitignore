@@ -39,3 +39,6 @@ video/vendor/flv.min.js
 
 # 协议文档解压目录（保留 .rar 原始包即可）
 协议文档/离线麒麟系统主机获取SNMP(1)/
+
+# VS Code workspace settings may contain API keys or secrets
+.vscode/settings.json

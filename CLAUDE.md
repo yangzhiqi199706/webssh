@@ -849,6 +849,136 @@ session.subtree('1.3.6.1.4.1.99999', vbs => console.log(vbs), () => session.clos
 
 ------------------------------------------------------------
 
+### 9.11 IEC 60870-5-104 转发（2026-06-24 新增）
+
+把 Modbus 转发已选设备的实时数据，按电网规约 **IEC 60870-5-104**（DL/T634.5104-2009）暴露给主站 / SCADA。
+本期**只做服务端 + 仅监视方向**，不做遥控。
+
+**参考**：[mujave/iec104](https://github.com/mujave/iec104)（Java + Netty 实现，仅参考其 APCI/ASDU 拆解逻辑和 Ti/Cot/UFrameControlType 枚举值；本仓库纯 JS 自研，不引入 Java 依赖）。
+
+**端口**：默认 **2405**（避开 dcim/其他系统可能占用的标准 2404），UI 可改 1-65535。
+
+**配置文件**：`config/proto-conv-iec104.json`，UI 写入，chmod 0600，**不入 git**。schema：
+```json
+{
+  "enabled": false,
+  "port": 2405,
+  "commonAddr": 1,
+  "k": 12, "w": 8,
+  "t1Sec": 15, "t2Sec": 10, "t3Sec": 20,
+  "cyclicIntervalSec": 30,
+  "ipWhitelist": [],
+  "ioaBase": {
+    "singlePoint": 1,
+    "measuredFloat": 16385
+  }
+}
+```
+
+**点表分流（关键）**：
+- `dataType = "模拟量"` → **遥测短浮点 M_ME_NC_1（TI=13）**，IOA 从 `ioaBase.measuredFloat` 起递增（默认 16385 = 0x4001）
+- `dataType = "开关量"` → **遥信 M_SP_NA_1（TI=1）**，IOA 从 `ioaBase.singlePoint` 起递增（默认 1）
+- 设备级 `DeviceStatus` 视为开关量，并入遥信段
+- 两段起始点号都可在 UI 自定义，互不干扰
+
+**点表展开顺序**（与 Modbus 转发选定的设备顺序一致）：
+- 对每个设备：先发 DeviceStatus 占 1 个 SP IOA，然后该设备所有 params 按声明顺序，开关量进 SP 段、模拟量进 MF 段
+- 设备列表变更（Modbus 选了/去了设备）→ `global.__iec104.rebuild()` 自动触发，IOA 重新分配并重启 server
+
+**支持的协议交互**：
+- U-frame：STARTDT_ACT/CON、STOPDT_ACT/CON、TESTFR_ACT/CON（双向心跳）
+- S-frame：累计 `w=8` 个 I-frame 主动 ACK；`t2=10s` 延迟 ACK
+- I-frame：N(S)/N(R) 序号 + `k=12` 流控（`txQueue` 出站队列：超 k 入队，ACK 到 drain）；`t1=30s` 超时断链；`t3=20s` 长闲置主动测试
+- 周期上送：每 `cyclicIntervalSec` 秒（默认 30s）对所有 STARTDT 在线 master 推一次全量，COT=1（PER_CYC）。准入条件**仅检查 `txQueue` 是否为空**（不卡 inflight，否则客户端按 w=8 边界 ACK 时永远轮不上）
+- **变化主动上送（SPONT，COT=3）**：modbus 每 5s 轮询一次 dcim，比对 `lastSentValues` 基线找变化点，立即推给所有 STARTDT 在线 master：
+  - 开关量：值翻转 OR IV 标志变化即推
+  - 模拟量：`|cur - prev| ≥ deadbandFloat` OR IV 标志变化才推（默认 deadband 0.01，避免浮点抖动）
+  - 第一次调用：仅初始化基线，不发 SPONT；无在线 master：基线作废
+  - 与周期帧独立，分块上限同周期（SP 50/帧、MF 25/帧）
+- C_IC_NA_1 总召唤：回 ACT_CON → 全量 I-frame（COT=20 INTROGEN）→ ACT_TERM
+- C_CI_NA_1 计数器召唤：回 ACT_CON + ACT_TERM（无数据帧，本期不维护计数器）
+- C_CS_NA_1 时钟同步：回 ACT_CON（不实际同步本地时钟）
+
+**不实现**：
+- 遥控类 `C_SC_NA_1 / C_DC_NA_1 / C_RC_NA_1 / C_SE_N{A,B,C}_1` 一律回 negative ACT_CON（COT 的 P/N 位 = 1）
+- 带时标版本（M_ME_TF_1 / M_SP_TB_1 等）—— 现场如需可后续切 TI=36/30
+- 双主站冗余、热备切换
+- IEC 101 / 102 / 103 / 60870-5-101 串口规约
+
+**配置 schema 关键字段**（`config/proto-conv-iec104.json`，chmod 0600，不入 git）：
+```json
+{
+  "enabled": false,
+  "port": 2405,
+  "commonAddr": 1,
+  "k": 12, "w": 8,
+  "t1Sec": 30,            // 必须 ≥ 客户端 t2，否则尾帧延迟 ACK 触发误断
+  "t2Sec": 10,
+  "t3Sec": 20,
+  "cyclicIntervalSec": 30,
+  "enableSpont": true,    // 变化主动上送总开关
+  "deadbandFloat": 0.01,  // 模拟量死区（0 = 任何变化都推；大 = 滤掉小抖动）
+  "ipWhitelist": [],
+  "ioaBase": { "singlePoint": 1, "measuredFloat": 16385 }
+}
+```
+
+**寄存器/数据流**：与 SNMP 模块完全对称——共享 `setupModbusBridge` 的 holding buffer 和 selectedDevices；
+不重复维护设备列表，不增加 dcim QPS。`setupModbusBridge.pollOnce` 末尾会调
+`global.__iec104.syncFromHolding()`，该函数现在承担 **SPONT 变化检测 + 推送**职责（之前只是刷时间戳）。
+真正的"全量推送"由 `cyclicTimer` 周期帧承担。
+
+**⚠ 读 holding 的坑（已修复，2026-06-25）**：modbus holding buffer 里只有 **`DeviceStatus` 是 INT16（1 个寄存器）**，
+所有参数 `CurValue`（包括 `dataType="开关量"` 的）都是 **FLOAT32 BE（2 个寄存器）**——dcim 上送开关量也是 `0.0`/`1.0` 浮点。
+所以 `readPointValue` 必须按 `modbusLen` 区分：`len=1` 走 INT16，`len=2` 走 FLOAT32 并用阈值 0.5 折算 SPI。
+**别再写 "M_SP_NA_1 → 一律 INT16"** 这种简化逻辑，会让所有开关量参数 SPI 永远是 0。
+
+**APDU 长度限制**：规约硬上限 253 字节（含 4 字节控制段）→ ASDU 上限 249。
+为安全计单帧最多 50 个 SP（206B）或 25 个 MF（206B），超出自动分多帧。
+
+**IP 白名单**：UI 配置数组，空 = 不限制；非白名单 IP 接入立即 `socket.destroy()`。
+正式生产仍建议在 `firewalld` 层面做硬限制。
+
+**路由清单（server.js 末尾 `setupIec104Bridge` IIFE）**：
+| 路由 | 用途 |
+| -- | -- |
+| `GET  /api/proto-conv/iec104/config`  | 读配置 + 状态 |
+| `PUT  /api/proto-conv/iec104/config`  | 保存（含 port/commonAddr/cyclicIntervalSec/enableSpont/deadbandFloat/ioaBase/ipWhitelist）；自动重启 server |
+| `POST /api/proto-conv/iec104/start`   | 显式启用 |
+| `POST /api/proto-conv/iec104/stop`    | 显式停用 |
+| `GET  /api/proto-conv/iec104/status`  | enabled / running / port / pointCount / singlePointCount / measuredFloatCount / clientCount / totalSent / **totalSpont** / lastSyncAt / **lastSpontAt** / lastError + clients[] |
+| `GET  /api/proto-conv/iec104/clients` | 当前连接的 master 列表（IP / STARTDT / N(S) N(R) / 已收发 I-frame / 最近活动） |
+| `GET  /api/proto-conv/iec104/map.csv` | 点表 CSV：IOA / 类型标识 / 字段 / 设备ID / 设备名称 / 参数名 / 单位 / 数据类型 |
+
+**UI 入口**：协议转换顶栏「IEC 104 转发」按钮（紫色，LED 灯指示状态：灰未启用 / 绿运行中 / 红错误）。
+弹窗里能改端口 / CA / 遥信遥测两段起始点号 / 周期 / **SPONT 开关 / 模拟量死区** / IP 白名单，
+状态条实时显示 `已发 I-frame N · SPONT N · 上次 SPONT 时间`，并列出在线 master 列表。
+
+**日志**：`logs/proto-conv-iec104.log`。
+
+**联动**：
+- `setupModbusBridge.pollOnce` 末尾追加 `global.__iec104.syncFromHolding()` 刷时间戳
+- `setupModbusBridge PUT /modbus/config` 末尾追加 `global.__iec104.rebuild()`，设备改了点表自动重建
+- 控制模块改动**不联动** IEC104（本期不做遥控）
+
+**验证**：
+```bash
+PORT=3010 node server.js
+# 用 QTester104（https://sourceforge.net/projects/qtester104/）：
+#   IP=127.0.0.1 Port=2405 CA=1
+#   连接 → 发送 STARTDT → 发送 General Interrogation → 看左侧点表实时刷
+ss -lntp | grep 2405          # 服务器侧确认监听
+tail -f logs/proto-conv-iec104.log
+```
+
+**Linux 防火墙**（部署到 192.168.0.22 后）：
+```bash
+firewall-cmd --add-port=2405/tcp --permanent && firewall-cmd --reload
+```
+或在 webssh 设置 → 防火墙面板里点开放即可。
+
+------------------------------------------------------------
+
 ## 十、防火墙管理面板（2026-06-08 新增）
 
 ### 10.1 是什么
