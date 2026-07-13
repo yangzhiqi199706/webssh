@@ -41,6 +41,9 @@ video/vendor/flv.min.js
 # 临时调试脚本
 .tmp-*.js
 
+# Codex 隔离 worktree
+.worktrees/
+
 # 协议文档解压目录（保留 .rar 原始包即可）
 协议文档/离线麒麟系统主机获取SNMP(1)/
 
