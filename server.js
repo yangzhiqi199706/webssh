@@ -4,7 +4,7 @@ const http = require('http');
 const net = require('net');
 const WebSocket = require('ws');
 const { Client } = require('ssh2');
-const { createSshCommandRunner } = require('./lib/dcim-wvp-runtime');
+const { createSshCommandRunner, registerWvpRuntimeRoutes } = require('./lib/dcim-wvp-runtime');
 const { spawn } = require('child_process');
 const httpProxy = require('http-proxy');
 
@@ -11201,23 +11201,11 @@ wssTcp.on('connection', function (ws) {
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   });
 
-  // GET /api/db-manager/opengauss/wvp/runtime-status - 只返回解析后的安全状态，不回传 probe 原文。
-  app.get('/api/db-manager/opengauss/wvp/runtime-status', async (_req, res) => {
-    const runtime = await wvpRuntimeOperations.readStatus();
-    appendLog('wvp/runtime-status ' + wvpRuntimeSummary(runtime));
-    const statusCode = runtime.timedOut ? 504 : (runtime.ok ? 200 : 503);
-    res.status(statusCode).json(runtime);
-  });
-
-  // POST /api/db-manager/opengauss/wvp/restart - 受控重启仅限新的 openGauss WVP 服务。
-  app.post('/api/db-manager/opengauss/wvp/restart', async (req, res) => {
-    if (!isAuthed(req)) {
-      return res.status(401).json({ ok: false, message: '请先登录' });
-    }
-    const result = await wvpRuntimeOperations.restart();
-    appendLog('wvp/restart code=' + result.restartCode + ' coreReady=' + result.ok +
-      ' ' + wvpRuntimeSummary({ sshCode: null, status: result.status }));
-    res.status(result.statusCode).json({ ok: result.ok, restartCode: result.restartCode, statusCode: result.statusCode, status: result.status });
+  registerWvpRuntimeRoutes(app, {
+    runtimeOperations: wvpRuntimeOperations,
+    isAuthed: isAuthed,
+    appendLog: appendLog,
+    runtimeSummary: wvpRuntimeSummary,
   });
 
   // POST /api/db-manager/opengauss/wvp/init - 一键建 WVP 表
