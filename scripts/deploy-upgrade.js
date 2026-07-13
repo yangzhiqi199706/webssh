@@ -34,22 +34,27 @@ if (!PASSWORD) {
 }
 
 // 需要同步到远端 /opt/webssh/app/ 的条目（相对项目根路径）
-// 完整部署：包含 server.js、package*.json、完整 node_modules、index.html、serial/、sms/、ha/、proto-conv/、video/、snmp-bundle/
-const PAYLOAD_ENTRIES = [
-  'server.js',
-  'index.html',
-  'login.html',
-  'package.json',
-  'package-lock.json',
-  'serial',
-  'sms',
-  'ha',
-  'proto-conv',
-  'video',
-  'db',
-  'snmp-bundle',
-  'node_modules',
-];
+// 完整部署：包含 server.js、lib/、package*.json、完整 node_modules、各 iframe 子站和 snmp-bundle/
+function upgradePayloadEntries() {
+  return [
+    'server.js',
+    'lib',
+    'index.html',
+    'login.html',
+    'package.json',
+    'package-lock.json',
+    'serial',
+    'sms',
+    'ha',
+    'proto-conv',
+    'video',
+    'db',
+    'snmp-bundle',
+    'node_modules',
+  ];
+}
+
+const PAYLOAD_ENTRIES = upgradePayloadEntries();
 
 function log(msg) {
   console.log(`[${new Date().toISOString().slice(11, 19)}] ${msg}`);

@@ -64,6 +64,20 @@ if (!PASSWORD) {
 function log(m) { console.log(`[${new Date().toISOString().slice(11, 19)}] ${m}`); }
 function die(m) { console.error('[失败] ' + m); process.exit(1); }
 
+function protocolMainSyncEntries() {
+  return [
+    'server.js',
+    'index.html',
+    'login.html',
+    'package.json',
+    'package-lock.json',
+    'lib',
+    'video',
+  ];
+}
+
+const MAIN_SYNC_ENTRIES = protocolMainSyncEntries();
+
 function sha256File(p) {
   const h = crypto.createHash('sha256');
   h.update(fs.readFileSync(p));
@@ -139,11 +153,12 @@ function buildPackage() {
   // 6) 主壳同步素材（让 install-protocol.sh 之后由 deploy-protocol.js 走 SFTP 推送）
   if (!SKIP_MAIN_SYNC) {
     fs.mkdirSync(path.join(releaseDir, 'main-sync'));
-    fs.copyFileSync(path.join(ROOT, 'server.js'), path.join(releaseDir, 'main-sync', 'server.js'));
-    fs.copyFileSync(path.join(ROOT, 'index.html'), path.join(releaseDir, 'main-sync', 'index.html'));
-    fs.copyFileSync(path.join(ROOT, 'login.html'), path.join(releaseDir, 'main-sync', 'login.html'));
-    fs.copyFileSync(path.join(ROOT, 'package.json'), path.join(releaseDir, 'main-sync', 'package.json'));
-    fs.copyFileSync(path.join(ROOT, 'package-lock.json'), path.join(releaseDir, 'main-sync', 'package-lock.json'));
+    MAIN_SYNC_ENTRIES.forEach((entry) => {
+      const source = path.join(ROOT, entry);
+      const target = path.join(releaseDir, 'main-sync', entry);
+      if (fs.statSync(source).isDirectory()) copyDirFiltered(source, target, () => true);
+      else fs.copyFileSync(source, target);
+    });
     // http-proxy 整个模块（连同它的依赖）
     fs.mkdirSync(path.join(releaseDir, 'main-sync', 'node_modules'));
     copyDirFiltered(
@@ -360,17 +375,21 @@ async function main() {
     // 6. 主壳代码同步（在协议助手装好之后再做，避免 Node 还没起来反代就被引）
     if (!SKIP_MAIN_SYNC) {
       const mainSync = `${remoteWork}/main-sync`;
-      log('同步主壳代码（server.js / index.html / http-proxy 模块）...');
+      log('同步主壳代码（server.js / lib / video / http-proxy 模块）...');
       await exec(conn, `test -d ${mainSync} && echo main-sync OK`);
       // 备份原 app/server.js index.html，覆盖
       const stamp = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14);
       await exec(conn, `cp -a ${INSTALL_DIR}/app/server.js ${INSTALL_DIR}/app/server.js.bak-${stamp}`);
       await exec(conn, `cp -a ${INSTALL_DIR}/app/index.html ${INSTALL_DIR}/app/index.html.bak-${stamp}`);
-      await exec(conn, `cp -f ${mainSync}/server.js ${INSTALL_DIR}/app/server.js`);
-      await exec(conn, `cp -f ${mainSync}/index.html ${INSTALL_DIR}/app/index.html`);
-      await exec(conn, `cp -f ${mainSync}/login.html ${INSTALL_DIR}/app/login.html`);
-      await exec(conn, `cp -f ${mainSync}/package.json ${INSTALL_DIR}/app/package.json`);
-      await exec(conn, `cp -f ${mainSync}/package-lock.json ${INSTALL_DIR}/app/package-lock.json`);
+      for (const entry of MAIN_SYNC_ENTRIES) {
+        const source = `${mainSync}/${entry}`;
+        const target = `${INSTALL_DIR}/app/${entry}`;
+        if (entry === 'lib' || entry === 'video') {
+          await exec(conn, `rm -rf ${target} && cp -a ${source} ${target}`);
+        } else {
+          await exec(conn, `cp -f ${source} ${target}`);
+        }
+      }
       // 拷 http-proxy + 它的依赖到 app/node_modules
       await exec(conn, `cp -a ${mainSync}/node_modules/. ${INSTALL_DIR}/app/node_modules/`);
       await exec(conn, `ls ${INSTALL_DIR}/app/node_modules/http-proxy/package.json && ${INSTALL_DIR}/runtime/node/bin/node -e "console.log('http-proxy', require('/opt/webssh/app/node_modules/http-proxy/package.json').version)"`);

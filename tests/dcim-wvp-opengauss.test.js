@@ -44,7 +44,7 @@ function extractServerFunction(name) {
     if (char === '}') {
       depth--;
       if (depth === 0) {
-        return vm.runInNewContext('(' + source.slice(start, index + 1) + ')');
+        return vm.runInNewContext('(' + source.slice(start, index + 1) + ')', { Buffer: Buffer, Date: Date, Math: Math });
       }
     }
   }
@@ -83,10 +83,61 @@ function extractVideoFunction(name) {
   throw new Error('video/index.html 函数不完整: ' + name);
 }
 
+function extractScriptFunction(relativePath, name) {
+  const source = fs.readFileSync(path.join(__dirname, '..', relativePath), 'utf8');
+  const marker = 'function ' + name + '(';
+  const start = source.indexOf(marker);
+  if (start === -1) throw new Error(relativePath + ' 未导出可测函数: ' + name);
+  const bodyStart = source.indexOf('{', start);
+  let depth = 0;
+  let quote = '';
+  let escaped = false;
+  for (let index = bodyStart; index < source.length; index++) {
+    const char = source[index];
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === quote) quote = '';
+      continue;
+    }
+    if (char === '"' || char === "'" || char === '`') {
+      quote = char;
+      continue;
+    }
+    if (char === '{') depth++;
+    if (char === '}') {
+      depth--;
+      if (depth === 0) return vm.runInNewContext('(' + source.slice(start, index + 1) + ')');
+    }
+  }
+  throw new Error(relativePath + ' 函数不完整: ' + name);
+}
+
+function assertDeploymentManifest(entries, label) {
+  const requiredFiles = [
+    'lib/dcim-wvp.js',
+    'lib/dcim-wvp-runtime.js',
+    'video/index.html',
+    'video/assets/js/video-runtime.js',
+    'video/assets/css/style.css',
+  ];
+  requiredFiles.forEach(function (requiredFile) {
+    assert.strictEqual(fs.existsSync(path.join(__dirname, '..', requiredFile)), true, requiredFile + ' 必须存在');
+    assert.strictEqual(entries.some(function (entry) {
+      return requiredFile === entry || requiredFile.indexOf(entry + '/') === 0;
+    }), true, label + ' 必须部署 ' + requiredFile);
+  });
+}
+
 const createDcimVideoDefaults = extractServerFunction('createDcimVideoDefaults');
 const writeDcimVideoConfig = extractServerFunction('writeDcimVideoConfig');
+const createDcimVideoSession = extractServerFunction('createDcimVideoSession');
 const dcimVideoRequestLabel = extractServerFunction('dcimVideoRequestLabel');
 const setupDcimVideoConnectionSource = extractVideoFunction('setupDcimVideoConnection');
+const upgradePayloadEntries = extractScriptFunction('scripts/deploy-upgrade.js', 'upgradePayloadEntries');
+const protocolMainSyncEntries = extractScriptFunction('scripts/deploy-protocol.js', 'protocolMainSyncEntries');
+assertDeploymentManifest(upgradePayloadEntries(), 'deploy-upgrade');
+assertDeploymentManifest(protocolMainSyncEntries(), 'deploy-protocol main-sync');
 const dcimVideoDefaults = createDcimVideoDefaults();
 assert.strictEqual(dcimVideoDefaults.passwordHash, '');
 assert.strictEqual(publicDcimVideoConfig(dcimVideoDefaults).hasPasswordHash, false);
@@ -433,11 +484,17 @@ async function runDcimVideoConnectionRouteContractTests() {
   const chmodModes = [];
   const fsSpy = {
     mkdirSync: fs.mkdirSync.bind(fs),
+    openSync: fs.openSync.bind(fs),
+    writeSync: fs.writeSync.bind(fs),
+    fsyncSync: fs.fsyncSync.bind(fs),
+    closeSync: fs.closeSync.bind(fs),
     writeFileSync: fs.writeFileSync.bind(fs),
     chmodSync: function (target, mode) {
       chmodModes.push(mode);
       return fs.chmodSync(target, mode);
     },
+    renameSync: fs.renameSync.bind(fs),
+    unlinkSync: fs.unlinkSync.bind(fs),
   };
   let savedConfig = Object.assign(createDcimVideoDefaults(), { passwordHash: 'previous-hash' });
   const session = { cachedToken: 'cached-token', lastLoginAt: 123, lastError: 'previous-error' };
@@ -504,6 +561,41 @@ async function runDcimVideoConnectionRouteContractTests() {
   assert.strictEqual(writeFailureResets, 0);
   assert.strictEqual(/test-only-write-error|test-only-password/.test(JSON.stringify(writeFailure.body)), false);
 
+  const routeAtomicDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dcim-video-route-atomic-'));
+  const routeAtomicPath = path.join(routeAtomicDir, 'dcim-video.json');
+  const routeAtomicOriginal = JSON.stringify({ apiBase: 'https://before.example.test', passwordHash: 'old-hash' }) + '\n';
+  fs.writeFileSync(routeAtomicPath, routeAtomicOriginal, 'utf8');
+  const routeAtomicPrevious = Object.assign(createDcimVideoDefaults(), { passwordHash: 'old-hash' });
+  let routeAtomicConfig = routeAtomicPrevious;
+  const routeAtomicApp = express();
+  routeAtomicApp.use(express.json());
+  registerDcimVideoConnectionRoutes(routeAtomicApp, {
+    getConfig: function () { return routeAtomicConfig; },
+    setConfig: function (nextConfig) { routeAtomicConfig = nextConfig; },
+    writeConfig: function () {
+      writeDcimVideoConfig(routeAtomicPath, routeAtomicConfig, createAtomicWriteFs({
+        renameSync: function () { throw new Error('test-only-route-rename-failure'); },
+      }), path, 'route-rename-failure');
+    },
+    resetSession: function () { throw new Error('失败保存不得清理会话'); },
+    isAuthed: function () { return true; },
+    loginDcim: async function () { return true; },
+    wvpUtils: { mergeDcimVideoConfig: mergeDcimVideoConfig, publicDcimVideoConfig: publicDcimVideoConfig },
+  });
+  try {
+    const routeAtomicFailure = await requestJson(routeAtomicApp, '/api/dcim-video/connection-config', 'PUT', {
+      username: 'new-test-operator',
+    });
+    assert.strictEqual(routeAtomicFailure.statusCode, 500);
+    assert.deepStrictEqual(routeAtomicFailure.body, { ok: false, message: '无法保存连接配置' });
+    assert.deepStrictEqual(routeAtomicConfig, routeAtomicPrevious);
+    assert.strictEqual(fs.readFileSync(routeAtomicPath, 'utf8'), routeAtomicOriginal);
+    assertNoAtomicTempFiles(routeAtomicDir, 'dcim-video.json');
+  } finally {
+    try { fs.unlinkSync(routeAtomicPath); } catch (_e) {}
+    try { fs.rmdirSync(routeAtomicDir); } catch (_e) {}
+  }
+
   let failedLoginCalls = 0;
   const failedLoginApp = express();
   failedLoginApp.use(express.json());
@@ -528,6 +620,151 @@ async function runDcimVideoConnectionRouteContractTests() {
     message: 'WVP 登录失败，请检查账号或密码',
   });
   assert.strictEqual(/accessToken|test-only-token|upstream-body/.test(JSON.stringify(failedLogin.body)), false);
+}
+
+async function runDcimVideoConnectionRaceTests() {
+  const session = createDcimVideoSession();
+  let currentConfig = Object.assign(createDcimVideoDefaults(), { passwordHash: 'old-hash' });
+  let startLogin;
+  const loginStarted = new Promise(function (resolve) { startLogin = resolve; });
+  let releaseLogin;
+  const loginRelease = new Promise(function (resolve) { releaseLogin = resolve; });
+  const raceApp = express();
+  raceApp.use(express.json());
+  registerDcimVideoConnectionRoutes(raceApp, {
+    getConfig: function () { return currentConfig; },
+    setConfig: function (nextConfig) { currentConfig = nextConfig; },
+    writeConfig: function () {},
+    resetSession: function () { session.reset(); },
+    isAuthed: function () { return true; },
+    loginDcim: async function () {
+      const generation = session.generation();
+      startLogin();
+      await loginRelease;
+      return session.acceptLogin(generation, 'test-only-stale-token', 123);
+    },
+    wvpUtils: { mergeDcimVideoConfig: mergeDcimVideoConfig, publicDcimVideoConfig: publicDcimVideoConfig },
+  });
+
+  const oldLoginRequest = requestJson(raceApp, '/api/dcim-video/test-login', 'POST');
+  await loginStarted;
+  const saveResponse = await requestJson(raceApp, '/api/dcim-video/connection-config', 'PUT', {
+    username: 'new-test-operator',
+  });
+  assert.strictEqual(saveResponse.statusCode, 200);
+  releaseLogin();
+  const oldLoginResponse = await oldLoginRequest;
+  assert.strictEqual(oldLoginResponse.statusCode, 502);
+  assert.deepStrictEqual(oldLoginResponse.body, {
+    ok: false,
+    status: 502,
+    message: 'WVP 登录失败，请检查账号或密码',
+  });
+  assert.strictEqual(session.token(), '');
+  assert.strictEqual(session.lastLoginAt(), 0);
+  assert.strictEqual(session.lastError(), '');
+  assert.strictEqual(session.generation(), 1);
+}
+
+function createAtomicWriteFs(overrides) {
+  return Object.assign({
+    mkdirSync: fs.mkdirSync.bind(fs),
+    openSync: fs.openSync.bind(fs),
+    writeFileSync: fs.writeFileSync.bind(fs),
+    writeSync: fs.writeSync.bind(fs),
+    fsyncSync: fs.fsyncSync.bind(fs),
+    closeSync: fs.closeSync.bind(fs),
+    chmodSync: fs.chmodSync.bind(fs),
+    renameSync: fs.renameSync.bind(fs),
+    unlinkSync: fs.unlinkSync.bind(fs),
+  }, overrides || {});
+}
+
+function assertNoAtomicTempFiles(dir, fileName) {
+  assert.deepStrictEqual(fs.readdirSync(dir).filter(function (name) {
+    return name.indexOf(fileName + '.tmp-') === 0;
+  }), []);
+}
+
+function runDcimVideoAtomicWriteTests() {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dcim-video-atomic-'));
+  const configPath = path.join(tempDir, 'dcim-video.json');
+  const originalConfig = JSON.stringify({ apiBase: 'https://before.example.test', passwordHash: 'old-hash' }) + '\n';
+  const nextConfig = { apiBase: 'https://after.example.test', passwordHash: 'new-hash' };
+  fs.writeFileSync(configPath, originalConfig, 'utf8');
+  try {
+    const renameFailFs = createAtomicWriteFs({
+      renameSync: function () { throw new Error('test-only-rename-failure'); },
+    });
+    assert.throws(function () {
+      writeDcimVideoConfig(configPath, nextConfig, renameFailFs, path, 'rename-failure');
+    }, /test-only-rename-failure/);
+    assert.strictEqual(fs.readFileSync(configPath, 'utf8'), originalConfig);
+    assertNoAtomicTempFiles(tempDir, 'dcim-video.json');
+
+    const collisionPath = path.join(tempDir, 'dcim-video.json.tmp-collision');
+    fs.writeFileSync(collisionPath, 'other-writer-temp', 'utf8');
+    const collisionFs = createAtomicWriteFs({
+      openSync: function () {
+        const error = new Error('test-only-open-collision');
+        error.code = 'EEXIST';
+        throw error;
+      },
+    });
+    assert.throws(function () {
+      writeDcimVideoConfig(configPath, nextConfig, collisionFs, path, 'collision');
+    }, /test-only-open-collision/);
+    assert.strictEqual(fs.readFileSync(collisionPath, 'utf8'), 'other-writer-temp');
+    fs.unlinkSync(collisionPath);
+
+    const openModes = [];
+    const chmodModes = [];
+    let fsyncCalls = 0;
+    const successFs = createAtomicWriteFs({
+      openSync: function (target, flags, mode) {
+        openModes.push({ target: target, flags: flags, mode: mode });
+        return fs.openSync(target, flags, mode);
+      },
+      fsyncSync: function (fd) {
+        fsyncCalls++;
+        return fs.fsyncSync(fd);
+      },
+      chmodSync: function (target, mode) {
+        chmodModes.push({ target: target, mode: mode });
+        return fs.chmodSync(target, mode);
+      },
+    });
+    writeDcimVideoConfig(configPath, nextConfig, successFs, path, 'success');
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(configPath, 'utf8')), nextConfig);
+    assert.deepStrictEqual(openModes.map(function (entry) { return entry.flags; }), ['wx']);
+    assert.deepStrictEqual(openModes.map(function (entry) { return entry.mode; }), [0o600]);
+    assert.deepStrictEqual(chmodModes.map(function (entry) { return entry.mode; }), [0o600]);
+    assert.strictEqual(fsyncCalls, 1);
+    if (process.platform !== 'win32') assert.strictEqual(fs.statSync(configPath).mode & 0o777, 0o600);
+    assertNoAtomicTempFiles(tempDir, 'dcim-video.json');
+
+    fs.writeFileSync(configPath, originalConfig, 'utf8');
+    const writeFailFs = createAtomicWriteFs({
+      writeSync: function () { throw new Error('test-only-write-failure'); },
+    });
+    assert.throws(function () {
+      writeDcimVideoConfig(configPath, nextConfig, writeFailFs, path, 'write-failure');
+    }, /test-only-write-failure/);
+    assert.strictEqual(fs.readFileSync(configPath, 'utf8'), originalConfig);
+    assertNoAtomicTempFiles(tempDir, 'dcim-video.json');
+
+    const chmodFailFs = createAtomicWriteFs({
+      chmodSync: function () { throw new Error('test-only-chmod-failure'); },
+    });
+    assert.throws(function () {
+      writeDcimVideoConfig(configPath, nextConfig, chmodFailFs, path, 'chmod-failure');
+    }, /test-only-chmod-failure/);
+    assert.strictEqual(fs.readFileSync(configPath, 'utf8'), originalConfig);
+    assertNoAtomicTempFiles(tempDir, 'dcim-video.json');
+  } finally {
+    try { fs.unlinkSync(configPath); } catch (_e) {}
+    try { fs.rmdirSync(tempDir); } catch (_e) {}
+  }
 }
 
 function createFakeElement() {
@@ -1033,7 +1270,7 @@ try {
   try { fs.unlinkSync(shellPath); } catch (error) {}
 }
 
-runWvpRuntimeOperationTests().then(runSshCommandTimeoutTests).then(runSshCommandLateEventTests).then(runWvpRuntimeRouteContractTests).then(runDcimVideoConnectionRouteContractTests).then(runDcimVideoConnectionUiTests).then(() => {
+runWvpRuntimeOperationTests().then(runSshCommandTimeoutTests).then(runSshCommandLateEventTests).then(runWvpRuntimeRouteContractTests).then(runDcimVideoConnectionRouteContractTests).then(runDcimVideoConnectionRaceTests).then(runDcimVideoAtomicWriteTests).then(runDcimVideoConnectionUiTests).then(() => {
   console.log('dcim wvp opengauss tests: PASS');
 }).catch((error) => {
   console.error(error);

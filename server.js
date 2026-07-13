@@ -20,17 +20,82 @@ function createDcimVideoDefaults() {
   };
 }
 
-function writeDcimVideoConfig(configPath, config, fileSystem, pathModule) {
+function writeDcimVideoConfig(configPath, config, fileSystem, pathModule, tempSuffix) {
   const fileOps = fileSystem || fs;
   const pathOps = pathModule || require('path');
-  fileOps.mkdirSync(pathOps.dirname(configPath), { recursive: true });
-  fileOps.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n', 'utf8');
-  fileOps.chmodSync(configPath, 0o600);
+  const directory = pathOps.dirname(configPath);
+  const suffix = tempSuffix || (Date.now() + '-' + Math.random().toString(16).slice(2));
+  const tempPath = pathOps.join(directory, pathOps.basename(configPath) + '.tmp-' + suffix);
+  const content = Buffer.from(JSON.stringify(config, null, 2) + '\n', 'utf8');
+  let fd = null;
+  let tempCreated = false;
+  try {
+    fileOps.mkdirSync(directory, { recursive: true });
+    fd = fileOps.openSync(tempPath, 'wx', 0o600);
+    tempCreated = true;
+    let offset = 0;
+    while (offset < content.length) {
+      const written = fileOps.writeSync(fd, content, offset, content.length - offset);
+      if (!written) throw new Error('配置临时文件写入不完整');
+      offset += written;
+    }
+    if (typeof fileOps.fsyncSync === 'function') fileOps.fsyncSync(fd);
+    fileOps.closeSync(fd);
+    fd = null;
+    fileOps.chmodSync(tempPath, 0o600);
+    fileOps.renameSync(tempPath, configPath);
+  } catch (error) {
+    if (fd !== null) {
+      try { fileOps.closeSync(fd); } catch (_e) {}
+    }
+    if (tempCreated) {
+      try { fileOps.unlinkSync(tempPath); } catch (_e) {}
+    }
+    throw error;
+  }
 }
 
 function dcimVideoRequestLabel(method, urlPath) {
   const pathname = String(urlPath || '').split('?')[0] || '/';
   return String(method || 'GET').toUpperCase() + ' ' + pathname;
+}
+
+function createDcimVideoSession() {
+  let generation = 0;
+  let cachedToken = '';
+  let lastLoginAt = 0;
+  let lastError = '';
+  return {
+    generation: function () { return generation; },
+    isCurrent: function (requestGeneration) { return requestGeneration === generation; },
+    token: function () { return cachedToken; },
+    lastLoginAt: function () { return lastLoginAt; },
+    lastError: function () { return lastError; },
+    reset: function () {
+      generation++;
+      cachedToken = '';
+      lastLoginAt = 0;
+      lastError = '';
+    },
+    acceptLogin: function (requestGeneration, token, loginAt) {
+      if (requestGeneration !== generation) return false;
+      cachedToken = String(token || '');
+      lastLoginAt = Number(loginAt) || Date.now();
+      lastError = '';
+      return true;
+    },
+    rejectLogin: function (requestGeneration, errorMessage) {
+      if (requestGeneration !== generation) return false;
+      cachedToken = '';
+      lastError = String(errorMessage || '');
+      return true;
+    },
+    setError: function (requestGeneration, errorMessage) {
+      if (requestGeneration !== generation) return false;
+      lastError = String(errorMessage || '');
+      return true;
+    },
+  };
 }
 
 function registerDcimVideoConnectionRoutes(app, deps) {
@@ -8905,14 +8970,14 @@ wssTcp.on('connection', function (ws) {
   // dcim wvp 自签证书 + keepAlive
   const dcimAgent = new https.Agent({ keepAlive: true, rejectUnauthorized: false });
 
-  let cachedToken = '';
-  let lastLoginAt = 0;
-  let lastError = '';
+  const session = createDcimVideoSession();
 
-  function dcimRequest(method, urlPath, headers, body) {
+  function dcimRequest(method, urlPath, headers, body, requestGeneration, requestConfig) {
     return new Promise(function (resolve) {
+      const activeGeneration = requestGeneration == null ? session.generation() : requestGeneration;
+      const activeConfig = requestConfig || cfg;
       let urlObj;
-      try { urlObj = new URL(urlPath, cfg.apiBase); }
+      try { urlObj = new URL(urlPath, activeConfig.apiBase); }
       catch (e) { return resolve({ ok: false, status: 0, message: 'URL 构造失败：' + e.message }); }
       const buf = body ? Buffer.from(body, 'utf8') : Buffer.alloc(0);
       const reqOptions = {
@@ -8921,7 +8986,7 @@ wssTcp.on('connection', function (ws) {
         port: urlObj.port || 443,
         path: urlObj.pathname + (urlObj.search || ''),
         agent: dcimAgent,
-        timeout: cfg.timeoutMs || 6000,
+        timeout: activeConfig.timeoutMs || 6000,
         headers: Object.assign({}, headers || {}),
       };
       if (buf.length) {
@@ -8939,10 +9004,10 @@ wssTcp.on('connection', function (ws) {
         });
       });
       req.on('timeout', function () {
-        try { req.destroy(new Error('timeout ' + (cfg.timeoutMs || 6000) + 'ms')); } catch (_e) {}
+        try { req.destroy(new Error('timeout ' + (activeConfig.timeoutMs || 6000) + 'ms')); } catch (_e) {}
       });
       req.on('error', function (err) {
-        lastError = dcimVideoRequestLabel(method, urlPath) + ': ' + err.message;
+        session.setError(activeGeneration, dcimVideoRequestLabel(method, urlPath) + ': ' + err.message);
         resolve({ ok: false, status: 0, message: err.message });
       });
       if (buf.length) req.write(buf);
@@ -8951,18 +9016,22 @@ wssTcp.on('connection', function (ws) {
   }
 
   async function loginDcim() {
-    const u = '/api/user/login?username=' + encodeURIComponent(cfg.username)
-      + '&password=' + encodeURIComponent(cfg.passwordHash);
-    const r = await dcimRequest('GET', u, {}, null);
+    const loginGeneration = session.generation();
+    const loginConfig = cfg;
+    const u = '/api/user/login?username=' + encodeURIComponent(loginConfig.username)
+      + '&password=' + encodeURIComponent(loginConfig.passwordHash);
+    const r = await dcimRequest('GET', u, {}, null, loginGeneration, loginConfig);
+    if (!session.isCurrent(loginGeneration)) return false;
     if (r.ok && r.data && r.data.code === 0 && r.data.data && r.data.data.accessToken) {
-      cachedToken = r.data.data.accessToken;
-      lastLoginAt = Date.now();
-      appendLog('login ok, token len=' + cachedToken.length);
-      return true;
+      const token = r.data.data.accessToken;
+      if (session.acceptLogin(loginGeneration, token, Date.now())) {
+        appendLog('login ok, token len=' + String(token).length);
+        return true;
+      }
+      return false;
     }
-    lastError = 'login failed: status=' + r.status + ' code=' + (r.data && r.data.code);
-    appendLog(lastError);
-    cachedToken = '';
+    const errorMessage = 'login failed: status=' + r.status + ' code=' + (r.data && r.data.code);
+    if (session.rejectLogin(loginGeneration, errorMessage)) appendLog(errorMessage);
     return false;
   }
 
@@ -8970,23 +9039,27 @@ wssTcp.on('connection', function (ws) {
     getConfig: function () { return cfg; },
     setConfig: function (nextConfig) { cfg = nextConfig; },
     writeConfig: writeCfg,
-    resetSession: function () {
-      cachedToken = '';
-      lastLoginAt = 0;
-      lastError = '';
-    },
+    resetSession: session.reset,
     isAuthed: isAuthed,
     loginDcim: loginDcim,
     wvpUtils: wvpUtils,
   });
 
   async function callWithAuth(method, urlPath, body) {
-    if (!cachedToken) { await loginDcim(); }
-    let r = await dcimRequest(method, urlPath, { 'access-token': cachedToken }, body);
+    const requestGeneration = session.generation();
+    const requestConfig = cfg;
+    if (!session.token()) { await loginDcim(); }
+    if (!session.isCurrent(requestGeneration)) {
+      return { ok: false, status: 409, message: '连接配置已更新' };
+    }
+    let r = await dcimRequest(method, urlPath, { 'access-token': session.token() }, body, requestGeneration, requestConfig);
+    if (!session.isCurrent(requestGeneration)) return r;
     // 401 自动续登一次
     if (r.status === 401 || (r.data && r.data.code === -1) || (r.data && r.data.code === -2)) {
       const ok = await loginDcim();
-      if (ok) r = await dcimRequest(method, urlPath, { 'access-token': cachedToken }, body);
+      if (ok && session.isCurrent(requestGeneration)) {
+        r = await dcimRequest(method, urlPath, { 'access-token': session.token() }, body, requestGeneration, requestConfig);
+      }
     }
     appendLog(method + ' ' + urlPath + ' -> status=' + r.status);
     return r;
@@ -9004,9 +9077,9 @@ wssTcp.on('connection', function (ws) {
       reachable: r.ok,
       status: r.status,
       version: (r.ok && r.data && r.data.data && r.data.data.version) || '',
-      hasToken: !!cachedToken,
-      lastLoginAt: lastLoginAt,
-      lastError: lastError,
+      hasToken: !!session.token(),
+      lastLoginAt: session.lastLoginAt(),
+      lastError: session.lastError(),
       config: cfgInfo,
     });
   });
