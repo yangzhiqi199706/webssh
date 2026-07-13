@@ -1,6 +1,10 @@
 'use strict';
 
 const assert = require('assert');
+const childProcess = require('child_process');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const vm = require('vm');
 const {
   mergeDcimVideoConfig,
@@ -165,7 +169,8 @@ assert.ok(!/pgrep -af 'java\.\*wvp'/.test(command));
 assert.ok(/ps -eo args/.test(command));
 assert.ok(/\[w\]vp-pro-2\.6\.9-06021439\.jar/.test(command));
 assert.ok(/grep -c/.test(command));
-assert.ok(/case/.test(command));
+assert.ok(/awk/.test(command));
+assert.ok(!/\$\(\s*\(/.test(command));
 assert.ok(/journalctl -u wvp-opengauss\.service --since '10 min ago'/.test(command));
 assert.ok(/omm|gsql/.test(command));
 assert.ok(/\/www\/media\/wvp-GB28181-pro\/target\/classes\/application-dev\.yml/.test(command));
@@ -176,13 +181,27 @@ assert.ok(/export LD_LIBRARY_PATH=\$GAUSSHOME\/lib:\$LD_LIBRARY_PATH/.test(comma
 assert.ok(/gsql -d dcim/.test(command));
 assert.ok(/usename=.*wvp_app/.test(command));
 assert.ok(/datname=.*dcim/.test(command));
-assert.ok(/application_name=.*wvp/.test(command));
+assert.ok(!/application_name/.test(command));
 assert.ok(!/gsql -d wvp/.test(command));
 assert.ok(/\^\[\[:space:\]\]\*driver-class-name:\[\[:space:\]\]\*org\[\.\]postgresql\[\.\]Driver/.test(command));
 assert.ok(/\^\[\[:space:\]\]\*helper-dialect:\[\[:space:\]\]\*postgresql/.test(command));
 assert.ok(/\^\[\[:space:\]\]\*url:\[\[:space:\]\]\*jdbc:mysql:/.test(command));
+assert.ok(/\[\[:space:\]\]\*\(#\.\*\)\?\$/.test(command));
 assert.ok(!/(?:^|[;&| ])(?:head|cat|sed)(?:\s|$)/.test(command));
 assert.ok(!/WVP_DB_PASSWORD/.test(command));
 assert.ok((command.match(/\|\| true/g) || []).length >= 12);
+
+const shellPath = path.join(os.tmpdir(), 'dcim-wvp-probe-' + process.pid + '.sh');
+fs.writeFileSync(shellPath, '#!/bin/sh\n' + command + '\n', 'utf8');
+const shellCheck = childProcess.spawnSync('sh', ['-n', shellPath], { encoding: 'utf8' });
+try {
+  if (shellCheck.error && shellCheck.error.code === 'ENOENT') {
+    console.log('sh -n skipped: sh not found');
+  } else {
+    assert.strictEqual(shellCheck.status, 0, (shellCheck.stderr || '') + (shellCheck.stdout || ''));
+  }
+} finally {
+  try { fs.unlinkSync(shellPath); } catch (error) {}
+}
 
 console.log('dcim wvp opengauss tests: PASS');
