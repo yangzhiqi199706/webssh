@@ -130,6 +130,59 @@ function createMainSyncReleasePlan(appDir, stamp, service, httpPort) {
   };
 }
 
+function recoverMainSyncRelease(conn, runExec, releasePlan, originalError) {
+  const commands = releasePlan.recoveryCommands;
+  const stages = [
+    '恢复主壳内容',
+    '重启主服务',
+    '确认主服务状态',
+    '确认主服务健康检查',
+  ];
+  const originalMessage = originalError && originalError.message ? originalError.message : String(originalError);
+
+  function failure(stage, result) {
+    const detail = result && typeof result.code !== 'undefined'
+      ? '（exit=' + result.code + '，输出=' + String(result.stdout || '').trim() + '）'
+      : result && result.message ? '（' + result.message + '）' : '';
+    return new Error('回滚失败：' + stage + detail + '；原始部署失败：' + originalMessage);
+  }
+
+  return (async function () {
+    let result;
+    try {
+      result = await runExec(conn, commands[0], { allowNonZero: true });
+    } catch (error) {
+      throw failure(stages[0], error);
+    }
+    if (!result || result.code !== 0) throw failure(stages[0], result);
+
+    try {
+      result = await runExec(conn, commands[1], { allowNonZero: true });
+    } catch (error) {
+      throw failure(stages[1], error);
+    }
+    if (!result || result.code !== 0) throw failure(stages[1], result);
+
+    try {
+      result = await runExec(conn, commands[2], { allowNonZero: true });
+    } catch (error) {
+      throw failure(stages[2], error);
+    }
+    if (!result || result.code !== 0 || String(result.stdout || '').trim() !== 'active') {
+      throw failure(stages[2], result);
+    }
+
+    try {
+      result = await runExec(conn, commands[3], { allowNonZero: true });
+    } catch (error) {
+      throw failure(stages[3], error);
+    }
+    if (!result || result.code !== 0 || String(result.stdout || '').trim() !== '200') {
+      throw failure(stages[3], result);
+    }
+  }());
+}
+
 function sha256File(p) {
   const h = crypto.createHash('sha256');
   h.update(fs.readFileSync(p));
@@ -522,9 +575,7 @@ async function main() {
   } catch (error) {
     if (mainSyncRelease) {
       log('主壳同步失败，按完整发布备份恢复 ...');
-      for (const command of mainSyncRelease.recoveryCommands) {
-        await exec(conn, command, { allowNonZero: true });
-      }
+      await recoverMainSyncRelease(conn, exec, mainSyncRelease, error);
     } else if (directorySwaps.length) {
       log('主壳目录同步失败，恢复保留的 lib/video ...');
       for (let index = directorySwaps.length - 1; index >= 0; index--) {

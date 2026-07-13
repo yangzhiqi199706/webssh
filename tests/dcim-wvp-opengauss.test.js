@@ -138,6 +138,7 @@ const upgradePayloadEntries = extractScriptFunction('scripts/deploy-upgrade.js',
 const protocolMainSyncEntries = extractScriptFunction('scripts/deploy-protocol.js', 'protocolMainSyncEntries');
 const createMainSyncDirectorySwap = extractScriptFunction('scripts/deploy-protocol.js', 'createMainSyncDirectorySwap');
 const createMainSyncReleasePlan = extractScriptFunction('scripts/deploy-protocol.js', 'createMainSyncReleasePlan');
+const recoverMainSyncRelease = extractScriptFunction('scripts/deploy-protocol.js', 'recoverMainSyncRelease');
 assertDeploymentManifest(upgradePayloadEntries(), 'deploy-upgrade');
 assertDeploymentManifest(protocolMainSyncEntries(), 'deploy-protocol main-sync');
 ['lib', 'video'].forEach(function (entry) {
@@ -802,6 +803,70 @@ function runDcimVideoAtomicWriteTests() {
   }
 }
 
+async function runProtocolMainSyncRollbackFailureTests() {
+  const originalError = new Error('原始部署失败：主壳探活失败');
+  const scenarios = [
+    {
+      name: '恢复复制返回非零',
+      stage: '恢复主壳内容',
+      responses: [{ code: 1, stdout: '', stderr: 'cp failed' }],
+      expectedCalls: 1,
+    },
+    {
+      name: '回滚重启返回非零',
+      stage: '重启主服务',
+      responses: [{ code: 0, stdout: '', stderr: '' }, { code: 1, stdout: '', stderr: 'restart failed' }],
+      expectedCalls: 2,
+    },
+    {
+      name: '回滚服务未 active',
+      stage: '确认主服务状态',
+      responses: [
+        { code: 0, stdout: '', stderr: '' },
+        { code: 0, stdout: '', stderr: '' },
+        { code: 0, stdout: 'inactive\n', stderr: '' },
+      ],
+      expectedCalls: 3,
+    },
+    {
+      name: '回滚健康检查非 200',
+      stage: '确认主服务健康检查',
+      responses: [
+        { code: 0, stdout: '', stderr: '' },
+        { code: 0, stdout: '', stderr: '' },
+        { code: 0, stdout: 'active\n', stderr: '' },
+        { code: 0, stdout: '503', stderr: '' },
+      ],
+      expectedCalls: 4,
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const releasePlan = createMainSyncReleasePlan('/opt/webssh/app', 'rollback-test', 'webssh', 3010);
+    const calls = [];
+    let responseIndex = 0;
+    const runExec = async function (_conn, command, options) {
+      calls.push({ command: command, options: options });
+      return scenario.responses[responseIndex++];
+    };
+    let failure;
+    try {
+      await recoverMainSyncRelease({}, runExec, releasePlan, originalError);
+    } catch (error) {
+      failure = error;
+    }
+
+    assert.ok(failure, scenario.name + ' 必须抛出回滚失败');
+    assert.ok(failure.message.indexOf('回滚失败') !== -1, scenario.name + ' 必须明确标记回滚失败');
+    assert.ok(failure.message.indexOf(scenario.stage) !== -1, scenario.name + ' 必须说明失败阶段');
+    assert.ok(failure.message.indexOf(originalError.message) !== -1, scenario.name + ' 必须保留原始部署失败上下文');
+    assert.strictEqual(calls.length, scenario.expectedCalls, scenario.name + ' 失败后不得继续执行后续操作');
+    calls.forEach(function (call) {
+      assert.strictEqual(call.options && call.options.allowNonZero, true, scenario.name + ' 必须收集命令输出后显式判定');
+    });
+  }
+}
+
 function createFakeElement() {
   const listeners = {};
   const classes = {};
@@ -1305,7 +1370,7 @@ try {
   try { fs.unlinkSync(shellPath); } catch (error) {}
 }
 
-runWvpRuntimeOperationTests().then(runSshCommandTimeoutTests).then(runSshCommandLateEventTests).then(runWvpRuntimeRouteContractTests).then(runDcimVideoConnectionRouteContractTests).then(runDcimVideoConnectionRaceTests).then(runDcimVideoAtomicWriteTests).then(runDcimVideoConnectionUiTests).then(() => {
+runWvpRuntimeOperationTests().then(runSshCommandTimeoutTests).then(runSshCommandLateEventTests).then(runWvpRuntimeRouteContractTests).then(runDcimVideoConnectionRouteContractTests).then(runDcimVideoConnectionRaceTests).then(runDcimVideoAtomicWriteTests).then(runDcimVideoConnectionUiTests).then(runProtocolMainSyncRollbackFailureTests).then(() => {
   console.log('dcim wvp opengauss tests: PASS');
 }).catch((error) => {
   console.error(error);
