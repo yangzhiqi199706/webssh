@@ -5,6 +5,7 @@ const childProcess = require('child_process');
 const EventEmitter = require('events');
 const fs = require('fs');
 const http = require('http');
+const net = require('net');
 const os = require('os');
 const path = require('path');
 const vm = require('vm');
@@ -1393,6 +1394,75 @@ async function runVideoSourceLoadFailureTests() {
   assert.strictEqual(harness.elements.dcimDevHint.textContent, '加载失败：dcim 设备加载失败');
 }
 
+function freeLocalPort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const port = server.address().port;
+      server.close((error) => error ? reject(error) : resolve(port));
+    });
+  });
+}
+
+function requestVideoVendor(port) {
+  return new Promise((resolve, reject) => {
+    const request = http.get({ hostname: '127.0.0.1', port: port, path: '/video/vendor/flv.min.js' }, (response) => {
+      const chunks = [];
+      response.on('data', (chunk) => chunks.push(chunk));
+      response.on('end', () => resolve({ statusCode: response.statusCode, body: Buffer.concat(chunks) }));
+    });
+    request.on('error', reject);
+  });
+}
+
+async function runVideoVendorStaticTests() {
+  const vendorPath = path.join(__dirname, '..', 'video', 'vendor', 'flv.min.js');
+  assert.strictEqual(fs.existsSync(vendorPath), true, 'video vendor 必须包含 flv.min.js');
+  const vendorSource = fs.readFileSync(vendorPath, 'utf8');
+  assert.ok(vendorSource.length > 100000, 'flv.min.js 不得为空或截断');
+
+  const port = await freeLocalPort();
+  const child = childProcess.spawn(process.execPath, ['server.js'], {
+    cwd: path.join(__dirname, '..'),
+    env: Object.assign({}, process.env, { PORT: String(port) }),
+    stdio: 'ignore',
+  });
+  let response;
+  try {
+    for (let attempt = 0; attempt < 40; attempt++) {
+      try {
+        response = await requestVideoVendor(port);
+        break;
+      } catch (_error) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
+    assert.ok(response, '本地 server.js 未在限定时间内响应 video vendor 路由');
+    assert.strictEqual(response.statusCode, 200, 'video vendor 静态路由必须返回 200');
+    assert.ok(response.body.length > 100000, '静态路由返回的 flv.min.js 不得为空或截断');
+  } finally {
+    child.kill();
+  }
+
+  const browserWindow = {
+    navigator: { userAgent: 'Mozilla/5.0' },
+    setTimeout: setTimeout,
+    clearTimeout: clearTimeout,
+  };
+  browserWindow.window = browserWindow;
+  const browserContext = {
+    window: browserWindow,
+    self: browserWindow,
+    navigator: browserWindow.navigator,
+    setTimeout: setTimeout,
+    clearTimeout: clearTimeout,
+  };
+  vm.runInNewContext(vendorSource, browserContext, { filename: 'flv.min.js' });
+  assert.strictEqual(typeof browserWindow.flvjs.createPlayer, 'function');
+  assert.strictEqual(typeof browserWindow.flvjs.isSupported, 'function');
+}
+
 async function runVideoPlaybackUiTests() {
   const playbackPlayerConfig = buildTilePlayerConfig({ flvUrl: '/media/record.flv', mode: 'playback' });
   assert.strictEqual(playbackPlayerConfig.type, 'flv');
@@ -1700,7 +1770,7 @@ try {
   try { fs.unlinkSync(shellPath); } catch (error) {}
 }
 
-runWvpRuntimeOperationTests().then(runSshCommandTimeoutTests).then(runSshCommandLateEventTests).then(runWvpRuntimeRouteContractTests).then(runDcimVideoConnectionRouteContractTests).then(runDcimVideoConnectionRaceTests).then(runDcimVideoAtomicWriteTests).then(runDcimVideoConnectionUiTests).then(runVideoSourceLoadFailureTests).then(runVideoPlaybackUiTests).then(runProtocolMainSyncRollbackFailureTests).then(() => {
+runWvpRuntimeOperationTests().then(runSshCommandTimeoutTests).then(runSshCommandLateEventTests).then(runWvpRuntimeRouteContractTests).then(runDcimVideoConnectionRouteContractTests).then(runDcimVideoConnectionRaceTests).then(runDcimVideoAtomicWriteTests).then(runDcimVideoConnectionUiTests).then(runVideoVendorStaticTests).then(runVideoSourceLoadFailureTests).then(runVideoPlaybackUiTests).then(runProtocolMainSyncRollbackFailureTests).then(() => {
   console.log('dcim wvp opengauss tests: PASS');
 }).catch((error) => {
   console.error(error);
