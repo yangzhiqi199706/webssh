@@ -98,13 +98,21 @@ function sanitizeDcimVideoSystemConfig(value) {
     catch (_e) { return '"***"'; }
   }
 
+  function hasSensitiveTextAssignment(input) {
+    const assignments = String(input).match(/(?:^|[^a-zA-Z0-9])([a-zA-Z][a-zA-Z0-9_-]*)\s*(?:=|:)\s*[^\s,;\]\[{}()]+/g) || [];
+    return assignments.some(function (assignment) {
+      const keyMatch = /([a-zA-Z][a-zA-Z0-9_-]*)\s*(?:=|:)/.exec(assignment);
+      return keyMatch && isSensitiveKey(keyMatch[1]);
+    });
+  }
+
   function cloneAndRedact(input) {
     if (typeof input === 'string') {
       try {
         const parsed = JSON.parse(input);
         if (parsed && typeof parsed === 'object') return safeJsonStringify(cloneAndRedact(parsed));
       } catch (_e) {}
-      return input;
+      return hasSensitiveTextAssignment(input) ? '***' : input;
     }
     if (input === null || typeof input === 'boolean' || typeof input === 'number') return input;
     if (!input || typeof input !== 'object') return '***';

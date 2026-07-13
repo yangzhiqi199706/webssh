@@ -791,6 +791,79 @@ async function runDcimVideoSystemConfigRedactionTests() {
   assert.strictEqual(response.body.data.sip.port, upstreamConfig.sip.port);
   assert.deepStrictEqual(JSON.parse(response.body.data.sip.nested.extra), { authPwd: '***', mode: 'keep' });
 
+  const plainTextSensitiveValues = [
+    'plain-auth-pwd-value',
+    'plain-password-value',
+    'plain-token-value',
+    'plain-secret-value',
+  ];
+  const ordinaryDescription = 'diagnostic connection state is ready';
+  const plainTextSuccessConfig = {
+    description: 'diagnostic authPwd=' + plainTextSensitiveValues[0],
+    details: 'password: ' + plainTextSensitiveValues[1],
+    trace: 'token=' + plainTextSensitiveValues[2],
+    note: 'secret: ' + plainTextSensitiveValues[3],
+    ordinaryDescription: ordinaryDescription,
+  };
+  const plainTextSuccessApp = express();
+  registerVideoSystemConfigRoute(plainTextSuccessApp, {
+    path: '/api/dcim-video/config',
+    callWithAuth: async function () {
+      return {
+        ok: true,
+        status: 200,
+        data: { code: 0, data: plainTextSuccessConfig },
+      };
+    },
+    sanitizeSystemConfig: sanitizeDcimVideoSystemConfig,
+  });
+  const plainTextSuccess = await requestJson(plainTextSuccessApp, '/api/dcim-video/config', 'GET');
+  assert.strictEqual(plainTextSuccess.statusCode, 200);
+  assert.strictEqual(plainTextSuccess.body.ok, true);
+  assert.strictEqual(plainTextSuccess.body.data.description, '***');
+  assert.strictEqual(plainTextSuccess.body.data.details, '***');
+  assert.strictEqual(plainTextSuccess.body.data.trace, '***');
+  assert.strictEqual(plainTextSuccess.body.data.note, '***');
+  assert.strictEqual(plainTextSuccess.body.data.ordinaryDescription, ordinaryDescription);
+  plainTextSensitiveValues.forEach(function (value) {
+    assert.strictEqual(JSON.stringify(plainTextSuccess.body).includes(value), false, 'dcim 成功响应不得包含纯文本凭据');
+  });
+
+  const plainTextFailureMessage = 'upstream diagnostic authPwd=' + plainTextSensitiveValues[0];
+  const plainTextFailureData = {
+    msg: 'upstream error authPwd: ' + plainTextSensitiveValues[0],
+    details: 'password=' + plainTextSensitiveValues[1],
+    trace: 'token: ' + plainTextSensitiveValues[2],
+    note: 'secret=' + plainTextSensitiveValues[3],
+    ordinaryDescription: ordinaryDescription,
+  };
+  const plainTextFailureApp = express();
+  registerVideoSystemConfigRoute(plainTextFailureApp, {
+    path: '/api/webssh-video/config',
+    callWithAuth: async function () {
+      return {
+        ok: false,
+        status: 502,
+        message: plainTextFailureMessage,
+        data: plainTextFailureData,
+      };
+    },
+    sanitizeSystemConfig: sanitizeDcimVideoSystemConfig,
+  });
+  const plainTextFailure = await requestJson(plainTextFailureApp, '/api/webssh-video/config', 'GET');
+  assert.strictEqual(plainTextFailure.statusCode, 200);
+  assert.strictEqual(plainTextFailure.body.ok, false);
+  assert.strictEqual(plainTextFailure.body.message, '读取 WVP 配置失败');
+  assert.strictEqual(plainTextFailure.body.data.msg, '***');
+  assert.strictEqual(plainTextFailure.body.data.details, '***');
+  assert.strictEqual(plainTextFailure.body.data.trace, '***');
+  assert.strictEqual(plainTextFailure.body.data.note, '***');
+  assert.strictEqual(plainTextFailure.body.data.ordinaryDescription, ordinaryDescription);
+  assert.strictEqual(JSON.stringify(plainTextFailure.body).includes(plainTextFailureMessage), false);
+  plainTextSensitiveValues.forEach(function (value) {
+    assert.strictEqual(JSON.stringify(plainTextFailure.body).includes(value), false, 'webssh 失败响应不得包含纯文本凭据');
+  });
+
   const dcimFailureApp = express();
   registerVideoSystemConfigRoute(dcimFailureApp, {
     path: '/api/dcim-video/config',
