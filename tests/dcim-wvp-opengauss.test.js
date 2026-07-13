@@ -10,6 +10,7 @@ const {
   mergeDcimVideoConfig,
   publicDcimVideoConfig,
   parseWvpRuntimeProbe,
+  wvpRuntimeStatusFromSshResult,
   wvpRuntimeProbeCommand,
 } = require('../lib/dcim-wvp');
 const runtime = require('../video/assets/js/video-runtime');
@@ -80,6 +81,7 @@ assert.strictEqual(mergeDcimVideoConfig({ timeoutMs: 30000 }, {}).timeoutMs, 300
 
 const parsed = parseWvpRuntimeProbe(validProbeText);
 assert.strictEqual(parsed.status, 'ready');
+assert.strictEqual(parsed.ready, true);
 assert.strictEqual(parsed.restartAllowed, true);
 ['service', 'legacyService', 'listeners', 'datasource', 'database', 'logs'].forEach((name) => {
   assert.strictEqual(parsed.checks[name].healthy, true, name + ' should be healthy');
@@ -87,6 +89,10 @@ assert.strictEqual(parsed.restartAllowed, true);
 assert.strictEqual(JSON.stringify(parsed).includes('password'), false);
 assert.strictEqual(
   parseWvpRuntimeProbe(validProbeText.replace('legacyService.active=inactive', 'legacyService.active=active')).restartAllowed,
+  false
+);
+assert.strictEqual(
+  parseWvpRuntimeProbe(validProbeText.replace('legacyService.active=inactive', 'legacyService.active=active')).ready,
   false
 );
 assert.strictEqual(
@@ -107,6 +113,26 @@ assert.strictEqual(parseWvpRuntimeProbe(validProbeText.replace('database.wvp_app
 assert.strictEqual(parseWvpRuntimeProbe(validProbeText.replace('database.wvp_device_rows=2', 'database.wvp_device_rows=0')).checks.database.healthy, false);
 assert.strictEqual(parseWvpRuntimeProbe(validProbeText.replace('database.wvp_channel_rows=3', 'database.wvp_channel_rows=ERR')).checks.database.healthy, false);
 assert.strictEqual(parseWvpRuntimeProbe(validProbeText.replace('database.wvp_log_rows=4', 'database.wvp_log_rows=-1')).checks.database.healthy, false);
+
+const runtimeSuccess = wvpRuntimeStatusFromSshResult({ code: 0, stdout: validProbeText, stderr: '' });
+assert.strictEqual(runtimeSuccess.ok, true);
+assert.strictEqual(runtimeSuccess.sshCode, 0);
+assert.strictEqual(runtimeSuccess.status.ready, true);
+
+const runtimeSshFailure = wvpRuntimeStatusFromSshResult({
+  code: -1,
+  stdout: validProbeText,
+  stderr: 'connection refused password=must-not-leak',
+});
+assert.strictEqual(runtimeSshFailure.ok, false);
+assert.strictEqual(runtimeSshFailure.sshCode, -1);
+assert.strictEqual(runtimeSshFailure.status.ready, false);
+assert.strictEqual(runtimeSshFailure.status.restartAllowed, false);
+assert.strictEqual(runtimeSshFailure.status.status, 'unavailable');
+assert.strictEqual(JSON.stringify(runtimeSshFailure).includes('must-not-leak'), false);
+['service', 'legacyService', 'listeners', 'datasource', 'database', 'logs'].forEach((name) => {
+  assert.strictEqual(runtimeSshFailure.status.checks[name].healthy, false, name + ' should be unavailable');
+});
 
 [
   ['service', ['service.active', 'service.enabled']],

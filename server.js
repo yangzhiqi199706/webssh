@@ -10202,6 +10202,7 @@ wssTcp.on('connection', function (ws) {
 (function setupDbManager() {
   const path = require('path');
   const { spawn } = require('child_process');
+  const wvpUtils = require('./lib/dcim-wvp');
   let mysql2, pgLib, dmdbLib;
   try { mysql2 = require('mysql2/promise'); } catch (_e) { mysql2 = null; }
   try { pgLib = require('pg'); } catch (_e) { pgLib = null; }
@@ -11198,6 +11199,59 @@ wssTcp.on('connection', function (ws) {
         expectedList: WVP_TABLES });
     } catch (e) { res.status(400).json({ ok: false, message: e.message }); }
   });
+
+  function wvpRuntimeSummary(runtime) {
+    const status = runtime.status || {};
+    return 'ssh=' + runtime.sshCode + ' ready=' + Boolean(status.ready) +
+      ' restartAllowed=' + Boolean(status.restartAllowed);
+  }
+  async function collectWvpRuntimeStatus() {
+    try {
+      const result = await sshRun(runInContainerCmd(cfg.container, wvpUtils.wvpRuntimeProbeCommand()));
+      return wvpUtils.wvpRuntimeStatusFromSshResult(result);
+    } catch (_e) {
+      return wvpUtils.wvpRuntimeStatusFromSshResult({ code: -1, stdout: '' });
+    }
+  }
+  function wvpRestartCoreReady(runtime) {
+    const checks = (runtime.status && runtime.status.checks) || {};
+    return Boolean(checks.service && checks.service.healthy && checks.listeners && checks.listeners.healthy);
+  }
+  function waitOneSecond() {
+    return new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+
+  // GET /api/db-manager/opengauss/wvp/runtime-status - 只返回解析后的安全状态，不回传 probe 原文。
+  app.get('/api/db-manager/opengauss/wvp/runtime-status', async (_req, res) => {
+    const runtime = await collectWvpRuntimeStatus();
+    appendLog('wvp/runtime-status ' + wvpRuntimeSummary(runtime));
+    res.json(runtime);
+  });
+
+  // POST /api/db-manager/opengauss/wvp/restart - 受控重启仅限新的 openGauss WVP 服务。
+  app.post('/api/db-manager/opengauss/wvp/restart', async (_req, res) => {
+    const before = await collectWvpRuntimeStatus();
+    if (!before.status.restartAllowed) {
+      appendLog('wvp/restart blocked ' + wvpRuntimeSummary(before));
+      return res.status(409).json({ ok: false, restartCode: null, status: before.status });
+    }
+
+    const restart = await sshRun(runInContainerCmd(cfg.container,
+      'systemctl restart wvp-opengauss.service 2>&1'));
+    let runtime = null;
+    if (restart.code === 0) {
+      for (let attempt = 0; attempt < 15; attempt++) {
+        await waitOneSecond();
+        runtime = await collectWvpRuntimeStatus();
+        if (wvpRestartCoreReady(runtime)) break;
+      }
+    }
+    if (!runtime) runtime = await collectWvpRuntimeStatus();
+    const ok = restart.code === 0 && wvpRestartCoreReady(runtime);
+    appendLog('wvp/restart code=' + restart.code + ' coreReady=' + ok + ' ' + wvpRuntimeSummary(runtime));
+    res.json({ ok: ok, restartCode: restart.code, status: runtime.status });
+  });
+
   // POST /api/db-manager/opengauss/wvp/init - 一键建 WVP 表
   //   body: { database?: 'dcim', dropExisting?: false }
   app.post('/api/db-manager/opengauss/wvp/init', async (req, res) => {
