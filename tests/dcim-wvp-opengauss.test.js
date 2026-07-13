@@ -38,13 +38,17 @@ assert.strictEqual(
   'old-hash'
 );
 assert.deepStrictEqual(
+  mergeDcimVideoConfig({}, {}),
+  { apiBase: 'https://127.0.0.1:18080', username: '', timeoutMs: 6000 }
+);
+assert.deepStrictEqual(
   publicDcimVideoConfig(mergeDcimVideoConfig({
     username: 'admin',
     password: 'test-password',
     timeoutMs: 7000,
   }, {})),
   {
-    apiBase: 'https://127.0.0.1:8082',
+    apiBase: 'https://127.0.0.1:18080',
     username: 'admin',
     timeoutMs: 7000,
     hasPasswordHash: true,
