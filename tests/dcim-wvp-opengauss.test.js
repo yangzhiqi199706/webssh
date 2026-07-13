@@ -62,6 +62,13 @@ assert.throws(
   () => mergeDcimVideoConfig({ apiBase: 'http://127.0.0.1:8082' }, {}),
   /HTTPS/
 );
+['https://user:secret@host', 'https://host:18080?token=x', 'https://host:18080#x'].forEach((apiBase) => {
+  assert.throws(() => mergeDcimVideoConfig({ apiBase }, {}));
+});
+assert.strictEqual(
+  mergeDcimVideoConfig({ apiBase: 'https://host:18443/path' }, {}).apiBase,
+  'https://host:18443'
+);
 assert.throws(() => mergeDcimVideoConfig({ timeoutMs: 999 }, {}), /1000/);
 assert.throws(() => mergeDcimVideoConfig({ timeoutMs: 30001 }, {}), /30000/);
 assert.strictEqual(mergeDcimVideoConfig({ timeoutMs: 1000 }, {}).timeoutMs, 1000);
@@ -86,6 +93,16 @@ assert.strictEqual(
   parseWvpRuntimeProbe(validProbeText.replace('listeners.java_wvp=1', 'listeners.java_wvp=0')).checks.listeners.healthy,
   false
 );
+['0', '2'].forEach((value) => {
+  assert.strictEqual(
+    parseWvpRuntimeProbe(validProbeText.replace('listeners.java_wvp=1', 'listeners.java_wvp=' + value)).checks.listeners.healthy,
+    false
+  );
+});
+assert.strictEqual(parseWvpRuntimeProbe(validProbeText.replace('database.wvp_app_connections=1', 'database.wvp_app_connections=0')).checks.database.healthy, false);
+assert.strictEqual(parseWvpRuntimeProbe(validProbeText.replace('database.wvp_device_rows=2', 'database.wvp_device_rows=0')).checks.database.healthy, false);
+assert.strictEqual(parseWvpRuntimeProbe(validProbeText.replace('database.wvp_channel_rows=3', 'database.wvp_channel_rows=ERR')).checks.database.healthy, false);
+assert.strictEqual(parseWvpRuntimeProbe(validProbeText.replace('database.wvp_log_rows=4', 'database.wvp_log_rows=-1')).checks.database.healthy, false);
 
 [
   ['service', ['service.active', 'service.enabled']],
@@ -101,12 +118,14 @@ assert.strictEqual(
   });
 });
 assert.strictEqual(runtime.validatePlaybackRange('', '').ok, false);
-assert.strictEqual(runtime.validatePlaybackRange('2026-07-13T12:10:00Z', '2026-07-13T12:00:00Z').ok, false);
-assert.strictEqual(runtime.validatePlaybackRange('2026-07-13T00:00:00Z', '2026-07-14T00:00:01Z').ok, false);
+assert.strictEqual(runtime.validatePlaybackRange('2026-07-13T12:10', '2026-07-13T12:00').ok, false);
+assert.strictEqual(runtime.validatePlaybackRange('2026-07-13T00:00', '2026-07-14T00:00:01').ok, false);
+assert.strictEqual(runtime.validatePlaybackRange('2026-02-30T10:00', '2026-02-30T10:10').ok, false);
 assert.deepStrictEqual(
-  runtime.validatePlaybackRange('2026-07-13T12:00:00Z', '2026-07-13T12:10:00Z'),
-  { ok: true, startTime: '2026-07-13T12:00:00Z', endTime: '2026-07-13T12:10:00Z' }
+  runtime.validatePlaybackRange('2026-07-13T12:00', '2026-07-13T12:10'),
+  { ok: true, startTime: '2026-07-13T12:00', endTime: '2026-07-13T12:10' }
 );
+assert.strictEqual(runtime.validatePlaybackRange('2026-07-13T12:00:00', '2026-07-13T12:10:30').ok, true);
 
 assert.strictEqual(
   runtime.stopPath('dcim source/1', 'live', 'device 1', 'channel/1', ''),
@@ -131,30 +150,39 @@ assert.strictEqual(typeof browser.window.DcimVideoRuntime.validatePlaybackRange,
 assert.strictEqual(typeof browser.window.DcimVideoRuntime.stopPath, 'function');
 
 const command = wvpRuntimeProbeCommand();
-assert.match(command, /service\.active=/);
-assert.match(command, /listeners\.java_wvp=/);
-assert.match(command, /listeners\.http_18080=/);
-assert.match(command, /listeners\.sip_5060=/);
-assert.match(command, /datasource\.postgresDriver=/);
-assert.match(command, /database\.wvp_app_connections=/);
-assert.match(command, /logs\.db_error_lines=/);
-assert.match(command, /jdbc:postgresql:\/\/127\.0\.0\.1:5432\/dcim/);
-assert.match(command, /:5060\(\[\[:space:\]\]\|\$\)/);
-assert.match(command, /:18080\(\[\[:space:\]\]\|\$\)/);
-assert.match(command, /wvp-opengauss\.service/);
-assert.match(command, /grep -c/);
-assert.match(command, /case/);
-assert.match(command, /journalctl -u wvp-opengauss\.service --since '10 min ago'/);
-assert.match(command, /omm|gsql/);
-assert.match(command, /\/www\/media\/wvp-GB28181-pro\/target\/classes\/application-dev\.yml/);
-assert.doesNotMatch(command, /\/opt\/wvp\/config/);
-assert.match(command, /export GAUSSHOME=/);
-assert.match(command, /export PATH=\$GAUSSHOME\/bin:\$PATH/);
-assert.match(command, /export LD_LIBRARY_PATH=\$GAUSSHOME\/lib:\$LD_LIBRARY_PATH/);
-assert.match(command, /gsql -d dcim/);
-assert.doesNotMatch(command, /gsql -d wvp/);
-assert.doesNotMatch(command, /(?:^|[;&| ])(?:head|cat|sed)(?:\s|$)/);
-assert.doesNotMatch(command, /WVP_DB_PASSWORD/);
+assert.ok(/service\.active=/.test(command));
+assert.ok(/listeners\.java_wvp=/.test(command));
+assert.ok(/listeners\.http_18080=/.test(command));
+assert.ok(/listeners\.sip_5060=/.test(command));
+assert.ok(/datasource\.postgresDriver=/.test(command));
+assert.ok(/database\.wvp_app_connections=/.test(command));
+assert.ok(/logs\.db_error_lines=/.test(command));
+assert.ok(/jdbc:postgresql:\/\/127\.0\.0\.1:5432\/dcim/.test(command));
+assert.ok(/:5060\(\[\[:space:\]\]\|\$\)/.test(command));
+assert.ok(/:18080\(\[\[:space:\]\]\|\$\)/.test(command));
+assert.ok(/wvp-opengauss\.service/.test(command));
+assert.ok(!/pgrep -af 'java\.\*wvp'/.test(command));
+assert.ok(/ps -eo args/.test(command));
+assert.ok(/\[w\]vp-pro-2\.6\.9-06021439\.jar/.test(command));
+assert.ok(/grep -c/.test(command));
+assert.ok(/case/.test(command));
+assert.ok(/journalctl -u wvp-opengauss\.service --since '10 min ago'/.test(command));
+assert.ok(/omm|gsql/.test(command));
+assert.ok(/\/www\/media\/wvp-GB28181-pro\/target\/classes\/application-dev\.yml/.test(command));
+assert.ok(!/\/opt\/wvp\/config/.test(command));
+assert.ok(/export GAUSSHOME=/.test(command));
+assert.ok(/export PATH=\$GAUSSHOME\/bin:\$PATH/.test(command));
+assert.ok(/export LD_LIBRARY_PATH=\$GAUSSHOME\/lib:\$LD_LIBRARY_PATH/.test(command));
+assert.ok(/gsql -d dcim/.test(command));
+assert.ok(/usename=.*wvp_app/.test(command));
+assert.ok(/datname=.*dcim/.test(command));
+assert.ok(/application_name=.*wvp/.test(command));
+assert.ok(!/gsql -d wvp/.test(command));
+assert.ok(/\^\[\[:space:\]\]\*driver-class-name:\[\[:space:\]\]\*org\[\.\]postgresql\[\.\]Driver/.test(command));
+assert.ok(/\^\[\[:space:\]\]\*helper-dialect:\[\[:space:\]\]\*postgresql/.test(command));
+assert.ok(/\^\[\[:space:\]\]\*url:\[\[:space:\]\]\*jdbc:mysql:/.test(command));
+assert.ok(!/(?:^|[;&| ])(?:head|cat|sed)(?:\s|$)/.test(command));
+assert.ok(!/WVP_DB_PASSWORD/.test(command));
 assert.ok((command.match(/\|\| true/g) || []).length >= 12);
 
 console.log('dcim wvp opengauss tests: PASS');
