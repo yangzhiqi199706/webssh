@@ -1341,7 +1341,8 @@ Tile 模式选择 stop 路由的逻辑。
 - `connection-config` 是 webssh 本地保存的 dcim WVP 登录连接信息，公开读取仅返回
   `apiBase`、`username`、`timeoutMs`、`hasPasswordHash`。既有
   `GET /api/dcim-video/config` 仍是经过 WVP 会话代理的“服务端系统配置”读取接口，不读取也不修改
-  本地登录配置，不能混用。
+  本地登录配置，不能混用；该接口在响应前会递归脱敏 `password`、`secret`、`token`、
+  `authorization`、`privateKey` 等敏感键，保留 SIP ID、域和端口等非敏感配置。
 - 浏览器只在用户保存且密码框非空时提交一次明文密码；服务端立即计算 MD5，仅把哈希写入
   `config/dcim-video.json`（权限 `0600`）。密码为空或掩码值时保留旧哈希。任何响应、日志或前端状态
   都不得返回哈希、明文密码或 WVP token；保存成功会清除缓存的 WVP 会话，后续请求重新登录。

@@ -885,7 +885,7 @@ sdp-ip:    192.168.0.22</pre>
         ['SIP 服务器域', sip.domain || '—'],
         ['SIP 监听 IP', sip.ip || '—'],
         ['SIP 监听端口', sip.port != null ? sip.port : '—'],
-        ['SIP 鉴权密码', sip.password ? sip.password : '(留空 = 不校验)'],
+        ['鉴权密码', '已脱敏'],
         ['注册有效期', (sip.registerTimeInterval || '—') + ' 秒'],
         ['云台速度', sip.ptzSpeed != null ? sip.ptzSpeed : '—'],
         ['wvp 版本', (ver.version || '—') + ' (' + (ver.GIT_BRANCH || '') + ' / ' + (ver.BUILD_DATE || '') + ')'],

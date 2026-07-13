@@ -60,6 +60,59 @@ function dcimVideoRequestLabel(method, urlPath) {
   return String(method || 'GET').toUpperCase() + ' ' + pathname;
 }
 
+function sanitizeDcimVideoSystemConfig(value) {
+  let inputValue = value;
+  if (typeof inputValue === 'string') {
+    try { inputValue = JSON.parse(inputValue); }
+    catch (_e) { return '***'; }
+    if (!inputValue || typeof inputValue !== 'object') return '***';
+  }
+
+  function isSensitiveKey(key) {
+    const normalized = String(key || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+    return normalized.indexOf('password') !== -1 || normalized === 'passwd' || normalized === 'pwd' ||
+      normalized.indexOf('secret') !== -1 || normalized.indexOf('token') !== -1 ||
+      normalized.indexOf('authorization') !== -1 || normalized.indexOf('privatekey') !== -1 ||
+      normalized.indexOf('apikey') !== -1 || normalized.indexOf('credential') !== -1;
+  }
+
+  function cloneAndRedact(input) {
+    if (Array.isArray(input)) return input.map(cloneAndRedact);
+    if (!input || typeof input !== 'object') return input;
+    const output = {};
+    Object.keys(input).forEach(function (key) {
+      Object.defineProperty(output, key, {
+        configurable: true,
+        enumerable: true,
+        writable: true,
+        value: isSensitiveKey(key) ? '***' : cloneAndRedact(input[key]),
+      });
+    });
+    return output;
+  }
+
+  return cloneAndRedact(inputValue);
+}
+
+function registerDcimVideoSystemConfigRoute(app, deps) {
+  const options = deps || {};
+  if (!app || typeof app.get !== 'function') throw new Error('Express app is required');
+  if (typeof options.callWithAuth !== 'function') throw new Error('callWithAuth is required');
+  if (typeof options.sanitizeSystemConfig !== 'function') throw new Error('sanitizeSystemConfig is required');
+
+  app.get('/api/dcim-video/config', async function (_req, res) {
+    const r = await options.callWithAuth('GET', '/api/server/system/configInfo', null);
+    if (!r.ok) {
+      return res.json({
+        ok: false,
+        message: r.message || ('上游返回 ' + r.status),
+        data: options.sanitizeSystemConfig(r.data),
+      });
+    }
+    res.json({ ok: true, data: options.sanitizeSystemConfig((r.data && r.data.data) || r.data) });
+  });
+}
+
 function createDcimVideoSession() {
   let generation = 0;
   let cachedToken = '';
@@ -9084,10 +9137,9 @@ wssTcp.on('connection', function (ws) {
     });
   });
 
-  app.get('/api/dcim-video/config', async function (_req, res) {
-    const r = await callWithAuth('GET', '/api/server/system/configInfo', null);
-    if (!r.ok) return res.json({ ok: false, message: r.message || ('上游返回 ' + r.status), data: r.data });
-    res.json({ ok: true, data: (r.data && r.data.data) || r.data });
+  registerDcimVideoSystemConfigRoute(app, {
+    callWithAuth: callWithAuth,
+    sanitizeSystemConfig: sanitizeDcimVideoSystemConfig,
   });
 
   app.get('/api/dcim-video/devices', async function (req, res) {

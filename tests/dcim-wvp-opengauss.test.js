@@ -134,7 +134,10 @@ const createDcimVideoDefaults = extractServerFunction('createDcimVideoDefaults')
 const writeDcimVideoConfig = extractServerFunction('writeDcimVideoConfig');
 const createDcimVideoSession = extractServerFunction('createDcimVideoSession');
 const dcimVideoRequestLabel = extractServerFunction('dcimVideoRequestLabel');
+const sanitizeDcimVideoSystemConfig = extractServerFunction('sanitizeDcimVideoSystemConfig');
+const registerDcimVideoSystemConfigRoute = extractServerFunction('registerDcimVideoSystemConfigRoute');
 const setupDcimVideoConnectionSource = extractVideoFunction('setupDcimVideoConnection');
+const renderDcimVideoConfigSource = extractVideoFunction('renderConfig');
 const upgradePayloadEntries = extractScriptFunction('scripts/deploy-upgrade.js', 'upgradePayloadEntries');
 const protocolMainSyncEntries = extractScriptFunction('scripts/deploy-protocol.js', 'protocolMainSyncEntries');
 const createMainSyncDirectorySwap = extractScriptFunction('scripts/deploy-protocol.js', 'createMainSyncDirectorySwap');
@@ -657,6 +660,93 @@ async function runDcimVideoConnectionRouteContractTests() {
     message: 'WVP 登录失败，请检查账号或密码',
   });
   assert.strictEqual(/accessToken|test-only-token|upstream-body/.test(JSON.stringify(failedLogin.body)), false);
+}
+
+async function runDcimVideoSystemConfigRedactionTests() {
+  const sensitiveValues = [
+    'fixture-password-value',
+    'fixture-pass-word-value',
+    'fixture-secret-value',
+    'fixture-token-value',
+    'fixture-access-token-value',
+    'fixture-authorization-value',
+    'fixture-private-key-value',
+  ];
+  const upstreamConfig = {
+    sip: {
+      id: '34020000002000000001',
+      domain: '3402000000',
+      port: 5060,
+      password: sensitiveValues[0],
+      nested: {
+        passWord: sensitiveValues[1],
+        secret: sensitiveValues[2],
+        token: sensitiveValues[3],
+        accessToken: sensitiveValues[4],
+        authorization: sensitiveValues[5],
+        privateKey: sensitiveValues[6],
+      },
+    },
+    version: { version: '2.6.9' },
+  };
+  const upstreamResponse = { code: 0, data: upstreamConfig };
+  const sanitized = sanitizeDcimVideoSystemConfig(upstreamConfig);
+  assert.notStrictEqual(sanitized, upstreamConfig);
+  assert.strictEqual(sanitized.sip.password, '***');
+  assert.strictEqual(sanitized.sip.nested.passWord, '***');
+  assert.strictEqual(sanitized.sip.nested.secret, '***');
+  assert.strictEqual(sanitized.sip.nested.token, '***');
+  assert.strictEqual(sanitized.sip.nested.accessToken, '***');
+  assert.strictEqual(sanitized.sip.nested.authorization, '***');
+  assert.strictEqual(sanitized.sip.nested.privateKey, '***');
+  assert.strictEqual(sanitized.sip.id, upstreamConfig.sip.id);
+  assert.strictEqual(sanitized.sip.domain, upstreamConfig.sip.domain);
+  assert.strictEqual(sanitized.sip.port, upstreamConfig.sip.port);
+  assert.strictEqual(JSON.stringify(sanitized).includes(sensitiveValues[0]), false);
+  assert.strictEqual(upstreamConfig.sip.password, sensitiveValues[0]);
+  assert.strictEqual(upstreamConfig.sip.nested.token, sensitiveValues[3]);
+  const sanitizedRawConfig = sanitizeDcimVideoSystemConfig(JSON.stringify(upstreamConfig));
+  sensitiveValues.forEach(function (value) {
+    assert.strictEqual(JSON.stringify(sanitizedRawConfig).includes(value), false, '原始 JSON 文本也不得保留敏感值');
+  });
+
+  const routeApp = express();
+  registerDcimVideoSystemConfigRoute(routeApp, {
+    callWithAuth: async function () {
+      return { ok: true, status: 200, data: upstreamResponse };
+    },
+    sanitizeSystemConfig: sanitizeDcimVideoSystemConfig,
+  });
+  const response = await requestJson(routeApp, '/api/dcim-video/config', 'GET');
+  assert.strictEqual(response.statusCode, 200);
+  assert.strictEqual(response.body.ok, true);
+  sensitiveValues.forEach(function (value) {
+    assert.strictEqual(JSON.stringify(response.body).includes(value), false, '路由响应不得包含上游敏感值');
+  });
+  assert.strictEqual(response.body.data.sip.id, upstreamConfig.sip.id);
+  assert.strictEqual(response.body.data.sip.domain, upstreamConfig.sip.domain);
+  assert.strictEqual(response.body.data.sip.port, upstreamConfig.sip.port);
+
+  const tableBody = { innerHTML: '' };
+  const elements = {
+    dcimCfgTable: { querySelector: function () { return tableBody; } },
+    dcimCfgHint: { textContent: '', className: '' },
+    cfgSrcTag: { hidden: true, textContent: '', className: '' },
+  };
+  const renderContext = {
+    $: function (id) { return elements[id]; },
+    esc: function (value) { return String(value == null ? '' : value); },
+  };
+  vm.runInNewContext(renderDcimVideoConfigSource + '\nthis.renderConfig = renderConfig;', renderContext);
+  renderContext.renderConfig(upstreamConfig, 'dcim');
+  sensitiveValues.forEach(function (value) {
+    assert.strictEqual(tableBody.innerHTML.includes(value), false, '视频渲染 DOM 不得包含上游敏感值');
+  });
+  assert.ok(tableBody.innerHTML.includes(upstreamConfig.sip.id));
+  assert.ok(tableBody.innerHTML.includes(upstreamConfig.sip.domain));
+  assert.ok(tableBody.innerHTML.includes(String(upstreamConfig.sip.port)));
+  assert.ok(tableBody.innerHTML.includes('鉴权密码'));
+  assert.ok(tableBody.innerHTML.includes('已脱敏'));
 }
 
 async function runDcimVideoConnectionRaceTests() {
@@ -1862,7 +1952,7 @@ try {
   try { fs.unlinkSync(shellPath); } catch (error) {}
 }
 
-runWvpRuntimeOperationTests().then(runSshCommandTimeoutTests).then(runSshCommandLateEventTests).then(runWvpRuntimeRouteContractTests).then(runDcimVideoConnectionRouteContractTests).then(runDcimVideoConnectionRaceTests).then(runDcimVideoAtomicWriteTests).then(runDcimVideoConnectionUiTests).then(runVideoVendorStaticTests).then(runVideoSourceLoadFailureTests).then(runVideoPlaybackUiTests).then(runProtocolMainSyncRollbackFailureTests).then(() => {
+runWvpRuntimeOperationTests().then(runSshCommandTimeoutTests).then(runSshCommandLateEventTests).then(runWvpRuntimeRouteContractTests).then(runDcimVideoConnectionRouteContractTests).then(runDcimVideoSystemConfigRedactionTests).then(runDcimVideoConnectionRaceTests).then(runDcimVideoAtomicWriteTests).then(runDcimVideoConnectionUiTests).then(runVideoVendorStaticTests).then(runVideoSourceLoadFailureTests).then(runVideoPlaybackUiTests).then(runProtocolMainSyncRollbackFailureTests).then(() => {
   console.log('dcim wvp opengauss tests: PASS');
 }).catch((error) => {
   console.error(error);
