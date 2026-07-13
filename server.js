@@ -11208,7 +11208,8 @@ wssTcp.on('connection', function (ws) {
   }
   async function collectWvpRuntimeStatus() {
     try {
-      const result = await sshRun(runInContainerCmd(cfg.container, wvpUtils.wvpRuntimeProbeCommand()));
+      const probe = 'timeout 10s sh -c ' + shellEscape(wvpUtils.wvpRuntimeProbeCommand());
+      const result = await sshRun(runInContainerCmd(cfg.container, probe));
       return wvpUtils.wvpRuntimeStatusFromSshResult(result);
     } catch (_e) {
       return wvpUtils.wvpRuntimeStatusFromSshResult({ code: -1, stdout: '' });
@@ -11216,7 +11217,8 @@ wssTcp.on('connection', function (ws) {
   }
   const wvpRuntimeOperations = createWvpRuntimeOperations({
     collect: collectWvpRuntimeStatus,
-    restartService: (command) => sshRun(runInContainerCmd(cfg.container, command)),
+    restartService: (command) => sshRun(runInContainerCmd(cfg.container,
+      'timeout 10s sh -c ' + shellEscape(command))),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   });
 

@@ -1030,6 +1030,7 @@ SHOW DATABASES;"></textarea>
       $('wvpRuntimeModal').classList.add('open');
       $('wvpRuntimeActionStatus').style.display = 'none';
       $('wvpRuntimeActionStatus').innerHTML = '';
+      renderWvpRuntimeStatus(null);
       loadWvpRuntimeStatus();
     }
     $('btnCloseWvpRuntime').addEventListener('click', () => $('wvpRuntimeModal').classList.remove('open'));
@@ -1058,7 +1059,7 @@ SHOW DATABASES;"></textarea>
     async function loadWvpRuntimeStatus() {
       try {
         const r = await jfetch(API + '/opengauss/wvp/runtime-status');
-        renderWvpRuntimeStatus(r.status || null);
+        renderWvpRuntimeStatus(r.ok ? r.status : null);
       } catch (_e) {
         renderWvpRuntimeStatus(null);
       }

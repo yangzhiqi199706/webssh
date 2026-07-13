@@ -100,6 +100,20 @@ assert.strictEqual(
   parseWvpRuntimeProbe(validProbeText.replace('legacyService.enabled=disabled', 'legacyService.enabled=enabled')).restartAllowed,
   false
 );
+['activating', 'reloading', 'deactivating', 'failed', 'unknown'].forEach((legacyState) => {
+  assert.strictEqual(
+    parseWvpRuntimeProbe(validProbeText.replace('legacyService.active=inactive', 'legacyService.active=' + legacyState)).restartAllowed,
+    false,
+    legacyState + ' must block restart'
+  );
+});
+['enabled', 'static', 'unknown'].forEach((legacyState) => {
+  assert.strictEqual(
+    parseWvpRuntimeProbe(validProbeText.replace('legacyService.enabled=disabled', 'legacyService.enabled=' + legacyState)).restartAllowed,
+    false,
+    legacyState + ' must block restart'
+  );
+});
 assert.strictEqual(
   parseWvpRuntimeProbe(validProbeText.replace('listeners.java_wvp=1', 'listeners.java_wvp=0')).checks.listeners.healthy,
   false
@@ -156,6 +170,22 @@ function runtimeOperationStatus(ready, restartAllowed) {
   };
 }
 
+function completesWithin(promise, timeoutMs) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((resolve, reject) => {
+      timer = setTimeout(() => reject(new Error('operation timed out in test')), timeoutMs);
+    }),
+  ]).then((value) => {
+    clearTimeout(timer);
+    return value;
+  }, (error) => {
+    clearTimeout(timer);
+    throw error;
+  });
+}
+
 async function runWvpRuntimeOperationTests() {
   let legacyRestartCalls = 0;
   const legacyActiveRuntime = runtimeOperationStatus(false, false);
@@ -179,8 +209,24 @@ async function runWvpRuntimeOperationTests() {
   });
   const allowedResult = await allowedOps.restart();
   assert.strictEqual(allowedResult.ok, true);
-  assert.deepStrictEqual(restartCommands, ['systemctl restart wvp-opengauss.service 2>&1']);
-  assert.strictEqual(restartCommands.join('\n').includes('wvp-pro.service'), false);
+  assert.strictEqual(restartCommands.length, 1);
+  assert.ok(/systemctl is-active wvp-pro\.service/.test(restartCommands[0]));
+  assert.ok(/systemctl is-enabled wvp-pro\.service/.test(restartCommands[0]));
+  assert.ok(/legacy_active.*inactive/.test(restartCommands[0]));
+  assert.ok(/legacy_enabled.*disabled/.test(restartCommands[0]));
+  assert.ok(/systemctl restart wvp-opengauss\.service 2>&1/.test(restartCommands[0]));
+  assert.strictEqual(/systemctl restart wvp-pro\.service/.test(restartCommands[0]), false);
+
+  const atomicConflictOps = createWvpRuntimeOperations({
+    collect: async () => runtimeOperationStatus(true, true),
+    restartService: async () => ({ code: 75, stdout: 'legacy active' }),
+    sleep: async () => { throw new Error('atomic conflict must not poll'); },
+  });
+  const atomicConflictResult = await atomicConflictOps.restart();
+  assert.strictEqual(atomicConflictResult.statusCode, 409);
+  assert.strictEqual(atomicConflictResult.ok, false);
+  assert.strictEqual(atomicConflictResult.restartCode, 75);
+  assert.strictEqual(atomicConflictResult.status.restartAllowed, false);
 
   const pollSequence = [runtimeOperationStatus(false, true), runtimeOperationStatus(false, true), runtimeOperationStatus(true, true)];
   let pollCollectCalls = 0;
@@ -226,6 +272,42 @@ async function runWvpRuntimeOperationTests() {
   assert.strictEqual(failureResult.ok, false);
   assert.strictEqual(failureResult.restartCode, 2);
   assert.strictEqual(/stdout|stderr|command|raw|password|secret/i.test(JSON.stringify(failureResult)), false);
+
+  const never = () => new Promise(() => {});
+  const collectTimeoutOps = createWvpRuntimeOperations({
+    timeoutMs: 5,
+    collect: never,
+    restartService: async () => ({ code: 0 }),
+    sleep: async () => {},
+  });
+  const collectTimeoutStatus = await completesWithin(collectTimeoutOps.readStatus(), 100);
+  assert.strictEqual(collectTimeoutStatus.status.status, 'unavailable');
+  assert.strictEqual(collectTimeoutStatus.status.ready, false);
+  const collectTimeoutRestart = await completesWithin(collectTimeoutOps.restart(), 100);
+  assert.strictEqual(collectTimeoutRestart.statusCode, 504);
+  assert.strictEqual(collectTimeoutRestart.ok, false);
+
+  const restartTimeoutOps = createWvpRuntimeOperations({
+    timeoutMs: 5,
+    collect: async () => runtimeOperationStatus(true, true),
+    restartService: never,
+    sleep: async () => {},
+  });
+  const restartTimeoutResult = await completesWithin(restartTimeoutOps.restart(), 100);
+  assert.strictEqual(restartTimeoutResult.statusCode, 504);
+  assert.strictEqual(restartTimeoutResult.ok, false);
+  assert.strictEqual(restartTimeoutResult.status.status, 'unavailable');
+
+  let pollTimeoutCollectCalls = 0;
+  const pollTimeoutOps = createWvpRuntimeOperations({
+    timeoutMs: 5,
+    collect: async () => pollTimeoutCollectCalls++ === 0 ? runtimeOperationStatus(false, true) : never(),
+    restartService: async () => ({ code: 0 }),
+    sleep: async () => {},
+  });
+  const pollTimeoutResult = await completesWithin(pollTimeoutOps.restart(), 100);
+  assert.strictEqual(pollTimeoutResult.statusCode, 504);
+  assert.strictEqual(pollTimeoutResult.ok, false);
 }
 
 [
@@ -272,6 +354,10 @@ const browser = { window: {} };
 vm.runInNewContext(require('fs').readFileSync(require.resolve('../video/assets/js/video-runtime'), 'utf8'), browser);
 assert.strictEqual(typeof browser.window.DcimVideoRuntime.validatePlaybackRange, 'function');
 assert.strictEqual(typeof browser.window.DcimVideoRuntime.stopPath, 'function');
+
+const dbPage = fs.readFileSync(path.join(__dirname, '..', 'db', 'index.html'), 'utf8');
+assert.ok(/function openWvpRuntimeModal\(\)\s*\{[\s\S]*?renderWvpRuntimeStatus\(null\);/.test(dbPage));
+assert.ok(/renderWvpRuntimeStatus\(r\.ok \? r\.status : null\);/.test(dbPage));
 
 const command = wvpRuntimeProbeCommand();
 assert.ok(/service\.active=/.test(command));
