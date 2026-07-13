@@ -67,6 +67,7 @@ function sanitizeDcimVideoSystemConfig(value) {
     catch (_e) { return '***'; }
     if (!inputValue || typeof inputValue !== 'object') return '***';
   }
+  const seen = new WeakSet();
 
   function isSensitiveKey(key) {
     const normalized = String(key || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
@@ -81,59 +82,105 @@ function sanitizeDcimVideoSystemConfig(value) {
       normalized.indexOf('apikey') !== -1 || normalized.indexOf('credential') !== -1;
   }
 
-  function cloneAndRedact(input) {
-    if (Array.isArray(input)) return input.map(cloneAndRedact);
-    if (!input || typeof input !== 'object') return input;
-    const output = {};
-    Object.keys(input).forEach(function (key) {
+  function defineSafeValue(output, key, value) {
+    try {
       Object.defineProperty(output, key, {
         configurable: true,
         enumerable: true,
         writable: true,
-        value: isSensitiveKey(key) ? '***' : cloneAndRedact(input[key]),
+        value: value,
       });
-    });
-    return output;
+    } catch (_e) {}
+  }
+
+  function safeJsonStringify(input) {
+    try { return JSON.stringify(input); }
+    catch (_e) { return '"***"'; }
+  }
+
+  function cloneAndRedact(input) {
+    if (typeof input === 'string') {
+      try {
+        const parsed = JSON.parse(input);
+        if (parsed && typeof parsed === 'object') return safeJsonStringify(cloneAndRedact(parsed));
+      } catch (_e) {}
+      return input;
+    }
+    if (input === null || typeof input === 'boolean' || typeof input === 'number') return input;
+    if (!input || typeof input !== 'object') return '***';
+    if (seen.has(input)) return '***';
+    seen.add(input);
+
+    try {
+      const isArray = Array.isArray(input);
+      const keys = Object.keys(input);
+      const output = isArray ? [] : {};
+      if (isArray) {
+        const lengthDescriptor = Object.getOwnPropertyDescriptor(input, 'length');
+        const length = lengthDescriptor && lengthDescriptor.value;
+        if (typeof length === 'number' && length >= 0 && length <= 4294967295 && Math.floor(length) === length) {
+          output.length = length;
+        }
+      }
+
+      keys.forEach(function (key) {
+        let descriptor;
+        try { descriptor = Object.getOwnPropertyDescriptor(input, key); }
+        catch (_e) { descriptor = null; }
+        const hasValue = descriptor && Object.prototype.hasOwnProperty.call(descriptor, 'value');
+        const safeValue = hasValue && !isSensitiveKey(key) ? cloneAndRedact(descriptor.value) : '***';
+        defineSafeValue(output, key, safeValue);
+      });
+      return output;
+    } catch (_e) {
+      return '***';
+    } finally {
+      seen.delete(input);
+    }
   }
 
   return cloneAndRedact(inputValue);
 }
 
-function registerDcimVideoSystemConfigRoute(app, deps) {
+function registerVideoSystemConfigRoute(app, deps) {
   const options = deps || {};
   if (!app || typeof app.get !== 'function') throw new Error('Express app is required');
+  if (typeof options.path !== 'string' || options.path.charAt(0) !== '/') throw new Error('path is required');
   if (typeof options.callWithAuth !== 'function') throw new Error('callWithAuth is required');
   if (typeof options.sanitizeSystemConfig !== 'function') throw new Error('sanitizeSystemConfig is required');
 
-  app.get('/api/dcim-video/config', async function (_req, res) {
-    const r = await options.callWithAuth('GET', '/api/server/system/configInfo', null);
-    if (!r.ok) {
-      return res.json({
-        ok: false,
-        message: r.message || ('上游返回 ' + r.status),
-        data: options.sanitizeSystemConfig(r.data),
-      });
+  function descriptorValue(input, key) {
+    if (!input || typeof input !== 'object') return '***';
+    try {
+      const descriptor = Object.getOwnPropertyDescriptor(input, key);
+      return descriptor && Object.prototype.hasOwnProperty.call(descriptor, 'value') ? descriptor.value : '***';
+    } catch (_e) {
+      return '***';
     }
-    res.json({ ok: true, data: options.sanitizeSystemConfig((r.data && r.data.data) || r.data) });
-  });
-}
+  }
 
-function registerWebsshVideoSystemConfigRoute(app, deps) {
-  const options = deps || {};
-  if (!app || typeof app.get !== 'function') throw new Error('Express app is required');
-  if (typeof options.callWithAuth !== 'function') throw new Error('callWithAuth is required');
-  if (typeof options.sanitizeSystemConfig !== 'function') throw new Error('sanitizeSystemConfig is required');
-
-  app.get('/api/webssh-video/config', async function (_req, res) {
-    const r = await options.callWithAuth('GET', '/api/server/system/configInfo', null);
-    if (!r.ok) {
-      return res.json({
-        ok: false,
-        message: r.message || ('上游返回 ' + r.status),
-        data: options.sanitizeSystemConfig(r.data),
-      });
+  function configPayload(input) {
+    if (!input || typeof input !== 'object') return input;
+    try {
+      const descriptor = Object.getOwnPropertyDescriptor(input, 'data');
+      return descriptor && Object.prototype.hasOwnProperty.call(descriptor, 'value') ? descriptor.value : input;
+    } catch (_e) {
+      return input;
     }
-    res.json({ ok: true, data: options.sanitizeSystemConfig((r.data && r.data.data) || r.data) });
+  }
+
+  app.get(options.path, async function (_req, res) {
+    try {
+      const r = await options.callWithAuth('GET', '/api/server/system/configInfo', null);
+      const safeResponseData = options.sanitizeSystemConfig(descriptorValue(r, 'data'));
+      if (descriptorValue(r, 'ok') !== true) {
+        return res.json({ ok: false, message: '读取 WVP 配置失败', data: safeResponseData });
+      }
+
+      return res.json({ ok: true, data: configPayload(safeResponseData) });
+    } catch (_e) {
+      return res.json({ ok: false, message: '读取 WVP 配置失败', data: '***' });
+    }
   });
 }
 
@@ -9161,7 +9208,8 @@ wssTcp.on('connection', function (ws) {
     });
   });
 
-  registerDcimVideoSystemConfigRoute(app, {
+  registerVideoSystemConfigRoute(app, {
+    path: '/api/dcim-video/config',
     callWithAuth: callWithAuth,
     sanitizeSystemConfig: sanitizeDcimVideoSystemConfig,
   });
@@ -9416,7 +9464,8 @@ wssTcp.on('connection', function (ws) {
     });
   });
 
-  registerWebsshVideoSystemConfigRoute(app, {
+  registerVideoSystemConfigRoute(app, {
+    path: '/api/webssh-video/config',
     callWithAuth: callWithAuth,
     sanitizeSystemConfig: sanitizeDcimVideoSystemConfig,
   });

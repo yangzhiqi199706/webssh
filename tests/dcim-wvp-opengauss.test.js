@@ -135,8 +135,7 @@ const writeDcimVideoConfig = extractServerFunction('writeDcimVideoConfig');
 const createDcimVideoSession = extractServerFunction('createDcimVideoSession');
 const dcimVideoRequestLabel = extractServerFunction('dcimVideoRequestLabel');
 const sanitizeDcimVideoSystemConfig = extractServerFunction('sanitizeDcimVideoSystemConfig');
-const registerDcimVideoSystemConfigRoute = extractServerFunction('registerDcimVideoSystemConfigRoute');
-const registerWebsshVideoSystemConfigRoute = extractServerFunction('registerWebsshVideoSystemConfigRoute');
+const registerVideoSystemConfigRoute = extractServerFunction('registerVideoSystemConfigRoute');
 const setupDcimVideoConnectionSource = extractVideoFunction('setupDcimVideoConnection');
 const renderDcimVideoConfigSource = extractVideoFunction('renderConfig');
 const upgradePayloadEntries = extractScriptFunction('scripts/deploy-upgrade.js', 'upgradePayloadEntries');
@@ -423,7 +422,7 @@ async function runSshCommandLateEventTests() {
   assert.strictEqual(lateChannel.destroyCalls, 1);
 }
 
-function requestJson(app, pathname, method, payload) {
+function requestJson(app, pathname, method, payload, timeoutMs) {
   return new Promise((resolve, reject) => {
     const server = http.createServer(app);
     function closeAnd(callback) {
@@ -449,6 +448,9 @@ function requestJson(app, pathname, method, payload) {
             resolve({ statusCode: response.statusCode, body: body });
           });
         });
+      });
+      request.setTimeout(timeoutMs || 1000, function () {
+        request.destroy(new Error('HTTP request timed out'));
       });
       request.on('error', function (error) { closeAnd(function () { reject(error); }); });
       request.end(payload === undefined ? undefined : JSON.stringify(payload));
@@ -697,11 +699,13 @@ async function runDcimVideoSystemConfigRedactionTests() {
         authPass: sensitiveValues[10],
         authKey: sensitiveValues[11],
         array: [{ auth_pwd: sensitiveValues[9] }],
+        extra: JSON.stringify({ authPwd: sensitiveValues[7], mode: 'keep' }),
       },
     },
     version: { version: '2.6.9' },
   };
   const upstreamResponse = { code: 0, data: upstreamConfig };
+  const upstreamFailureMessage = '上游原始错误 authPwd=' + sensitiveValues[7];
   const sanitized = sanitizeDcimVideoSystemConfig(upstreamConfig);
   assert.notStrictEqual(sanitized, upstreamConfig);
   assert.strictEqual(sanitized.sip.password, '***');
@@ -717,6 +721,7 @@ async function runDcimVideoSystemConfigRedactionTests() {
   assert.strictEqual(sanitized.sip.nested.authPass, '***');
   assert.strictEqual(sanitized.sip.nested.authKey, '***');
   assert.strictEqual(sanitized.sip.nested.array[0].auth_pwd, '***');
+  assert.deepStrictEqual(JSON.parse(sanitized.sip.nested.extra), { authPwd: '***', mode: 'keep' });
   assert.strictEqual(sanitized.sip.id, upstreamConfig.sip.id);
   assert.strictEqual(sanitized.sip.domain, upstreamConfig.sip.domain);
   assert.strictEqual(sanitized.sip.port, upstreamConfig.sip.port);
@@ -725,13 +730,51 @@ async function runDcimVideoSystemConfigRedactionTests() {
   assert.strictEqual(upstreamConfig.sip.nested.token, sensitiveValues[3]);
   assert.strictEqual(upstreamConfig.sip.nested.authPwd, sensitiveValues[7]);
   assert.strictEqual(upstreamConfig.sip.nested.array[0].auth_pwd, sensitiveValues[9]);
+  assert.strictEqual(upstreamConfig.sip.nested.extra, JSON.stringify({ authPwd: sensitiveValues[7], mode: 'keep' }));
   const sanitizedRawConfig = sanitizeDcimVideoSystemConfig(JSON.stringify(upstreamConfig));
   sensitiveValues.forEach(function (value) {
     assert.strictEqual(JSON.stringify(sanitizedRawConfig).includes(value), false, '原始 JSON 文本也不得保留敏感值');
   });
 
+  const circularConfig = { id: 'preserve-circular-id', authPwd: sensitiveValues[7] };
+  circularConfig.self = circularConfig;
+  let circularSanitized;
+  assert.doesNotThrow(function () {
+    circularSanitized = sanitizeDcimVideoSystemConfig(circularConfig);
+  });
+  assert.strictEqual(circularSanitized.id, circularConfig.id);
+  assert.strictEqual(circularSanitized.authPwd, '***');
+  assert.strictEqual(circularSanitized.self, '***');
+  assert.strictEqual(circularConfig.self, circularConfig);
+
+  const sharedNestedConfig = { id: 'preserve-shared-id', authPwd: sensitiveValues[7] };
+  const sharedReferenceConfig = { first: sharedNestedConfig, second: sharedNestedConfig };
+  const sharedReferenceSanitized = sanitizeDcimVideoSystemConfig(sharedReferenceConfig);
+  assert.strictEqual(sharedReferenceSanitized.first.id, 'preserve-shared-id');
+  assert.strictEqual(sharedReferenceSanitized.first.authPwd, '***');
+  assert.strictEqual(sharedReferenceSanitized.second.id, 'preserve-shared-id');
+  assert.strictEqual(sharedReferenceSanitized.second.authPwd, '***');
+  assert.strictEqual(sharedReferenceConfig.first, sharedNestedConfig);
+  assert.strictEqual(sharedReferenceConfig.second, sharedNestedConfig);
+
+  const getterConfig = { id: 'preserve-getter-id' };
+  Object.defineProperty(getterConfig, 'throwingValue', {
+    configurable: true,
+    enumerable: true,
+    get: function () { throw new Error('getter ' + sensitiveValues[7]); },
+  });
+  let getterSanitized;
+  assert.doesNotThrow(function () {
+    getterSanitized = sanitizeDcimVideoSystemConfig(getterConfig);
+  });
+  assert.strictEqual(getterSanitized.id, getterConfig.id);
+  assert.strictEqual(getterSanitized.throwingValue, '***');
+  assert.strictEqual(JSON.stringify(getterSanitized).includes(sensitiveValues[7]), false);
+  assert.strictEqual(typeof Object.getOwnPropertyDescriptor(getterConfig, 'throwingValue').get, 'function');
+
   const routeApp = express();
-  registerDcimVideoSystemConfigRoute(routeApp, {
+  registerVideoSystemConfigRoute(routeApp, {
+    path: '/api/dcim-video/config',
     callWithAuth: async function () {
       return { ok: true, status: 200, data: upstreamResponse };
     },
@@ -746,9 +789,30 @@ async function runDcimVideoSystemConfigRedactionTests() {
   assert.strictEqual(response.body.data.sip.id, upstreamConfig.sip.id);
   assert.strictEqual(response.body.data.sip.domain, upstreamConfig.sip.domain);
   assert.strictEqual(response.body.data.sip.port, upstreamConfig.sip.port);
+  assert.deepStrictEqual(JSON.parse(response.body.data.sip.nested.extra), { authPwd: '***', mode: 'keep' });
+
+  const dcimFailureApp = express();
+  registerVideoSystemConfigRoute(dcimFailureApp, {
+    path: '/api/dcim-video/config',
+    callWithAuth: async function () {
+      return { ok: false, status: 502, message: upstreamFailureMessage, data: upstreamConfig };
+    },
+    sanitizeSystemConfig: sanitizeDcimVideoSystemConfig,
+  });
+  const dcimFailure = await requestJson(dcimFailureApp, '/api/dcim-video/config', 'GET');
+  assert.strictEqual(dcimFailure.statusCode, 200);
+  assert.strictEqual(dcimFailure.body.ok, false);
+  assert.strictEqual(dcimFailure.body.message, '读取 WVP 配置失败');
+  assert.strictEqual(JSON.stringify(dcimFailure.body).includes(upstreamFailureMessage), false);
+  sensitiveValues.forEach(function (value) {
+    assert.strictEqual(JSON.stringify(dcimFailure.body).includes(value), false, 'dcim 失败响应不得包含上游敏感值');
+  });
+  assert.strictEqual(dcimFailure.body.data.sip.id, upstreamConfig.sip.id);
+  assert.deepStrictEqual(JSON.parse(dcimFailure.body.data.sip.nested.extra), { authPwd: '***', mode: 'keep' });
 
   const websshSuccessApp = express();
-  registerWebsshVideoSystemConfigRoute(websshSuccessApp, {
+  registerVideoSystemConfigRoute(websshSuccessApp, {
+    path: '/api/webssh-video/config',
     callWithAuth: async function () {
       return { ok: true, status: 200, data: upstreamResponse };
     },
@@ -762,23 +826,79 @@ async function runDcimVideoSystemConfigRedactionTests() {
   });
   assert.strictEqual(websshSuccess.body.data.sip.id, upstreamConfig.sip.id);
   assert.strictEqual(websshSuccess.body.data.sip.port, upstreamConfig.sip.port);
+  assert.deepStrictEqual(JSON.parse(websshSuccess.body.data.sip.nested.extra), { authPwd: '***', mode: 'keep' });
 
   const websshFailureApp = express();
-  registerWebsshVideoSystemConfigRoute(websshFailureApp, {
+  registerVideoSystemConfigRoute(websshFailureApp, {
+    path: '/api/webssh-video/config',
     callWithAuth: async function () {
-      return { ok: false, status: 502, message: '上游不可用', data: upstreamConfig };
+      return { ok: false, status: 502, message: upstreamFailureMessage, data: upstreamConfig };
     },
     sanitizeSystemConfig: sanitizeDcimVideoSystemConfig,
   });
   const websshFailure = await requestJson(websshFailureApp, '/api/webssh-video/config', 'GET');
   assert.strictEqual(websshFailure.statusCode, 200);
   assert.strictEqual(websshFailure.body.ok, false);
-  assert.strictEqual(websshFailure.body.message, '上游不可用');
+  assert.strictEqual(websshFailure.body.message, '读取 WVP 配置失败');
+  assert.strictEqual(JSON.stringify(websshFailure.body).includes(upstreamFailureMessage), false);
   sensitiveValues.forEach(function (value) {
     assert.strictEqual(JSON.stringify(websshFailure.body).includes(value), false, 'webssh 失败响应不得包含上游敏感值');
   });
   assert.strictEqual(websshFailure.body.data.sip.id, upstreamConfig.sip.id);
   assert.strictEqual(websshFailure.body.data.sip.port, upstreamConfig.sip.port);
+  assert.deepStrictEqual(JSON.parse(websshFailure.body.data.sip.nested.extra), { authPwd: '***', mode: 'keep' });
+
+  const circularHttpConfig = { id: 'http-circular-id', authPwd: sensitiveValues[7] };
+  circularHttpConfig.self = circularHttpConfig;
+  const getterHttpConfig = { id: 'http-getter-id' };
+  Object.defineProperty(getterHttpConfig, 'throwingValue', {
+    configurable: true,
+    enumerable: true,
+    get: function () { throw new Error('getter ' + sensitiveValues[7]); },
+  });
+  const unusualResponses = await Promise.all([
+    { label: 'dcim-circular', path: '/api/dcim-video/config', config: circularHttpConfig },
+    { label: 'webssh-circular', path: '/api/webssh-video/config', config: circularHttpConfig },
+    { label: 'dcim-getter', path: '/api/dcim-video/config', config: getterHttpConfig },
+    { label: 'webssh-getter', path: '/api/webssh-video/config', config: getterHttpConfig },
+  ].map(function (fixture) {
+    const unusualApp = express();
+    registerVideoSystemConfigRoute(unusualApp, {
+      path: fixture.path,
+      callWithAuth: async function () {
+        return { ok: true, status: 200, data: { code: 0, data: fixture.config } };
+      },
+      sanitizeSystemConfig: sanitizeDcimVideoSystemConfig,
+    });
+    return requestJson(unusualApp, fixture.path, 'GET', undefined, 500);
+  }));
+  unusualResponses.forEach(function (unusualResponse) {
+    assert.strictEqual(unusualResponse.statusCode, 200);
+    assert.strictEqual(unusualResponse.body.ok, true);
+    assert.strictEqual(JSON.stringify(unusualResponse.body).includes(sensitiveValues[7]), false);
+    assert.ok(/^http-(circular|getter)-id$/.test(unusualResponse.body.data.id));
+  });
+
+  const rejectedApp = express();
+  const rejectedUpstreamError = 'upstream rejected authPwd=' + sensitiveValues[7];
+  registerVideoSystemConfigRoute(rejectedApp, {
+    path: '/api/rejected-config',
+    callWithAuth: async function () { throw new Error(rejectedUpstreamError); },
+    sanitizeSystemConfig: sanitizeDcimVideoSystemConfig,
+  });
+  const rejectedResponse = await requestJson(rejectedApp, '/api/rejected-config', 'GET', undefined, 500);
+  assert.strictEqual(rejectedResponse.statusCode, 200);
+  assert.deepStrictEqual(rejectedResponse.body, {
+    ok: false,
+    message: '读取 WVP 配置失败',
+    data: '***',
+  });
+  assert.strictEqual(JSON.stringify(rejectedResponse.body).includes(rejectedUpstreamError), false);
+
+  const configRouteSource = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  assert.strictEqual(configRouteSource.includes('function registerDcimVideoSystemConfigRoute('), false);
+  assert.strictEqual(configRouteSource.includes('function registerWebsshVideoSystemConfigRoute('), false);
+  assert.strictEqual((configRouteSource.match(/registerVideoSystemConfigRoute\(app, \{/g) || []).length, 2);
 
   const tableBody = { innerHTML: '' };
   const elements = {
