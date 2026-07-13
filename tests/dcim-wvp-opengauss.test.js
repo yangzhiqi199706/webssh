@@ -136,6 +136,7 @@ const createDcimVideoSession = extractServerFunction('createDcimVideoSession');
 const dcimVideoRequestLabel = extractServerFunction('dcimVideoRequestLabel');
 const sanitizeDcimVideoSystemConfig = extractServerFunction('sanitizeDcimVideoSystemConfig');
 const registerDcimVideoSystemConfigRoute = extractServerFunction('registerDcimVideoSystemConfigRoute');
+const registerWebsshVideoSystemConfigRoute = extractServerFunction('registerWebsshVideoSystemConfigRoute');
 const setupDcimVideoConnectionSource = extractVideoFunction('setupDcimVideoConnection');
 const renderDcimVideoConfigSource = extractVideoFunction('renderConfig');
 const upgradePayloadEntries = extractScriptFunction('scripts/deploy-upgrade.js', 'upgradePayloadEntries');
@@ -671,6 +672,11 @@ async function runDcimVideoSystemConfigRedactionTests() {
     'fixture-access-token-value',
     'fixture-authorization-value',
     'fixture-private-key-value',
+    'fixture-auth-pwd-value',
+    'fixture-auth-pwd-uppercase-value',
+    'fixture-auth-pwd-underscore-value',
+    'fixture-auth-pass-value',
+    'fixture-auth-key-value',
   ];
   const upstreamConfig = {
     sip: {
@@ -685,6 +691,12 @@ async function runDcimVideoSystemConfigRedactionTests() {
         accessToken: sensitiveValues[4],
         authorization: sensitiveValues[5],
         privateKey: sensitiveValues[6],
+        authPwd: sensitiveValues[7],
+        AUTH_PWD: sensitiveValues[8],
+        auth_pwd: sensitiveValues[9],
+        authPass: sensitiveValues[10],
+        authKey: sensitiveValues[11],
+        array: [{ auth_pwd: sensitiveValues[9] }],
       },
     },
     version: { version: '2.6.9' },
@@ -699,12 +711,20 @@ async function runDcimVideoSystemConfigRedactionTests() {
   assert.strictEqual(sanitized.sip.nested.accessToken, '***');
   assert.strictEqual(sanitized.sip.nested.authorization, '***');
   assert.strictEqual(sanitized.sip.nested.privateKey, '***');
+  assert.strictEqual(sanitized.sip.nested.authPwd, '***');
+  assert.strictEqual(sanitized.sip.nested.AUTH_PWD, '***');
+  assert.strictEqual(sanitized.sip.nested.auth_pwd, '***');
+  assert.strictEqual(sanitized.sip.nested.authPass, '***');
+  assert.strictEqual(sanitized.sip.nested.authKey, '***');
+  assert.strictEqual(sanitized.sip.nested.array[0].auth_pwd, '***');
   assert.strictEqual(sanitized.sip.id, upstreamConfig.sip.id);
   assert.strictEqual(sanitized.sip.domain, upstreamConfig.sip.domain);
   assert.strictEqual(sanitized.sip.port, upstreamConfig.sip.port);
   assert.strictEqual(JSON.stringify(sanitized).includes(sensitiveValues[0]), false);
   assert.strictEqual(upstreamConfig.sip.password, sensitiveValues[0]);
   assert.strictEqual(upstreamConfig.sip.nested.token, sensitiveValues[3]);
+  assert.strictEqual(upstreamConfig.sip.nested.authPwd, sensitiveValues[7]);
+  assert.strictEqual(upstreamConfig.sip.nested.array[0].auth_pwd, sensitiveValues[9]);
   const sanitizedRawConfig = sanitizeDcimVideoSystemConfig(JSON.stringify(upstreamConfig));
   sensitiveValues.forEach(function (value) {
     assert.strictEqual(JSON.stringify(sanitizedRawConfig).includes(value), false, '原始 JSON 文本也不得保留敏感值');
@@ -726,6 +746,39 @@ async function runDcimVideoSystemConfigRedactionTests() {
   assert.strictEqual(response.body.data.sip.id, upstreamConfig.sip.id);
   assert.strictEqual(response.body.data.sip.domain, upstreamConfig.sip.domain);
   assert.strictEqual(response.body.data.sip.port, upstreamConfig.sip.port);
+
+  const websshSuccessApp = express();
+  registerWebsshVideoSystemConfigRoute(websshSuccessApp, {
+    callWithAuth: async function () {
+      return { ok: true, status: 200, data: upstreamResponse };
+    },
+    sanitizeSystemConfig: sanitizeDcimVideoSystemConfig,
+  });
+  const websshSuccess = await requestJson(websshSuccessApp, '/api/webssh-video/config', 'GET');
+  assert.strictEqual(websshSuccess.statusCode, 200);
+  assert.strictEqual(websshSuccess.body.ok, true);
+  sensitiveValues.forEach(function (value) {
+    assert.strictEqual(JSON.stringify(websshSuccess.body).includes(value), false, 'webssh 成功响应不得包含上游敏感值');
+  });
+  assert.strictEqual(websshSuccess.body.data.sip.id, upstreamConfig.sip.id);
+  assert.strictEqual(websshSuccess.body.data.sip.port, upstreamConfig.sip.port);
+
+  const websshFailureApp = express();
+  registerWebsshVideoSystemConfigRoute(websshFailureApp, {
+    callWithAuth: async function () {
+      return { ok: false, status: 502, message: '上游不可用', data: upstreamConfig };
+    },
+    sanitizeSystemConfig: sanitizeDcimVideoSystemConfig,
+  });
+  const websshFailure = await requestJson(websshFailureApp, '/api/webssh-video/config', 'GET');
+  assert.strictEqual(websshFailure.statusCode, 200);
+  assert.strictEqual(websshFailure.body.ok, false);
+  assert.strictEqual(websshFailure.body.message, '上游不可用');
+  sensitiveValues.forEach(function (value) {
+    assert.strictEqual(JSON.stringify(websshFailure.body).includes(value), false, 'webssh 失败响应不得包含上游敏感值');
+  });
+  assert.strictEqual(websshFailure.body.data.sip.id, upstreamConfig.sip.id);
+  assert.strictEqual(websshFailure.body.data.sip.port, upstreamConfig.sip.port);
 
   const tableBody = { innerHTML: '' };
   const elements = {

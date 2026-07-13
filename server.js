@@ -71,6 +71,11 @@ function sanitizeDcimVideoSystemConfig(value) {
   function isSensitiveKey(key) {
     const normalized = String(key || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
     return normalized.indexOf('password') !== -1 || normalized === 'passwd' || normalized === 'pwd' ||
+      normalized === 'pass' || normalized.indexOf('passphrase') !== -1 || normalized.indexOf('passcode') !== -1 ||
+      normalized.indexOf('authpwd') !== -1 || normalized.indexOf('authpass') !== -1 ||
+      normalized.indexOf('authkey') !== -1 || normalized.indexOf('authcode') !== -1 ||
+      normalized.indexOf('accesskey') !== -1 || normalized.indexOf('clientsecret') !== -1 ||
+      normalized.indexOf('clientkey') !== -1 ||
       normalized.indexOf('secret') !== -1 || normalized.indexOf('token') !== -1 ||
       normalized.indexOf('authorization') !== -1 || normalized.indexOf('privatekey') !== -1 ||
       normalized.indexOf('apikey') !== -1 || normalized.indexOf('credential') !== -1;
@@ -101,6 +106,25 @@ function registerDcimVideoSystemConfigRoute(app, deps) {
   if (typeof options.sanitizeSystemConfig !== 'function') throw new Error('sanitizeSystemConfig is required');
 
   app.get('/api/dcim-video/config', async function (_req, res) {
+    const r = await options.callWithAuth('GET', '/api/server/system/configInfo', null);
+    if (!r.ok) {
+      return res.json({
+        ok: false,
+        message: r.message || ('上游返回 ' + r.status),
+        data: options.sanitizeSystemConfig(r.data),
+      });
+    }
+    res.json({ ok: true, data: options.sanitizeSystemConfig((r.data && r.data.data) || r.data) });
+  });
+}
+
+function registerWebsshVideoSystemConfigRoute(app, deps) {
+  const options = deps || {};
+  if (!app || typeof app.get !== 'function') throw new Error('Express app is required');
+  if (typeof options.callWithAuth !== 'function') throw new Error('callWithAuth is required');
+  if (typeof options.sanitizeSystemConfig !== 'function') throw new Error('sanitizeSystemConfig is required');
+
+  app.get('/api/webssh-video/config', async function (_req, res) {
     const r = await options.callWithAuth('GET', '/api/server/system/configInfo', null);
     if (!r.ok) {
       return res.json({
@@ -9392,10 +9416,9 @@ wssTcp.on('connection', function (ws) {
     });
   });
 
-  app.get('/api/webssh-video/config', async function (_req, res) {
-    const r = await callWithAuth('GET', '/api/server/system/configInfo', null);
-    if (!r.ok) return res.json({ ok: false, message: r.message || ('上游返回 ' + r.status), data: r.data });
-    res.json({ ok: true, data: (r.data && r.data.data) || r.data });
+  registerWebsshVideoSystemConfigRoute(app, {
+    callWithAuth: callWithAuth,
+    sanitizeSystemConfig: sanitizeDcimVideoSystemConfig,
   });
 
   app.get('/api/webssh-video/devices', async function (req, res) {
