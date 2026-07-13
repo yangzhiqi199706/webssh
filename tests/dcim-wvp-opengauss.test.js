@@ -172,6 +172,8 @@ assert.ok(/grep -c/.test(command));
 assert.ok(/awk/.test(command));
 assert.ok(!/\$\(\s*\(/.test(command));
 assert.ok(/journalctl -u wvp-opengauss\.service --since '10 min ago'/.test(command));
+assert.ok(/journalctl_status/.test(command));
+assert.ok(/logs\.db_error_lines=-1/.test(command));
 assert.ok(/omm|gsql/.test(command));
 assert.ok(/\/www\/media\/wvp-GB28181-pro\/target\/classes\/application-dev\.yml/.test(command));
 assert.ok(!/\/opt\/wvp\/config/.test(command));
@@ -199,6 +201,21 @@ try {
     console.log('sh -n skipped: sh not found');
   } else {
     assert.strictEqual(shellCheck.status, 0, (shellCheck.stderr || '') + (shellCheck.stdout || ''));
+    const stubDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dcim-wvp-journal-'));
+    const stubJournalctl = path.join(stubDir, 'journalctl');
+    fs.writeFileSync(stubJournalctl, '#!/bin/sh\nexit 7\n', 'utf8');
+    const execution = childProcess.spawnSync('sh', [shellPath], {
+      encoding: 'utf8',
+      env: Object.assign({}, process.env, { PATH: stubDir + path.delimiter + process.env.PATH }),
+    });
+    try {
+      assert.strictEqual(execution.status, 0, (execution.stderr || '') + (execution.stdout || ''));
+      assert.ok(/logs\.db_error_lines=-1/.test(execution.stdout));
+      assert.strictEqual(parseWvpRuntimeProbe(execution.stdout).checks.logs.healthy, false);
+    } finally {
+      try { fs.unlinkSync(stubJournalctl); } catch (error) {}
+      try { fs.rmdirSync(stubDir); } catch (error) {}
+    }
   }
 } finally {
   try { fs.unlinkSync(shellPath); } catch (error) {}
