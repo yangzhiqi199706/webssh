@@ -17,14 +17,25 @@ const validProbeText = [
   'legacyService.enabled=disabled',
   'listeners.tcp5060=1',
   'listeners.http18080=1',
-  'datasource.driver=org.postgresql.Driver',
-  'datasource.url=jdbc:postgresql://127.0.0.1:5432/wvp',
-  'datasource.dialect=org.hibernate.dialect.PostgreSQLDialect',
-  'datasource.mysqlUrl=jdbc:mysql://127.0.0.1:3306/legacy',
-  'database.reachable=ok',
-  'logs.recentError=none',
+  'datasource.postgresDriver=1',
+  'datasource.postgresUrl=1',
+  'datasource.postgresDialect=1',
+  'datasource.mysqlUrl=0',
+  'database.wvp_app_connections=1',
+  'database.wvp_device_rows=2',
+  'database.wvp_channel_rows=3',
+  'database.wvp_log_rows=4',
+  'logs.db_error_lines=0',
 ].join('\n');
 
+assert.strictEqual(
+  mergeDcimVideoConfig({ password: 'test-password' }, {}).passwordHash,
+  'dfb450efddbb5387197c84460623675b'
+);
+assert.strictEqual(
+  mergeDcimVideoConfig({ password: '***' }, { passwordHash: 'old-hash' }).passwordHash,
+  'old-hash'
+);
 assert.deepStrictEqual(
   publicDcimVideoConfig(mergeDcimVideoConfig({
     username: 'admin',
@@ -67,9 +78,18 @@ assert.strictEqual(
   false
 );
 
-['service.active', 'listeners.tcp5060', 'datasource.driver', 'database.reachable', 'logs.recentError'].forEach((missingKey) => {
-  const missing = validProbeText.split('\n').filter((line) => line.indexOf(missingKey + '=') !== 0).join('\n');
-  assert.strictEqual(parseWvpRuntimeProbe(missing).checks[missingKey.split('.')[0]].healthy, false, missingKey);
+[
+  ['service', ['service.active', 'service.enabled']],
+  ['legacyService', ['legacyService.active', 'legacyService.enabled']],
+  ['listeners', ['listeners.tcp5060', 'listeners.http18080']],
+  ['datasource', ['datasource.postgresDriver', 'datasource.postgresUrl', 'datasource.postgresDialect', 'datasource.mysqlUrl']],
+  ['database', ['database.wvp_app_connections', 'database.wvp_device_rows', 'database.wvp_channel_rows', 'database.wvp_log_rows']],
+  ['logs', ['logs.db_error_lines']],
+].forEach(([checkName, keys]) => {
+  keys.forEach((missingKey) => {
+    const missing = validProbeText.split('\n').filter((line) => line.indexOf(missingKey + '=') !== 0).join('\n');
+    assert.strictEqual(parseWvpRuntimeProbe(missing).checks[checkName].healthy, false, missingKey);
+  });
 });
 assert.strictEqual(runtime.validatePlaybackRange('', '').ok, false);
 assert.strictEqual(runtime.validatePlaybackRange('2026-07-13T12:10:00Z', '2026-07-13T12:00:00Z').ok, false);
@@ -104,11 +124,16 @@ assert.strictEqual(typeof browser.window.DcimVideoRuntime.stopPath, 'function');
 const command = wvpRuntimeProbeCommand();
 assert.match(command, /service\.active=/);
 assert.match(command, /listeners\.tcp5060=/);
-assert.match(command, /datasource\.url=/);
+assert.match(command, /datasource\.postgresDriver=/);
+assert.match(command, /database\.wvp_app_connections=/);
+assert.match(command, /logs\.db_error_lines=/);
 assert.match(command, /wvp-opengauss\.service/);
-assert.match(command, /jdbc:postgresql:/);
+assert.match(command, /grep -c/);
+assert.match(command, /case/);
+assert.match(command, /journalctl -u wvp-opengauss\.service --since '10 min ago'/);
+assert.match(command, /omm|gsql/);
+assert.doesNotMatch(command, /printf '[^']*%s[^']*' \"\$\([^)]*(head|cat|sed)[^)]*\)/);
 assert.doesNotMatch(command, /WVP_DB_PASSWORD/);
-assert.strictEqual(parseWvpRuntimeProbe(command).checks.service.healthy, false);
-assert.ok(command.split('&&').every((part) => part.indexOf('|| true') !== -1 || part.indexOf('printf') !== -1));
+assert.ok((command.match(/\|\| true/g) || []).length >= 12);
 
 console.log('dcim wvp opengauss tests: PASS');
