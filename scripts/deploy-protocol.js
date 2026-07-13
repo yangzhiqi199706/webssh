@@ -183,6 +183,21 @@ function buildPackage() {
         },
       );
     }
+    // db/：数据库管理板块前端（iframe 子站，2026-07-08 新增）
+    const dbSrc = path.join(ROOT, 'db');
+    if (fs.existsSync(dbSrc)) {
+      copyDirFiltered(
+        dbSrc,
+        path.join(releaseDir, 'main-sync', 'db'),
+        (rel) => !rel.endsWith('.DS_Store'),
+      );
+    }
+    // 数据库管理板块新装的 npm 驱动，必须一起打包
+    ['pg', 'pg-cloudflare', 'pg-connection-string', 'pg-int8', 'pg-pool', 'pg-protocol', 'pg-types', 'pgpass', 'postgres-array', 'postgres-bytea', 'postgres-date', 'postgres-interval', 'split2', 'xtend', 'dmdb'].forEach((dep) => {
+      const s = path.join(ROOT, 'node_modules', dep);
+      const d = path.join(releaseDir, 'main-sync', 'node_modules', dep);
+      if (fs.existsSync(s)) copyDirFiltered(s, d, () => true);
+    });
   }
 
   // 7) 打 tar.gz
@@ -365,6 +380,9 @@ async function main() {
 
       // proto-conv/：覆盖到 /opt/webssh/app/proto-conv/（协议转换板块前端 iframe 子站）
       await exec(conn, `if [ -d ${mainSync}/proto-conv ]; then if [ -d ${INSTALL_DIR}/app/proto-conv ]; then mv ${INSTALL_DIR}/app/proto-conv ${INSTALL_DIR}/app/proto-conv.bak-${stamp}; fi && cp -a ${mainSync}/proto-conv ${INSTALL_DIR}/app/proto-conv && ls ${INSTALL_DIR}/app/proto-conv/index.html >/dev/null && echo "proto-conv 已同步"; else echo "main-sync 内无 proto-conv，跳过"; fi`, { allowNonZero: true });
+
+      // db/：覆盖到 /opt/webssh/app/db/（数据库管理板块前端 iframe 子站，2026-07-08 新增）
+      await exec(conn, `if [ -d ${mainSync}/db ]; then if [ -d ${INSTALL_DIR}/app/db ]; then mv ${INSTALL_DIR}/app/db ${INSTALL_DIR}/app/db.bak-${stamp}; fi && cp -a ${mainSync}/db ${INSTALL_DIR}/app/db && ls ${INSTALL_DIR}/app/db/index.html >/dev/null && echo "db 已同步"; else echo "main-sync 内无 db，跳过"; fi`, { allowNonZero: true });
 
       // 重启主服务
       log(`重启 ${SERVICE} ...`);

@@ -5029,8 +5029,32 @@ wssTcp.on('connection', function (ws) {
       // 这里通过同名包装统一入口，避免大幅改造原代码
       callPush: null, callResults: null, callSimStatus: null,
     },
+    // HBOS 医疗云短信平台：走 HTTP POST + App-Key，无 SIM / 无结果轮询
+    // 端点：POST http://open-gyfy.cfuture.shop/kapi/gw-api/hbos-business-thirdparty-integration/standard/base/notify/sms
+    hbos: {
+      name: 'HBOS 医疗云短信平台',
+      capabilities: { sim: false, results: false },
+      defaults: {
+        enabled: false,
+        autoPushOnAlarm: false,
+        autoPushOnCancel: false,
+        gatewayHost: 'open-gyfy.cfuture.shop',
+        gatewayPort: 80,
+        pushPath: '/kapi/gw-api/hbos-business-thirdparty-integration/standard/base/notify/sms',
+        type: 'SMS',
+        encoding: 'UTF-8',
+        httpTimeoutMs: 8000,
+        // HBOS 专有字段
+        appKey: 'ak-Z0U7k56rmbIng7U4YOU17yAr',
+        templateCode: 'appletSms',
+        senderJobNumber: 'ZZJ0001',
+        orgId: '20389001',
+      },
+      callPush: null,
+      callResults: function () { throw new Error('HBOS 短信平台不提供结果查询接口'); },
+      callSimStatus: function () { throw new Error('HBOS 短信平台无 SIM 卡'); },
+    },
     // 占位品牌：UI 能选，但后端尚未实现，调用时给出友好错误
-    // 之后接入新品牌，复制 xinchuang 这一项，实现 callPush/callResults/callSimStatus 即可
     rixin: {
       name: '日新短信猫（占位）',
       capabilities: { sim: false, results: false },
@@ -5228,6 +5252,13 @@ wssTcp.on('connection', function (ws) {
       merged.resultsPath = merged.resultsPath || DEFAULT_PATHS.results;
       merged.simStatusPath = merged.simStatusPath || DEFAULT_PATHS.sim;
     }
+    if (brandKey === 'hbos') {
+      merged.pushPath = merged.pushPath || dft.pushPath || '/';
+      merged.appKey = String(merged.appKey || dft.appKey || '').trim();
+      merged.templateCode = String(merged.templateCode || dft.templateCode || 'appletSms').trim();
+      merged.senderJobNumber = String(merged.senderJobNumber || dft.senderJobNumber || 'ZZJ0001').trim();
+      merged.orgId = String(merged.orgId || dft.orgId || '').trim();
+    }
     merged.enabled = !!merged.enabled;
     merged.autoPushOnAlarm = !!merged.autoPushOnAlarm;
     merged.autoPushOnCancel = !!merged.autoPushOnCancel;
@@ -5348,6 +5379,70 @@ wssTcp.on('connection', function (ws) {
       path: pcfg.simStatusPath || DEFAULT_PATHS.sim, method: 'GET',
       timeout: pcfg.httpTimeoutMs,
     });
+  };
+
+  // ===== HBOS 医疗云平台实现 =====
+  // 把通用 payload {id[], to[], text, type, encoding} 转成 HBOS 的 msgContentList 结构，
+  // 走 App-Key 鉴权，把 HBOS 的 {success, data[]} 响应改写成 {reply:'OK'/'FAIL: ...'} 兼容 sendOne 的解析
+  DRIVERS.hbos.callPush = async function (pcfg, payload) {
+    if (!pcfg.gatewayHost) throw new Error('HBOS 服务器地址未配置');
+    if (!pcfg.appKey) throw new Error('App-Key 未配置');
+    if (!pcfg.orgId) throw new Error('机构 ID (orgId) 未配置');
+    const to = Array.isArray(payload.to) ? payload.to : [];
+    if (!to.length) throw new Error('收件人为空');
+    const msgContentList = to.map(function (num) {
+      return {
+        smsReceiverType: 3,                 // 3 = 手机号（协议固定）
+        smsReceiverNo: String(num),
+        smsParams: { content: String(payload.text == null ? '' : payload.text) },
+      };
+    });
+    const reqBody = {
+      templateCode: pcfg.templateCode || 'appletSms',
+      senderJobNumber: pcfg.senderJobNumber || 'ZZJ0001',
+      orgId: String(pcfg.orgId),
+      msgContentList: msgContentList,
+    };
+    const data = Buffer.from(JSON.stringify(reqBody), 'utf8');
+    const resp = await httpRequest({
+      host: pcfg.gatewayHost,
+      port: pcfg.gatewayPort || 80,
+      path: pcfg.pushPath || '/kapi/gw-api/hbos-business-thirdparty-integration/standard/base/notify/sms',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Length': data.length,
+        'App-Key': pcfg.appKey,
+        'Accept': 'application/json',
+      },
+      timeout: pcfg.httpTimeoutMs || 8000,
+    }, data);
+    // 解析响应并翻译成 sendOne 期望的 {reply} 形态
+    const parsed = parseJsonSafe(resp.body);
+    const httpOk = resp.statusCode >= 200 && resp.statusCode < 300;
+    let synthetic;
+    if (httpOk && parsed && parsed.success === true) {
+      const items = Array.isArray(parsed.data) ? parsed.data : [];
+      const failed = items.filter(function (it) { return it && it.sendSuccess === false; });
+      if (failed.length === 0) {
+        synthetic = { reply: 'OK', raw: parsed };
+      } else {
+        const detail = failed.map(function (it) {
+          return (it.smsReceiverNo || '?') + ' ' + (it.resultMessage || '发送失败');
+        }).join('; ');
+        synthetic = { reply: 'FAIL: ' + detail, raw: parsed };
+      }
+    } else if (parsed) {
+      synthetic = { reply: 'FAIL: ' + (parsed.message || ('code=' + parsed.code)), raw: parsed };
+    } else {
+      // 非 JSON 响应原样透传，让 sendOne 报 HTTP 层错误
+      return resp;
+    }
+    return {
+      statusCode: resp.statusCode,
+      headers: resp.headers,
+      body: Buffer.from(JSON.stringify(synthetic), 'utf8'),
+    };
   };
 
   // 通用入口：把当前激活品牌的 driver call 出去；新品牌只需补 DRIVERS.xxx.callXxx 即可
@@ -5492,7 +5587,7 @@ wssTcp.on('connection', function (ws) {
 
   function publicState() {
     const drv = activeDriver();
-    return {
+    const state = {
       // 当前激活品牌
       brand: cfgRoot.brand,
       brandName: drv.name,
@@ -5519,6 +5614,14 @@ wssTcp.on('connection', function (ws) {
       dbConnected: !!getDbPool(),
       recipientResolver: 'NotifyModeID -> dcim-alarmnotifymode -> dcim-person',
     };
+    // HBOS 专有字段（App-Key 只回显掩码，实际值前端可继续保存不覆盖）
+    if (cfgRoot.brand === 'hbos') {
+      state.appKey = cfg.appKey || '';
+      state.templateCode = cfg.templateCode || '';
+      state.senderJobNumber = cfg.senderJobNumber || '';
+      state.orgId = cfg.orgId || '';
+    }
+    return state;
   }
 
   // 订阅 monitor 模块的新告警事件，开关打开时按 NotifyModeID 自动解析收件人后推送
@@ -5675,6 +5778,13 @@ wssTcp.on('connection', function (ws) {
     if ('httpTimeoutMs' in body) target.httpTimeoutMs = clamp(body.httpTimeoutMs, 1000, 60000, target.httpTimeoutMs);
     if ('autoQueryResultIntervalSec' in body) {
       target.autoQueryResultIntervalSec = clamp(body.autoQueryResultIntervalSec, 5, 600, target.autoQueryResultIntervalSec);
+    }
+    // HBOS 专有字段
+    if (targetKey === 'hbos') {
+      if ('appKey' in body) target.appKey = String(body.appKey || '').trim();
+      if ('templateCode' in body) target.templateCode = String(body.templateCode || 'appletSms').trim() || 'appletSms';
+      if ('senderJobNumber' in body) target.senderJobNumber = String(body.senderJobNumber || 'ZZJ0001').trim() || 'ZZJ0001';
+      if ('orgId' in body) target.orgId = String(body.orgId || '').trim();
     }
     // 互斥：如果 PUT 把某个品牌 enabled 置 true，把其他品牌全部置 false
     if (target.enabled) enforceSingleEnabled(targetKey);
@@ -10025,7 +10135,8 @@ wssTcp.on('connection', function (ws) {
     res.json({ ok: true, clients: aggregateStatus().clients });
   });
 
-  app.get('/api/proto-conv/iec104/map.csv', function (_req, res) {
+  // CSV 导出辅助：filter 可选，传入则按 ti 过滤
+  function buildPointCsv(filter) {
     buildPointList();
     const lines = ['IOA,类型标识,字段,设备ID,设备名称,参数名,单位,数据类型'];
     const tiName = function (ti) { return ti === TI.M_SP_NA_1 ? 'M_SP_NA_1(遥信)' : (ti === TI.M_ME_NC_1 ? 'M_ME_NC_1(遥测短浮点)' : String(ti)); };
@@ -10035,16 +10146,35 @@ wssTcp.on('connection', function (ws) {
       return s;
     };
     pointList.forEach(function (p) {
+      if (filter && !filter(p)) return;
       lines.push([
         csvEsc(p.ioa), csvEsc(tiName(p.ti)), csvEsc(p.kind),
         csvEsc(p.deviceId), csvEsc(p.deviceName), csvEsc(p.paraName),
         csvEsc(p.unit || ''), csvEsc(p.dataType || ''),
       ].join(','));
     });
-    const buf = Buffer.from('﻿' + lines.join('\r\n'), 'utf8');
+    // ﻿ BOM 让 Excel 识别 UTF-8
+    return Buffer.from('﻿' + lines.join('\r\n'), 'utf8');
+  }
+  function sendCsv(res, buf, filename) {
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', 'attachment; filename="iec104-point-map.csv"');
+    res.setHeader('Content-Disposition', 'attachment; filename="' + filename + '"');
     res.end(buf);
+  }
+
+  // 全量点表（保留兼容；UI 用下面两个按类型分的接口）
+  app.get('/api/proto-conv/iec104/map.csv', function (_req, res) {
+    sendCsv(res, buildPointCsv(null), 'iec104-point-map.csv');
+  });
+
+  // 遥信（M_SP_NA_1，含 DeviceStatus 在线状态 + dataType=开关量 的参数）
+  app.get('/api/proto-conv/iec104/map-yx.csv', function (_req, res) {
+    sendCsv(res, buildPointCsv(function (p) { return p.ti === TI.M_SP_NA_1; }), 'iec104-yx-map.csv');
+  });
+
+  // 遥测（M_ME_NC_1，dataType=模拟量 的参数）
+  app.get('/api/proto-conv/iec104/map-yc.csv', function (_req, res) {
+    sendCsv(res, buildPointCsv(function (p) { return p.ti === TI.M_ME_NC_1; }), 'iec104-yc-map.csv');
   });
 
   // 自启（等 modbus 先就绪以便 buildPointList 拿到 selectedDevices）
@@ -10062,6 +10192,1812 @@ wssTcp.on('connection', function (ws) {
     rebuild: function () {
       try { stopServer(); if (cfg.enabled) startServer(); } catch (_e) {}
     },
+  };
+})();
+
+// ===== 数据库管理板块（Phase A：三库统一管理台）=====
+// 通过 SSH 连到 dcim 容器所在的目标机，管理容器内 MySQL / openGauss / 达梦 DM 三套数据库。
+// 能力：状态监控、服务启停（含达梦一键启动）、SQL 控制台、备份/还原（导入导出）、库表浏览。
+// 后续 Phase B 将追加 dcim 数据源切换（本 IIFE 预留 global.__dbMgr 接口）。
+(function setupDbManager() {
+  const path = require('path');
+  const { spawn } = require('child_process');
+  let mysql2, pgLib, dmdbLib;
+  try { mysql2 = require('mysql2/promise'); } catch (_e) { mysql2 = null; }
+  try { pgLib = require('pg'); } catch (_e) { pgLib = null; }
+  try { dmdbLib = require('dmdb'); } catch (_e) { dmdbLib = null; }
+
+  const CONFIG_PATH = process.env.DBMGR_CONFIG || path.join(__dirname, 'config', 'db-manager.json');
+  const LOG_PATH    = process.env.DBMGR_LOG    || path.join(__dirname, 'logs', 'db-manager.log');
+  const BACKUP_DIR  = process.env.DBMGR_BACKUP_DIR || path.join(__dirname, 'backups', 'db-manager');
+
+  const defaults = {
+    ssh: { host: '192.168.0.60', port: 22, username: 'root', password: '' },
+    container: 'dcim',
+    databases: {
+      mysql: {
+        enabled: true, host: '192.168.0.60', port: 3333,
+        username: 'root', password: '',
+        systemdUnit: 'mysqld.service',
+        dockerCli: '/www/server/mysql/bin/mysql',
+        dockerDump: '/www/server/mysql/bin/mysqldump',
+      },
+      opengauss: {
+        enabled: true, host: '192.168.0.60', port: 5432,
+        username: 'omm', password: '', database: 'dcim',
+        systemdUnit: 'opengauss.service',
+        dockerCli: 'sudo -u omm /opt/software/openGauss/app/bin/gsql',
+        dockerDump: 'sudo -u omm /opt/software/openGauss/app/bin/gs_dump',
+      },
+      dm: {
+        enabled: true, host: '192.168.0.60', port: 5236,
+        username: 'SYSDBA', password: 'SYSDBA',
+        sysdbaPassword: '', // 专用于查询 V$LICENSE 等 SYS 视图；空则等价于用 password 字段
+        systemdUnit: 'DmServiceDMSERVER.service',
+        dockerCli: '/home/dmdba/dmdbms/bin/disql',
+        dockerDump: '/home/dmdba/dmdbms/bin/dexp',
+      },
+    },
+  };
+
+  function deepMerge(target, src) {
+    const out = Object.assign({}, target);
+    for (const k of Object.keys(src || {})) {
+      if (src[k] && typeof src[k] === 'object' && !Array.isArray(src[k])) {
+        out[k] = deepMerge(target[k] || {}, src[k]);
+      } else { out[k] = src[k]; }
+    }
+    return out;
+  }
+  let cfg = JSON.parse(JSON.stringify(defaults));
+  function readCfg() {
+    try {
+      const raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+      cfg = deepMerge(defaults, raw);
+    } catch (_e) { cfg = JSON.parse(JSON.stringify(defaults)); }
+  }
+  function writeCfg() {
+    try {
+      fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
+      fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+      try { fs.chmodSync(CONFIG_PATH, 0o600); } catch (_e) {}
+    } catch (err) { console.error('[db-manager] 写配置失败:', err.message); }
+  }
+  function redactDb(db) {
+    const out = Object.assign({}, db, {
+      password: '***',
+      hasPassword: !!(db && db.password && db.password !== ''),
+    });
+    // DM 专属：sysdba 密码单独脱敏
+    if (Object.prototype.hasOwnProperty.call(db || {}, 'sysdbaPassword')) {
+      out.sysdbaPassword = '***';
+      out.hasSysdbaPassword = !!(db.sysdbaPassword && db.sysdbaPassword !== '');
+    }
+    return out;
+  }
+  function redactCfg() {
+    return {
+      ssh: {
+        host: cfg.ssh.host, port: cfg.ssh.port, username: cfg.ssh.username,
+        password: '***', hasPassword: !!(cfg.ssh.password && cfg.ssh.password !== ''),
+      },
+      container: cfg.container,
+      databases: {
+        mysql: redactDb(cfg.databases.mysql),
+        opengauss: redactDb(cfg.databases.opengauss),
+        dm: redactDb(cfg.databases.dm),
+      },
+    };
+  }
+  readCfg();
+  function localStamp() {
+    const d = new Date();
+    const p = (n) => (n < 10 ? '0' + n : '' + n);
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' +
+      p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+  }
+  function appendLog(line) {
+    try {
+      fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true });
+      fs.appendFileSync(LOG_PATH, '[' + localStamp() + '] ' + line + '\n', 'utf8');
+    } catch (_e) {}
+  }
+  function stampForFile() {
+    const d = new Date();
+    const p = (n) => (n < 10 ? '0' + n : '' + n);
+    return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) +
+      p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
+  }
+
+  // 复用主壳的 shellEscape / sshExecCommand（作用域内可见）。
+  // 在容器内执行命令：docker exec <container> sh -c '<cmd>'
+  function runInContainerCmd(container, innerCmd) {
+    return 'docker exec ' + shellEscape(container) + ' sh -c ' + shellEscape(innerCmd);
+  }
+  // 以 root 身份在容器内执行；su - <user> -c '<cmd>' 场景
+  function runInContainerAs(container, user, innerCmd) {
+    if (!user || user === 'root') return runInContainerCmd(container, innerCmd);
+    return 'docker exec ' + shellEscape(container) + ' su - ' + shellEscape(user) +
+      ' -c ' + shellEscape(innerCmd);
+  }
+  // SSH -> 目标机 -> 命令
+  function sshRun(cmd) {
+    return new Promise((resolve) => {
+      const sshCfg = cfg.ssh || {};
+      if (!sshCfg.host || !sshCfg.username || !sshCfg.password) {
+        return resolve({ code: -1, stdout: '', stderr: 'SSH 未配置（host/username/password 缺失）' });
+      }
+      sshExecCommand({
+        host: sshCfg.host, port: Number(sshCfg.port) || 22,
+        username: sshCfg.username, password: sshCfg.password,
+      }, cmd, (err, r) => {
+        if (err) return resolve({ code: -1, stdout: '', stderr: err.message || String(err) });
+        resolve(r || { code: -1, stdout: '', stderr: '空结果' });
+      });
+    });
+  }
+  // 校验 dbId 合法性（mysql / opengauss / dm）
+  function validDbId(id) { return id === 'mysql' || id === 'opengauss' || id === 'dm'; }
+  function getDbCfg(id) { return validDbId(id) ? cfg.databases[id] : null; }
+  // 连接池：MySQL / openGauss / DM 各一个 pool，配置变更时销毁重建
+  const pools = { mysql: null, opengauss: null, dm: null };
+  async function getMysqlPool() {
+    if (!mysql2) throw new Error('mysql2 未安装');
+    if (pools.mysql) return pools.mysql;
+    const db = cfg.databases.mysql;
+    pools.mysql = mysql2.createPool({
+      host: db.host, port: Number(db.port) || 3333,
+      user: db.username, password: db.password || '',
+      connectionLimit: 3, connectTimeout: 5000, waitForConnections: true,
+      dateStrings: true,
+    });
+    return pools.mysql;
+  }
+  async function getPgPool() {
+    if (!pgLib) throw new Error('pg 未安装');
+    if (pools.opengauss) return pools.opengauss;
+    const db = cfg.databases.opengauss;
+    pools.opengauss = new pgLib.Pool({
+      host: db.host, port: Number(db.port) || 5432,
+      user: db.username, password: db.password || '',
+      database: db.database || 'dcim',
+      max: 3, connectionTimeoutMillis: 5000, idleTimeoutMillis: 15000,
+    });
+    return pools.opengauss;
+  }
+  async function getDmPool() {
+    if (!dmdbLib) throw new Error('dmdb 未安装');
+    if (pools.dm) return pools.dm;
+    const db = cfg.databases.dm;
+    pools.dm = await dmdbLib.createPool({
+      connectString: 'dm://' + encodeURIComponent(db.username) + ':' +
+        encodeURIComponent(db.password || '') + '@' + db.host + ':' + (Number(db.port) || 5236),
+      poolMax: 3, poolMin: 0, poolTimeout: 30,
+    });
+    return pools.dm;
+  }
+  async function destroyPools() {
+    try { if (pools.mysql) await pools.mysql.end(); } catch (_e) {}
+    try { if (pools.opengauss) await pools.opengauss.end(); } catch (_e) {}
+    try { if (pools.dm && pools.dm.close) await pools.dm.close(0); } catch (_e) {}
+    pools.mysql = null; pools.opengauss = null; pools.dm = null;
+  }
+  // 三库统一执行 SQL：返回 { columns, rows, rowCount, elapsedMs, notice? }
+  async function runQuery(dbId, sql, limit) {
+    const start = Date.now();
+    const cap = Math.max(1, Math.min(5000, Number(limit) || 500));
+    if (dbId === 'mysql') {
+      const pool = await getMysqlPool();
+      const conn = await pool.getConnection();
+      try {
+        const [rows, fields] = await conn.query({ sql: sql, rowsAsArray: false });
+        // 非 SELECT 返回 { affectedRows: ... }，包成统一格式
+        if (Array.isArray(rows)) {
+          const cols = fields && fields.length ? fields.map(f => f.name) : (rows[0] ? Object.keys(rows[0]) : []);
+          const trimmed = rows.length > cap ? rows.slice(0, cap) : rows;
+          return { columns: cols, rows: trimmed, rowCount: rows.length,
+            elapsedMs: Date.now() - start, notice: rows.length > cap ? '结果超过 ' + cap + ' 行，已截断' : null };
+        }
+        return { columns: ['result'], rows: [{ result: JSON.stringify(rows) }], rowCount: 1, elapsedMs: Date.now() - start };
+      } finally { conn.release(); }
+    }
+    if (dbId === 'opengauss') {
+      const pool = await getPgPool();
+      const client = await pool.connect();
+      try {
+        const r = await client.query(sql);
+        const rows = Array.isArray(r.rows) ? r.rows : [];
+        const cols = (r.fields || []).map(f => f.name);
+        const trimmed = rows.length > cap ? rows.slice(0, cap) : rows;
+        return { columns: cols.length ? cols : (rows[0] ? Object.keys(rows[0]) : []),
+          rows: trimmed, rowCount: rows.length, elapsedMs: Date.now() - start,
+          notice: rows.length > cap ? '结果超过 ' + cap + ' 行，已截断' : null };
+      } finally { client.release(); }
+    }
+    if (dbId === 'dm') {
+      const pool = await getDmPool();
+      const conn = await pool.getConnection();
+      try {
+        const r = await conn.execute(sql, [], { outFormat: dmdbLib.OUT_FORMAT_OBJECT });
+        const rows = Array.isArray(r.rows) ? r.rows : [];
+        const cols = (r.metaData || []).map(m => m.name);
+        const trimmed = rows.length > cap ? rows.slice(0, cap) : rows;
+        return { columns: cols.length ? cols : (rows[0] ? Object.keys(rows[0]) : []),
+          rows: trimmed, rowCount: rows.length, elapsedMs: Date.now() - start,
+          notice: rows.length > cap ? '结果超过 ' + cap + ' 行，已截断' : null };
+      } finally { try { await conn.close(); } catch (_e) {} }
+    }
+    throw new Error('未知的 dbId: ' + dbId);
+  }
+  // 三库状态探测：SSH 通 + 各服务 systemctl 状态 + 端口探活 + 直连版本
+  async function probeSsh() {
+    const r = await sshRun('echo ok');
+    return { ok: r.code === 0 && r.stdout.indexOf('ok') !== -1, message: r.stderr || (r.stdout || '') };
+  }
+  async function probeServiceRunning(dbId) {
+    const db = getDbCfg(dbId); if (!db) return { running: false };
+    const cmd = runInContainerCmd(cfg.container, 'systemctl is-active ' + db.systemdUnit + ' 2>/dev/null');
+    const r = await sshRun(cmd);
+    return { running: r.stdout.trim() === 'active', raw: r.stdout.trim() || r.stderr };
+  }
+  async function probeVersion(dbId) {
+    try {
+      if (dbId === 'mysql') {
+        const r = await runQuery('mysql', 'SELECT VERSION() AS v', 1);
+        return r.rows[0] ? r.rows[0].v : '';
+      }
+      if (dbId === 'opengauss') {
+        const r = await runQuery('opengauss', 'SELECT version() AS v', 1);
+        return r.rows[0] ? String(r.rows[0].v).split(' ')[0] : '';
+      }
+      if (dbId === 'dm') {
+        const r = await runQuery('dm', 'SELECT * FROM V$VERSION', 10);
+        const first = r.rows[0] || {};
+        return Object.values(first).join(' ') || '';
+      }
+    } catch (_e) { return ''; }
+    return '';
+  }
+  async function probeDbCounts(dbId) {
+    try {
+      if (dbId === 'mysql') {
+        const r = await runQuery('mysql',
+          "SELECT COUNT(DISTINCT table_schema) AS dbs, COUNT(*) AS tbls FROM information_schema.tables " +
+          "WHERE table_schema NOT IN ('mysql','information_schema','performance_schema','sys')", 1);
+        return { databases: Number(r.rows[0].dbs), tables: Number(r.rows[0].tbls) };
+      }
+      if (dbId === 'opengauss') {
+        const r = await runQuery('opengauss',
+          "SELECT (SELECT COUNT(*) FROM pg_database WHERE datistemplate=false)::text AS dbs, " +
+          "(SELECT COUNT(*) FROM pg_class WHERE relkind='r')::text AS tbls", 1);
+        return { databases: Number(r.rows[0].dbs), tables: Number(r.rows[0].tbls) };
+      }
+      if (dbId === 'dm') {
+        const r = await runQuery('dm',
+          "SELECT COUNT(*) AS tbls FROM ALL_TABLES", 1);
+        return { databases: 1, tables: Number(r.rows[0].TBLS || r.rows[0].tbls || 0) };
+      }
+    } catch (_e) {}
+    return { databases: 0, tables: 0 };
+  }
+  async function probeAll() {
+    const [ssh, mysqlSvc, gaussSvc, dmSvc] = await Promise.all([
+      probeSsh(), probeServiceRunning('mysql'),
+      probeServiceRunning('opengauss'), probeServiceRunning('dm'),
+    ]);
+    // 各库 version 与 counts 并行，但只在 ssh + service 都在时探
+    const [mv, gv, dv, mc, gc, dc] = await Promise.all([
+      mysqlSvc.running ? probeVersion('mysql')   : Promise.resolve(''),
+      gaussSvc.running  ? probeVersion('opengauss') : Promise.resolve(''),
+      dmSvc.running     ? probeVersion('dm')     : Promise.resolve(''),
+      mysqlSvc.running ? probeDbCounts('mysql')  : Promise.resolve({ databases: 0, tables: 0 }),
+      gaussSvc.running  ? probeDbCounts('opengauss') : Promise.resolve({ databases: 0, tables: 0 }),
+      dmSvc.running     ? probeDbCounts('dm')    : Promise.resolve({ databases: 0, tables: 0 }),
+    ]);
+    return {
+      ssh: ssh,
+      container: cfg.container,
+      databases: {
+        mysql: { id: 'mysql', label: 'MySQL', running: mysqlSvc.running,
+          version: mv, databases: mc.databases, tables: mc.tables, unit: cfg.databases.mysql.systemdUnit },
+        opengauss: { id: 'opengauss', label: 'openGauss', running: gaussSvc.running,
+          version: gv, databases: gc.databases, tables: gc.tables, unit: cfg.databases.opengauss.systemdUnit },
+        dm: { id: 'dm', label: '达梦 DM', running: dmSvc.running,
+          version: dv, databases: dc.databases, tables: dc.tables, unit: cfg.databases.dm.systemdUnit },
+      },
+    };
+  }
+
+  // 服务生命周期：docker exec <container> systemctl <action> <unit>
+  async function serviceAction(dbId, action) {
+    if (!['start', 'stop', 'restart', 'status'].includes(action)) throw new Error('非法 action');
+    const db = getDbCfg(dbId); if (!db) throw new Error('未知的 dbId');
+    const cmd = runInContainerCmd(cfg.container, 'systemctl ' + action + ' ' + db.systemdUnit);
+    appendLog('service ' + dbId + ' ' + action + ' → ' + db.systemdUnit);
+    const r = await sshRun(cmd);
+    return { code: r.code, stdout: r.stdout, stderr: r.stderr, unit: db.systemdUnit };
+  }
+
+  // 备份：先在容器内 dump 到 /tmp/dbmgr-<ts>.<ext>，再 SFTP 拉回本机 backups/db-manager/
+  async function backupDatabase(dbId, dbName) {
+    const db = getDbCfg(dbId); if (!db) throw new Error('未知的 dbId');
+    if (!dbName) throw new Error('database 必填');
+    const ts = stampForFile();
+    let remotePath, localName, dumpCmd;
+    if (dbId === 'mysql') {
+      remotePath = '/tmp/dbmgr-mysql-' + dbName + '-' + ts + '.sql';
+      localName = 'mysql-' + dbName + '-' + ts + '.sql';
+      const inner = db.dockerDump + ' -u' + shellEscape(db.username).slice(1, -1) +
+        (db.password ? ' -p' + shellEscape(db.password).slice(1, -1) : '') +
+        ' --single-transaction --routines --triggers --set-gtid-purged=OFF ' +
+        shellEscape(dbName).slice(1, -1) + ' > ' + remotePath;
+      dumpCmd = runInContainerCmd(cfg.container, inner);
+    } else if (dbId === 'opengauss') {
+      remotePath = '/tmp/dbmgr-gauss-' + dbName + '-' + ts + '.dump';
+      localName = 'gauss-' + dbName + '-' + ts + '.dump';
+      // openGauss 不认 PGPASSWORD 环境变量，必须用 -W <password> 命令行传密码
+      const inner = '/opt/software/openGauss/app/bin/gs_dump ' +
+        '-h 127.0.0.1 -p ' + (Number(db.port) || 5432) +
+        ' -U ' + shellEscape(db.username).slice(1, -1) +
+        ' -W ' + shellEscape(db.password || '').slice(1, -1) +
+        ' -f ' + remotePath + ' -F c ' + shellEscape(dbName).slice(1, -1);
+      dumpCmd = runInContainerAs(cfg.container, 'omm', inner);
+    } else {
+      remotePath = '/tmp/dbmgr-dm-' + dbName + '-' + ts + '.dmp';
+      localName = 'dm-' + dbName + '-' + ts + '.dmp';
+      const inner = db.dockerDump + ' USERID=' + shellEscape(db.username).slice(1, -1) + '/' +
+        shellEscape(db.password || '').slice(1, -1) + '@127.0.0.1:' + (Number(db.port) || 5236) +
+        ' FILE=' + remotePath + ' DIRECTORY=/tmp SCHEMAS=' + shellEscape(dbName).slice(1, -1) +
+        ' LOG=/tmp/dbmgr-dm-' + dbName + '-' + ts + '.log';
+      dumpCmd = runInContainerCmd(cfg.container, inner);
+    }
+    appendLog('backup start ' + dbId + '/' + dbName + ' → ' + remotePath);
+    const r = await sshRun(dumpCmd);
+    if (r.code !== 0) {
+      appendLog('backup dump 失败: ' + (r.stderr || r.stdout).slice(0, 500));
+      throw new Error('dump 失败: ' + (r.stderr || r.stdout || 'exit ' + r.code).slice(0, 500));
+    }
+    // dump 命令跑在容器内，产物在容器 /tmp，而 sftpDownload 从宿主机 /tmp 拉。
+    // docker cp 把文件从容器复制到宿主，然后清容器内临时文件
+    const dockerCp = 'docker cp ' + shellEscape(cfg.container) + ':' + remotePath + ' ' + remotePath;
+    const cpR = await sshRun(dockerCp);
+    if (cpR.code !== 0) {
+      appendLog('backup docker cp 失败: ' + (cpR.stderr || cpR.stdout).slice(0, 400));
+      throw new Error('docker cp 失败（容器内 dump 可能没生成文件）: ' +
+        (cpR.stderr || cpR.stdout || 'exit ' + cpR.code).slice(0, 400));
+    }
+    await sshRun(runInContainerCmd(cfg.container, 'rm -f ' + remotePath));
+    fs.mkdirSync(BACKUP_DIR, { recursive: true });
+    const localPath = path.join(BACKUP_DIR, localName);
+    await sftpDownload(remotePath, localPath);
+    await sshRun('rm -f ' + shellEscape(remotePath));
+    const stat = fs.statSync(localPath);
+    appendLog('backup ok ' + dbId + '/' + dbName + ' size=' + stat.size + ' → ' + localName);
+    return { file: localName, size: stat.size, path: localPath };
+  }
+
+  // SFTP 从目标机下载到本机
+  function sftpDownload(remotePath, localPath) {
+    return new Promise((resolve, reject) => {
+      const client = new Client();
+      const sshCfg = cfg.ssh || {};
+      client.on('ready', () => {
+        client.sftp((err, sftp) => {
+          if (err) { try { client.end(); } catch(_e){} return reject(err); }
+          const rs = sftp.createReadStream(remotePath);
+          const ws = fs.createWriteStream(localPath);
+          let done = false;
+          const finish = (e) => { if (done) return; done = true; try { client.end(); } catch(_e){} e ? reject(e) : resolve(); };
+          rs.on('error', finish);
+          ws.on('error', finish);
+          ws.on('close', () => finish(null));
+          rs.pipe(ws);
+        });
+      });
+      client.on('error', reject);
+      client.connect({
+        host: sshCfg.host, port: Number(sshCfg.port) || 22,
+        username: sshCfg.username, password: sshCfg.password,
+        readyTimeout: 15000,
+      });
+    });
+  }
+  // SFTP 从本机上传到目标机
+  function sftpUpload(localPath, remotePath) {
+    return new Promise((resolve, reject) => {
+      const client = new Client();
+      const sshCfg = cfg.ssh || {};
+      client.on('ready', () => {
+        client.sftp((err, sftp) => {
+          if (err) { try { client.end(); } catch(_e){} return reject(err); }
+          const rs = fs.createReadStream(localPath);
+          const ws = sftp.createWriteStream(remotePath);
+          let done = false;
+          const finish = (e) => { if (done) return; done = true; try { client.end(); } catch(_e){} e ? reject(e) : resolve(); };
+          rs.on('error', finish);
+          ws.on('error', finish);
+          ws.on('close', () => finish(null));
+          rs.pipe(ws);
+        });
+      });
+      client.on('error', reject);
+      client.connect({
+        host: sshCfg.host, port: Number(sshCfg.port) || 22,
+        username: sshCfg.username, password: sshCfg.password,
+        readyTimeout: 15000,
+      });
+    });
+  }
+
+  // 还原：本机备份文件 → SFTP 上传 → 容器内 restore 命令
+  async function restoreDatabase(dbId, dbName, localFileName) {
+    const db = getDbCfg(dbId); if (!db) throw new Error('未知的 dbId');
+    if (!dbName) throw new Error('database 必填');
+    // 校验文件名，避免路径穿越
+    if (!/^[A-Za-z0-9._-]+$/.test(localFileName)) throw new Error('文件名非法');
+    const localPath = path.join(BACKUP_DIR, localFileName);
+    if (!fs.existsSync(localPath)) throw new Error('本地备份文件不存在: ' + localFileName);
+    const ts = stampForFile();
+    const remotePath = '/tmp/dbmgr-restore-' + ts + '-' + localFileName;
+    appendLog('restore start ' + dbId + '/' + dbName + ' ← ' + localFileName);
+    await sftpUpload(localPath, remotePath);
+    // 容器 restore 命令读的是容器内路径；sftpUpload 只放到了宿主 /tmp，需要 docker cp 进容器
+    const cpIn = await sshRun('docker cp ' + remotePath + ' ' + shellEscape(cfg.container) + ':' + remotePath);
+    if (cpIn.code !== 0) {
+      throw new Error('docker cp 上传到容器失败: ' + (cpIn.stderr || cpIn.stdout).slice(0, 400));
+    }
+    let restoreCmd;
+    if (dbId === 'mysql') {
+      const inner = db.dockerCli + ' -u' + shellEscape(db.username).slice(1, -1) +
+        (db.password ? ' -p' + shellEscape(db.password).slice(1, -1) : '') +
+        ' ' + shellEscape(dbName).slice(1, -1) + ' < ' + remotePath;
+      restoreCmd = runInContainerCmd(cfg.container, inner);
+    } else if (dbId === 'opengauss') {
+      // openGauss 用 -W 传密码
+      const inner = '/opt/software/openGauss/app/bin/gs_restore ' +
+        '-h 127.0.0.1 -p ' + (Number(db.port) || 5432) +
+        ' -U ' + shellEscape(db.username).slice(1, -1) +
+        ' -W ' + shellEscape(db.password || '').slice(1, -1) +
+        ' -d ' + shellEscape(dbName).slice(1, -1) + ' ' + remotePath;
+      restoreCmd = runInContainerAs(cfg.container, 'omm', inner);
+    } else {
+      const inner = '/home/dmdba/dmdbms/bin/dimp USERID=' + shellEscape(db.username).slice(1, -1) + '/' +
+        shellEscape(db.password || '').slice(1, -1) + '@127.0.0.1:' + (Number(db.port) || 5236) +
+        ' FILE=' + remotePath + ' DIRECTORY=/tmp SCHEMAS=' + shellEscape(dbName).slice(1, -1) +
+        ' LOG=/tmp/dbmgr-restore-' + ts + '.log';
+      restoreCmd = runInContainerCmd(cfg.container, inner);
+    }
+    const r = await sshRun(restoreCmd);
+    // 清理：容器内 + 宿主 tmp
+    await sshRun(runInContainerCmd(cfg.container, 'rm -f ' + remotePath));
+    await sshRun('rm -f ' + shellEscape(remotePath));
+    if (r.code !== 0) {
+      appendLog('restore 失败 ' + dbId + '/' + dbName + ': ' + (r.stderr || r.stdout).slice(0, 500));
+      throw new Error('restore 失败 (exit ' + r.code + '): ' + (r.stderr || r.stdout || '').slice(0, 500));
+    }
+    appendLog('restore ok ' + dbId + '/' + dbName);
+    return { stdout: r.stdout, stderr: r.stderr };
+  }
+
+  // ===== 路由 =====
+  app.get('/api/db-manager/config', (_req, res) => {
+    res.json({ ok: true, config: redactCfg(),
+      drivers: { mysql2: !!mysql2, pg: !!pgLib, dmdb: !!dmdbLib } });
+  });
+
+  app.put('/api/db-manager/config', async (req, res) => {
+    const b = req.body || {};
+    const next = JSON.parse(JSON.stringify(cfg));
+    if (b.ssh && typeof b.ssh === 'object') {
+      if (typeof b.ssh.host === 'string')     next.ssh.host = b.ssh.host.trim();
+      if (b.ssh.port != null)                 next.ssh.port = Math.max(1, Math.min(65535, Number(b.ssh.port) || 22));
+      if (typeof b.ssh.username === 'string') next.ssh.username = b.ssh.username.trim();
+      if (typeof b.ssh.password === 'string' && b.ssh.password !== '' && b.ssh.password !== '***') {
+        next.ssh.password = b.ssh.password;
+      }
+    }
+    if (typeof b.container === 'string' && b.container.trim()) next.container = b.container.trim();
+    ['mysql', 'opengauss', 'dm'].forEach((id) => {
+      if (b.databases && b.databases[id] && typeof b.databases[id] === 'object') {
+        const src = b.databases[id]; const tgt = next.databases[id];
+        if (typeof src.enabled === 'boolean')  tgt.enabled = src.enabled;
+        if (typeof src.host === 'string')      tgt.host = src.host.trim();
+        if (src.port != null)                  tgt.port = Math.max(1, Math.min(65535, Number(src.port) || tgt.port));
+        if (typeof src.username === 'string')  tgt.username = src.username.trim();
+        if (typeof src.database === 'string')  tgt.database = src.database.trim();
+        if (typeof src.systemdUnit === 'string') tgt.systemdUnit = src.systemdUnit.trim();
+        if (typeof src.password === 'string' && src.password !== '' && src.password !== '***') {
+          tgt.password = src.password;
+        }
+        // DM 专属：SYSDBA 密码（授权 / license 管理用）
+        if (id === 'dm' && typeof src.sysdbaPassword === 'string' &&
+            src.sysdbaPassword !== '' && src.sysdbaPassword !== '***') {
+          tgt.sysdbaPassword = src.sysdbaPassword;
+        }
+      }
+    });
+    cfg = next; writeCfg();
+    await destroyPools(); // 配置变更，销毁连接池
+    appendLog('配置已更新 ssh=' + cfg.ssh.host);
+    res.json({ ok: true, config: redactCfg() });
+  });
+
+  app.post('/api/db-manager/test-connection', async (req, res) => {
+    const body = req.body || {};
+    const target = String(body.target || 'ssh');
+    // 支持前端把弹窗当前 form 值传进来，测完不写盘（避免用户「测试」前必须先「保存」）
+    const inline = body.credentials || null;
+    try {
+      if (target === 'ssh') {
+        // SSH 测试：走 sshExecCommand 用 inline 或已存 cfg.ssh
+        const sshCfg = inline
+          ? { host: inline.host, port: Number(inline.port) || 22, username: inline.username, password: inline.password }
+          : (cfg.ssh || {});
+        if (!sshCfg.host || !sshCfg.username || !sshCfg.password) {
+          return res.json({ ok: false, message: 'SSH 未配置（host/username/password 缺失）' });
+        }
+        const r = await new Promise((resolve) => {
+          sshExecCommand(sshCfg, 'echo ok', (err, r) => {
+            if (err) return resolve({ ok: false, message: err.message || String(err) });
+            const ok = r && r.code === 0 && (r.stdout || '').indexOf('ok') !== -1;
+            resolve({ ok, message: ok ? 'SSH 连通' : (r.stderr || r.stdout || 'SSH 不通').slice(0, 300) });
+          });
+        });
+        return res.json(r);
+      }
+      if (!validDbId(target)) return res.status(400).json({ ok: false, message: '非法 target' });
+      // DB 直连测试：如果传了 inline 用 inline，否则用已保存的 pool
+      if (inline) {
+        // 用 inline 凭据临时开一个连接测（不用 pool，避免污染）
+        if (target === 'mysql') {
+          if (!mysql2) throw new Error('mysql2 未安装');
+          const conn = await mysql2.createConnection({
+            host: inline.host, port: Number(inline.port) || 3333,
+            user: inline.username, password: inline.password || '',
+            connectTimeout: 5000, ssl: false,
+          });
+          try { await conn.query('SELECT 1'); } finally { try { await conn.end(); } catch(_e){} }
+        } else if (target === 'opengauss') {
+          if (!pgLib) throw new Error('pg 未安装');
+          const c2 = new pgLib.Client({
+            host: inline.host, port: Number(inline.port) || 5432,
+            user: inline.username, password: inline.password || '',
+            database: inline.database || 'dcim',
+            connectionTimeoutMillis: 5000,
+          });
+          try { await c2.connect(); await c2.query('SELECT 1'); } finally { try { await c2.end(); } catch(_e){} }
+        } else if (target === 'dm') {
+          if (!dmdbLib) throw new Error('dmdb 未安装');
+          const conn = await dmdbLib.getConnection({
+            connectString: 'dm://' + encodeURIComponent(inline.username) + ':' +
+              encodeURIComponent(inline.password || '') + '@' + inline.host + ':' + (Number(inline.port) || 5236),
+          });
+          try { await conn.execute('SELECT 1 FROM DUAL'); } finally { try { await conn.close(); } catch(_e){} }
+        }
+      } else {
+        await runQuery(target, target === 'dm' ? 'SELECT 1 FROM DUAL' : 'SELECT 1', 1);
+      }
+      res.json({ ok: true, message: target + ' 连通' });
+    } catch (e) {
+      res.json({ ok: false, message: (e.message || String(e)).slice(0, 300) });
+    }
+  });
+
+  app.get('/api/db-manager/status', async (_req, res) => {
+    try { res.json({ ok: true, status: await probeAll() }); }
+    catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  });
+
+  app.post('/api/db-manager/service/:db/:action', async (req, res) => {
+    try {
+      const r = await serviceAction(req.params.db, req.params.action);
+      res.json({ ok: r.code === 0, code: r.code, stdout: r.stdout, stderr: r.stderr, unit: r.unit });
+    } catch (e) { res.status(400).json({ ok: false, message: e.message }); }
+  });
+
+  app.post('/api/db-manager/query', async (req, res) => {
+    const b = req.body || {};
+    const dbId = String(b.db || '');
+    const sql = String(b.sql || '').trim();
+    if (!validDbId(dbId)) return res.status(400).json({ ok: false, message: '非法 db' });
+    if (!sql) return res.status(400).json({ ok: false, message: 'sql 必填' });
+    try {
+      const r = await runQuery(dbId, sql, b.limit);
+      res.json({ ok: true, ...r });
+    } catch (e) { res.status(400).json({ ok: false, message: e.message }); }
+  });
+
+  app.get('/api/db-manager/databases/:db', async (req, res) => {
+    const dbId = req.params.db;
+    if (!validDbId(dbId)) return res.status(400).json({ ok: false, message: '非法 db' });
+    try {
+      let sql;
+      if (dbId === 'mysql') sql = "SELECT schema_name AS name FROM information_schema.schemata WHERE schema_name NOT IN ('mysql','information_schema','performance_schema','sys') ORDER BY schema_name";
+      else if (dbId === 'opengauss') sql = "SELECT datname AS name FROM pg_database WHERE datistemplate=false ORDER BY datname";
+      else sql = "SELECT USERNAME AS name FROM DBA_USERS WHERE ACCOUNT_STATUS='OPEN' AND USERNAME NOT IN ('SYS','SYSAUDITOR','SYSSSO') ORDER BY USERNAME";
+      const r = await runQuery(dbId, sql, 500);
+      res.json({ ok: true, databases: r.rows.map(x => x.name || x.NAME) });
+    } catch (e) { res.status(400).json({ ok: false, message: e.message }); }
+  });
+
+  app.get('/api/db-manager/tables/:db/:database', async (req, res) => {
+    const dbId = req.params.db; const dbName = req.params.database;
+    if (!validDbId(dbId)) return res.status(400).json({ ok: false, message: '非法 db' });
+    try {
+      let sql;
+      if (dbId === 'mysql') {
+        // 用参数拼装：mysql2 pool.query 不支持 pool 级 database 切换；把 database 名内联进 SQL
+        // 只允许 [\w-] 避免注入
+        if (!/^[\w-]+$/.test(dbName)) return res.status(400).json({ ok: false, message: 'database 名非法' });
+        sql = "SELECT table_name AS name, table_rows AS rows, data_length + index_length AS bytes FROM information_schema.tables WHERE table_schema='" + dbName + "' AND table_type='BASE TABLE' ORDER BY table_name";
+      } else if (dbId === 'opengauss') {
+        sql = "SELECT tablename AS name FROM pg_tables WHERE schemaname NOT IN ('pg_catalog','information_schema') ORDER BY tablename";
+      } else {
+        if (!/^[\w-]+$/.test(dbName)) return res.status(400).json({ ok: false, message: 'schema 名非法' });
+        sql = "SELECT TABLE_NAME AS name, NUM_ROWS AS rows FROM ALL_TABLES WHERE OWNER='" + dbName.toUpperCase() + "' ORDER BY TABLE_NAME";
+      }
+      const r = await runQuery(dbId, sql, 5000);
+      res.json({ ok: true, tables: r.rows.map(row => ({
+        name: row.name || row.NAME,
+        rows: row.rows != null ? Number(row.rows) : (row.ROWS != null ? Number(row.ROWS) : null),
+        bytes: row.bytes != null ? Number(row.bytes) : null,
+      })) });
+    } catch (e) { res.status(400).json({ ok: false, message: e.message }); }
+  });
+
+  app.get('/api/db-manager/table/:db/:database/:table', async (req, res) => {
+    const dbId = req.params.db; const dbName = req.params.database; const tbl = req.params.table;
+    if (!validDbId(dbId)) return res.status(400).json({ ok: false, message: '非法 db' });
+    if (!/^[\w-]+$/.test(dbName) || !/^[\w-]+$/.test(tbl)) return res.status(400).json({ ok: false, message: '名称非法' });
+    try {
+      let structSql, previewSql;
+      if (dbId === 'mysql') {
+        structSql = "SELECT column_name AS name, column_type AS type, is_nullable AS nullable, column_default AS `default`, column_comment AS comment FROM information_schema.columns WHERE table_schema='" + dbName + "' AND table_name='" + tbl + "' ORDER BY ordinal_position";
+        previewSql = "SELECT * FROM `" + dbName + "`.`" + tbl + "` LIMIT 100";
+      } else if (dbId === 'opengauss') {
+        structSql = "SELECT column_name AS name, data_type AS type, is_nullable AS nullable, column_default AS \"default\" FROM information_schema.columns WHERE table_name='" + tbl + "' ORDER BY ordinal_position";
+        previewSql = 'SELECT * FROM "' + tbl + '" LIMIT 100';
+      } else {
+        structSql = "SELECT COLUMN_NAME AS name, DATA_TYPE AS type, NULLABLE AS nullable, DATA_DEFAULT AS \"default\" FROM ALL_TAB_COLUMNS WHERE OWNER='" + dbName.toUpperCase() + "' AND TABLE_NAME='" + tbl.toUpperCase() + "' ORDER BY COLUMN_ID";
+        previewSql = 'SELECT * FROM "' + dbName.toUpperCase() + '"."' + tbl.toUpperCase() + '" WHERE ROWNUM <= 100';
+      }
+      const struct = await runQuery(dbId, structSql, 500);
+      let preview = { columns: [], rows: [] };
+      try { preview = await runQuery(dbId, previewSql, 100); } catch (e) { preview.notice = e.message; }
+      res.json({ ok: true,
+        columns: struct.rows.map(r => ({
+          name: r.name || r.NAME, type: r.type || r.TYPE,
+          nullable: r.nullable || r.NULLABLE,
+          default: r.default || r.DEFAULT,
+          comment: r.comment || r.COMMENT || null,
+        })),
+        preview: { columns: preview.columns, rows: preview.rows, notice: preview.notice || null },
+      });
+    } catch (e) { res.status(400).json({ ok: false, message: e.message }); }
+  });
+
+  app.post('/api/db-manager/backup', async (req, res) => {
+    const b = req.body || {};
+    if (!validDbId(b.db)) return res.status(400).json({ ok: false, message: '非法 db' });
+    if (!b.database) return res.status(400).json({ ok: false, message: 'database 必填' });
+    try {
+      const r = await backupDatabase(b.db, String(b.database));
+      res.json({ ok: true, ...r });
+    } catch (e) { res.status(400).json({ ok: false, message: e.message }); }
+  });
+
+  app.get('/api/db-manager/backups', (_req, res) => {
+    try {
+      fs.mkdirSync(BACKUP_DIR, { recursive: true });
+      const files = fs.readdirSync(BACKUP_DIR)
+        .filter(f => !f.startsWith('.'))
+        .map(f => { const s = fs.statSync(path.join(BACKUP_DIR, f)); return { name: f, size: s.size, mtime: s.mtimeMs }; })
+        .sort((a, b) => b.mtime - a.mtime);
+      res.json({ ok: true, files: files });
+    } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  });
+
+  app.get('/api/db-manager/backups/:file', (req, res) => {
+    const f = req.params.file;
+    if (!/^[A-Za-z0-9._-]+$/.test(f)) return res.status(400).json({ ok: false, message: '文件名非法' });
+    const full = path.join(BACKUP_DIR, f);
+    if (!fs.existsSync(full)) return res.status(404).json({ ok: false, message: '文件不存在' });
+    res.download(full, f);
+  });
+
+  app.delete('/api/db-manager/backups/:file', (req, res) => {
+    const f = req.params.file;
+    if (!/^[A-Za-z0-9._-]+$/.test(f)) return res.status(400).json({ ok: false, message: '文件名非法' });
+    const full = path.join(BACKUP_DIR, f);
+    if (!fs.existsSync(full)) return res.status(404).json({ ok: false, message: '文件不存在' });
+    try { fs.unlinkSync(full); appendLog('删备份 ' + f); res.json({ ok: true }); }
+    catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  });
+
+  app.post('/api/db-manager/restore', async (req, res) => {
+    const b = req.body || {};
+    if (!validDbId(b.db)) return res.status(400).json({ ok: false, message: '非法 db' });
+    if (!b.database) return res.status(400).json({ ok: false, message: 'database 必填' });
+    if (!b.file) return res.status(400).json({ ok: false, message: 'file 必填' });
+    try {
+      const r = await restoreDatabase(b.db, String(b.database), String(b.file));
+      res.json({ ok: true, ...r });
+    } catch (e) { res.status(400).json({ ok: false, message: e.message }); }
+  });
+
+  // 上传备份文件（base64 dataUrl，body: { name, content }）
+  app.post('/api/db-manager/upload-backup', (req, res) => {
+    const b = req.body || {};
+    const name = String(b.name || '').trim();
+    if (!/^[A-Za-z0-9._-]+$/.test(name)) return res.status(400).json({ ok: false, message: '文件名非法（只允许字母数字._-）' });
+    if (!b.content || typeof b.content !== 'string') return res.status(400).json({ ok: false, message: 'content 必填（dataURL 或 base64）' });
+    try {
+      let buf;
+      if (b.content.indexOf('data:') === 0) buf = dataUrlToBuffer(b.content);
+      else buf = Buffer.from(b.content, 'base64');
+      if (buf.length > 2 * 1024 * 1024 * 1024) return res.status(413).json({ ok: false, message: '单文件超过 2GB' });
+      fs.mkdirSync(BACKUP_DIR, { recursive: true });
+      const full = path.join(BACKUP_DIR, name);
+      fs.writeFileSync(full, buf);
+      appendLog('上传备份 ' + name + ' size=' + buf.length);
+      res.json({ ok: true, file: name, size: buf.length });
+    } catch (e) { res.status(400).json({ ok: false, message: e.message }); }
+  });
+
+  // ===== openGauss 一键启用 + 建 dcim 应用账号 + 局域网白名单 =====
+  // 场景：初始版本的 dcim 容器里 openGauss 是 disabled+inactive，也没有可远程连的应用账号。
+  // 本接口完成：启动 opengauss.service → 建/改 dcim 账号 → 改 pg_hba+listen_addresses → 重启，
+  // 让 dcim / 局域网客户端可通过 dcim/Gauss@2026 从 <CIDR> 连过来。
+  // 路径自适应：50.10 与 0.60 的 gauss home / data dir 目录名不同（app/bin 与 bin，dn 与 single_node）
+  async function initOpenGauss(opts) {
+    opts = opts || {};
+    const password = String(opts.password || 'Gauss@2026');
+    const cidr = String(opts.cidr || '192.168.0.0/24');
+    const dbUser = 'dcim';
+    // 简单校验
+    if (!/^[A-Za-z0-9.:\/]+$/.test(cidr) || cidr.length > 64) throw new Error('CIDR 格式非法');
+    if (password.length < 8) throw new Error('密码至少 8 位');
+    // openGauss 强度要求：大小写/数字/特殊字符至少 3 类
+    let kinds = 0;
+    if (/[a-z]/.test(password)) kinds++;
+    if (/[A-Z]/.test(password)) kinds++;
+    if (/[0-9]/.test(password)) kinds++;
+    if (/[^A-Za-z0-9]/.test(password)) kinds++;
+    if (kinds < 3) throw new Error('密码需要包含大小写字母/数字/特殊字符中至少 3 类');
+
+    const logs = [];
+    const step = (name, out) => {
+      const s = '[' + name + '] ' + (out || '').split('\n').slice(0, 5).join(' | ').slice(0, 400);
+      logs.push(s); appendLog('gauss-init ' + s);
+    };
+
+    // 1. 探测路径（gaussdb 二进制 + pg_hba.conf 所在 data 目录）
+    let r = await sshRun(runInContainerCmd(cfg.container,
+      "find /opt/software/openGauss -maxdepth 4 -name gaussdb -type f 2>/dev/null | head -1"));
+    const gaussBin = r.stdout.trim();
+    if (!gaussBin) throw new Error('未找到 openGauss 的 gaussdb 二进制（预期 /opt/software/openGauss 下）');
+    const gaussHome = gaussBin.replace(/\/bin\/gaussdb$/, '');
+    step('detect-home', gaussHome);
+
+    r = await sshRun(runInContainerCmd(cfg.container,
+      "find /opt/software/openGauss/data -maxdepth 3 -name pg_hba.conf 2>/dev/null | head -1"));
+    const pgHbaPath = r.stdout.trim();
+    if (!pgHbaPath) throw new Error('未找到 pg_hba.conf（预期 /opt/software/openGauss/data 下）');
+    const dataDir = pgHbaPath.replace(/\/pg_hba\.conf$/, '');
+    const pgConfPath = dataDir + '/postgresql.conf';
+    step('detect-data', dataDir);
+
+    // 2. enable + start（幂等）
+    r = await sshRun(runInContainerCmd(cfg.container, 'systemctl enable opengauss 2>&1'));
+    step('enable', r.stdout || r.stderr);
+    r = await sshRun(runInContainerCmd(cfg.container, 'systemctl start opengauss 2>&1'));
+    step('start', r.stdout || r.stderr);
+
+    // 3. 轮询等 5432 起来（最多 30 秒）
+    let ready = false;
+    for (let i = 0; i < 30; i++) {
+      const p = await sshRun(runInContainerCmd(cfg.container,
+        "ss -lntp 2>/dev/null | awk '{print $4}' | grep -E ':5432$' | head -1"));
+      if (p.stdout.trim()) { ready = true; break; }
+      await new Promise(r => setTimeout(r, 1000));
+    }
+    step('ready', ready ? 'openGauss 已监听 5432' : '等待 5432 超时');
+    if (!ready) throw new Error('openGauss 启动后 30 秒内未监听 5432');
+
+    // 4. 写 SQL 脚本到容器内 /tmp，omm 身份执行（避免命令行 escape 问题）
+    const sqlPw = password.replace(/'/g, "''");
+    const sqlBody = [
+      "DO $$",
+      "BEGIN",
+      "  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '" + dbUser + "') THEN",
+      "    CREATE USER " + dbUser + " WITH PASSWORD '" + sqlPw + "';",
+      "  ELSE",
+      "    ALTER USER " + dbUser + " WITH PASSWORD '" + sqlPw + "';",
+      "  END IF;",
+      "END",
+      "$$;",
+      "ALTER USER " + dbUser + " SET search_path TO public;",
+      "GRANT CONNECT ON DATABASE postgres TO " + dbUser + ";",
+    ].join('\n');
+    // heredoc 拷进容器：base64 一次性传，避免 shell 里的 $ 展开与转义
+    const b64 = Buffer.from(sqlBody, 'utf8').toString('base64');
+    const writeSqlCmd = runInContainerCmd(cfg.container,
+      "sh -c 'echo " + shellEscape(b64).slice(1, -1) + " | base64 -d > /tmp/gauss-init.sql && chown omm:dbgrp /tmp/gauss-init.sql'");
+    r = await sshRun(writeSqlCmd);
+    step('write-sql', r.stdout || r.stderr);
+
+    // 5. 用 omm 用户跑 gsql（导 GAUSSHOME/PATH/LD_LIBRARY_PATH）
+    const gsqlEnv = 'export GAUSSHOME=' + gaussHome + '; ' +
+      'export PATH=$GAUSSHOME/bin:$PATH; ' +
+      'export LD_LIBRARY_PATH=$GAUSSHOME/lib:$LD_LIBRARY_PATH; ';
+    const gsqlRun = gsqlEnv + 'gsql -d postgres -p 5432 -f /tmp/gauss-init.sql 2>&1';
+    r = await sshRun(runInContainerAs(cfg.container, 'omm', gsqlRun));
+    step('grant', r.stdout || r.stderr);
+    if (r.code !== 0 && !/CREATE ROLE|ALTER ROLE|DO|GRANT/.test(r.stdout)) {
+      throw new Error('创建 dcim 用户失败: ' + (r.stdout || r.stderr).slice(0, 400));
+    }
+
+    // 6. 改 postgresql.conf 的 listen_addresses = '*'
+    const laFix = "sed -i \"s/^#*listen_addresses.*/listen_addresses = '*'/\" " + pgConfPath +
+      " && grep '^listen_addresses' " + pgConfPath;
+    r = await sshRun(runInContainerCmd(cfg.container, laFix));
+    step('listen-addresses', r.stdout || r.stderr);
+
+    // 7. pg_hba.conf 加白名单（幂等，只加一次）
+    const hbaLine = 'host    ' + dbUser + '    ' + dbUser + '    ' + cidr + '    sha256';
+    // grep 时把 CIDR 里的 / 转义、单独匹配整行避免子串冲突
+    const cidrEsc = cidr.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+    const hbaFix = 'grep -qE "^host\\s+' + dbUser + '\\s+' + dbUser + '\\s+' + cidrEsc + '\\s" ' + pgHbaPath +
+      ' || echo ' + shellEscape(hbaLine).slice(1, -1) + ' >> ' + pgHbaPath +
+      ' && tail -5 ' + pgHbaPath;
+    r = await sshRun(runInContainerCmd(cfg.container, hbaFix));
+    step('pg_hba', r.stdout || r.stderr);
+
+    // 8. 重启 opengauss 让 listen_addresses + pg_hba 生效
+    r = await sshRun(runInContainerCmd(cfg.container, 'systemctl restart opengauss 2>&1'));
+    step('restart', r.stdout || r.stderr);
+    // 再等一次 5432
+    ready = false;
+    for (let i = 0; i < 30; i++) {
+      const p = await sshRun(runInContainerCmd(cfg.container,
+        "ss -lntp 2>/dev/null | awk '{print $4}' | grep -E ':5432$' | head -1"));
+      if (p.stdout.trim()) { ready = true; break; }
+      await new Promise(r => setTimeout(r, 1000));
+    }
+    step('ready-after-restart', ready ? '重启后已监听 5432' : '重启后等待超时');
+
+    // 9. 验证：用 dcim/pw 连一次（在容器内跑，绕过宿主端口映射差异）
+    const verifyCmd = gsqlEnv + 'gsql -h 127.0.0.1 -p 5432 -U ' + dbUser +
+      " -W " + shellEscape(password).slice(1, -1) +
+      " -d postgres -c \"select current_user;\" 2>&1";
+    r = await sshRun(runInContainerAs(cfg.container, 'omm', verifyCmd));
+    step('verify', r.stdout || r.stderr);
+    const verified = /current_user/i.test(r.stdout) && /dcim/.test(r.stdout);
+
+    // 10. 顺便把 db-manager 配置里的 opengauss 密码同步进去，用户后续 SQL 控制台可直连
+    try {
+      cfg.databases.opengauss.username = dbUser;
+      cfg.databases.opengauss.password = password;
+      // 存 'dcim' 而非 'postgres'：dcim 业务库和 WVP 表都在 dcim 库，
+      // 且 pg_hba 白名单我们只针对 'dcim' 数据库+dcim 用户开放
+      cfg.databases.opengauss.database = 'dcim';
+      writeCfg();
+      await destroyPools();
+      step('save-cfg', 'db-manager 配置已同步 opengauss 用户与密码');
+    } catch (e) { step('save-cfg', 'ERROR: ' + e.message); }
+
+    return {
+      ok: true,
+      gaussHome, dataDir, pgHbaPath, pgConfPath,
+      dbUser, cidr,
+      hostMap5432: '容器内 5432 已监听，若需从外部主机 <IP>:5432 访问，需保证 docker 有 5432→5432 端口映射',
+      verified,
+      logs,
+    };
+  }
+
+  app.post('/api/db-manager/opengauss/init', async (req, res) => {
+    const b = req.body || {};
+    try {
+      const r = await initOpenGauss({ password: b.password, cidr: b.cidr });
+      res.json(r);
+    } catch (e) {
+      appendLog('opengauss/init 失败: ' + e.message);
+      res.status(400).json({ ok: false, message: e.message });
+    }
+  });
+
+  // ===== openGauss 一键新建 WVP 数据库表 =====
+  // 场景：openGauss dcim 库刚建，但 WVP 15 张业务表还没有；这个按钮一键建表 + 塞初始 admin 账号。
+  // SQL 从 db/vendor/wvp-init-opengauss.sql 读，本身已经是 PG/openGauss 兼容语法（SERIAL / character varying 等）。
+  const WVP_TABLES = [
+    'wvp_device','wvp_device_alarm','wvp_device_channel','wvp_device_mobile_position',
+    'wvp_gb_stream','wvp_log','wvp_media_server','wvp_platform','wvp_platform_catalog',
+    'wvp_platform_gb_channel','wvp_platform_gb_stream','wvp_stream_proxy','wvp_stream_push',
+    'wvp_user','wvp_user_role',
+  ];
+  async function countWvpTables() {
+    // 走 SSH + 容器内 gsql（loopback 127.0.0.1）避开 pg_hba 白名单问题
+    // pg pool 从 webssh 主机连 5432 需 pg_hba 白名单 192.168.50.0/24；SSH → docker exec 则走本机 loopback
+    const gsqlPw = String(cfg.databases.opengauss.password || '');
+    const gsqlCmd = '/opt/software/openGauss/app/bin/gsql -h 127.0.0.1 -p 5432 -U dcim -W ' +
+      shellEscape(gsqlPw).slice(1, -1) +
+      ' -d dcim -At -c "SELECT tablename FROM pg_tables WHERE schemaname=' + "'public'" +
+      ' AND tablename LIKE ' + "'wvp' || '_%' ESCAPE '\\\\' ORDER BY tablename;\"";
+    const r = await sshRun(runInContainerAs(cfg.container, 'omm', gsqlCmd));
+    if (r.code !== 0) throw new Error('countWvpTables 失败: ' + (r.stderr || r.stdout).slice(0, 300));
+    return r.stdout.split(/\r?\n/).map(s => s.trim()).filter(s => /^wvp_[a-z_]+$/.test(s));
+  }
+  async function initWvpSchema(opts) {
+    opts = opts || {};
+    const dropExisting = !!opts.dropExisting;
+    const targetDb = String(opts.database || 'dcim');
+    if (!/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(targetDb)) throw new Error('数据库名非法');
+    // 1. 读本地 bundle 的 SQL
+    const sqlPath = path.join(__dirname, 'db', 'vendor', 'wvp-init-opengauss.sql');
+    if (!fs.existsSync(sqlPath)) throw new Error('SQL 模板不存在: ' + sqlPath);
+    let sql = fs.readFileSync(sqlPath, 'utf8');
+    // 2. dropExisting → 先拼 DROP，再拼 CREATE
+    if (dropExisting) {
+      const dropSql = WVP_TABLES.map(t => 'DROP TABLE IF EXISTS "' + t + '" CASCADE;').join('\n');
+      sql = dropSql + '\n\n' + sql;
+    }
+    // 注：不改 INSERT 幂等性 —— openGauss 6.0 ON CONFLICT 语法不完全兼容 PG，
+    // 且首次建表 wvp_user/wvp_user_role 是空表，原始 INSERT 一定成功；
+    // 重复执行时 CREATE TABLE 会因表存在报错，用户勾选「先 DROP 再建」重跑即可。
+    // 4. 上传到目标机 /tmp
+    const ts = stampForFile();
+    const localTmp = path.join(__dirname, 'tmp', 'wvp-init-' + ts + '.sql');
+    fs.mkdirSync(path.dirname(localTmp), { recursive: true });
+    fs.writeFileSync(localTmp, sql, 'utf8');
+    const remoteTmp = '/tmp/wvp-init-' + ts + '.sql';
+    await sftpUpload(localTmp, remoteTmp);
+    // 5. docker cp 进容器
+    const cpIn = await sshRun('docker cp ' + remoteTmp + ' ' + shellEscape(cfg.container) + ':' + remoteTmp);
+    if (cpIn.code !== 0) throw new Error('docker cp 失败: ' + (cpIn.stderr || cpIn.stdout).slice(0, 400));
+    // 6. 用 omm 身份 gsql -f 执行（避免 dcim 用户没有 CREATE 权限）
+    //    但表属主应该属于 dcim。所以在 SQL 头加个 SET SESSION AUTHORIZATION dcim;
+    //    简化方案：直接用 dcim 用户跑（dcim 默认对 public schema 有 CREATE 权限）
+    const dbUser = 'dcim';
+    const dbPw = cfg.databases.opengauss.password || '';
+    const gsqlCmd = '/opt/software/openGauss/app/bin/gsql -h 127.0.0.1 -p 5432 -U ' + dbUser +
+      ' -W ' + shellEscape(dbPw).slice(1, -1) + ' -d ' + targetDb +
+      ' -v ON_ERROR_STOP=1 -f ' + remoteTmp;
+    const execR = await sshRun(runInContainerAs(cfg.container, 'omm', gsqlCmd));
+    // 7. 清理临时文件
+    try { fs.unlinkSync(localTmp); } catch (_e) {}
+    await sshRun(runInContainerCmd(cfg.container, 'rm -f ' + remoteTmp));
+    await sshRun('rm -f ' + shellEscape(remoteTmp));
+
+    // 8. 结果分析：以最终表数量为真相。gsql 有时会因 NOTICE 输出让 exit code 变化，不能只看 code
+    const output = (execR.stdout || '') + '\n' + (execR.stderr || '');
+    const hasError = /^ERROR:|^FATAL:|gsql:.*ERROR:|gsql:.*FATAL:/m.test(output);
+    // 9. 校验：跑完后再查一次表数量
+    const after = await countWvpTables().catch(() => []);
+    const success = after.length >= WVP_TABLES.length && !hasError;
+    if (!success) {
+      appendLog('init-wvp 失败 tables=' + after.length + '/' + WVP_TABLES.length +
+        ' hasError=' + hasError + ' out=' + output.slice(0, 300));
+      throw new Error('建表未达预期 (got=' + after.length + '/expected=' + WVP_TABLES.length +
+        (hasError ? '，有 ERROR/FATAL' : '') + '): ' + output.slice(0, 400));
+    }
+    appendLog('init-wvp ok tables=' + after.length + ' dropExisting=' + dropExisting);
+    return {
+      ok: true, database: targetDb, dropExisting,
+      created: after, createdCount: after.length,
+      expectedCount: WVP_TABLES.length,
+      output: output.slice(0, 2000),
+    };
+  }
+
+  // GET  /api/db-manager/opengauss/wvp/status - 查 openGauss dcim 库里现有多少 wvp_ 表
+  app.get('/api/db-manager/opengauss/wvp/status', async (_req, res) => {
+    try {
+      const tables = await countWvpTables();
+      res.json({ ok: true, tables, count: tables.length, expected: WVP_TABLES.length,
+        expectedList: WVP_TABLES });
+    } catch (e) { res.status(400).json({ ok: false, message: e.message }); }
+  });
+  // POST /api/db-manager/opengauss/wvp/init - 一键建 WVP 表
+  //   body: { database?: 'dcim', dropExisting?: false }
+  app.post('/api/db-manager/opengauss/wvp/init', async (req, res) => {
+    const b = req.body || {};
+    try {
+      const r = await initWvpSchema({ database: b.database, dropExisting: b.dropExisting });
+      res.json(r);
+    } catch (e) {
+      appendLog('opengauss/wvp/init 失败: ' + e.message);
+      res.status(400).json({ ok: false, message: e.message });
+    }
+  });
+
+  // ===== WVP 数据同步：MySQL wvp 库 → openGauss dcim.public 15 张 wvp_ 表 =====
+  // 场景：dcim 主业务已切 openGauss，只有 WVP 还挂在 MySQL；此接口把 MySQL 里的 WVP 历史数据搬到
+  // openGauss（wvp_* 表结构必须已存在，未建先跑「建 WVP 表」）。WVP 服务不动，继续用 MySQL。
+  // 关键处理：
+  //   1. MySQL tinyint(1) 0/1 → openGauss boolean true/false（探测 information_schema data_type='boolean' 列）
+  //   2. 幂等追加（ON CONFLICT DO NOTHING）或先 TRUNCATE 全量重灌
+  //   3. 保留主键值以维持外键关系，同步完 setval(pg_get_serial_sequence, MAX(id))
+  //   4. 只同步双方共有的列，MySQL 独有列忽略，openGauss 独有列走默认值
+  async function syncWvpFromMysql(opts) {
+    opts = opts || {};
+    const dropExisting = !!opts.dropExisting;
+    if (!mysql2) throw new Error('mysql2 未安装');
+    if (!pgLib)   throw new Error('pg 未安装');
+
+    // 前置校验：目标 15 张 wvp_ 表必须已存在
+    const existTables = await countWvpTables();
+    const missing = WVP_TABLES.filter(t => !existTables.includes(t));
+    if (missing.length) {
+      throw new Error('openGauss 缺少 wvp 表 ' + missing.join(', ') + '，请先跑「建 WVP 表」');
+    }
+
+    // MySQL 连接（wvp 库，不是 dcim）
+    const my = cfg.databases.mysql;
+    const myConn = await mysql2.createConnection({
+      host: my.host, port: Number(my.port) || 3333,
+      user: my.username, password: my.password || '',
+      database: 'wvp', charset: 'utf8mb4',
+      connectTimeout: 8000, dateStrings: true,
+    });
+    // openGauss 连接（dcim 库）
+    const gauss = cfg.databases.opengauss;
+    const pgClient = new pgLib.Client({
+      host: gauss.host, port: Number(gauss.port) || 5432,
+      user: gauss.username, password: gauss.password || '',
+      database: gauss.database || 'dcim',
+      connectionTimeoutMillis: 8000,
+    });
+    await pgClient.connect();
+
+    const report = [];
+    try {
+      for (const table of WVP_TABLES) {
+        const item = { table, mysqlRows: 0, gaussBefore: 0, gaussAfter: 0,
+          inserted: 0, error: null, elapsedMs: 0 };
+        const t0 = Date.now();
+        try {
+          // 双方列
+          const [myColsRaw] = await myConn.query(
+            "SELECT column_name AS c FROM information_schema.columns WHERE table_schema='wvp' AND table_name=? ORDER BY ordinal_position",
+            [table]);
+          const mySet = new Set(myColsRaw.map(r => (r.c || r.column_name || r.COLUMN_NAME || '').toLowerCase()));
+          const gaussColsRes = await pgClient.query(
+            "SELECT column_name, data_type FROM information_schema.columns WHERE table_schema='public' AND table_name=$1 ORDER BY ordinal_position",
+            [table]);
+          const gaussCols = gaussColsRes.rows.map(r => r.column_name);
+          const boolCols = new Set(gaussColsRes.rows.filter(r => r.data_type === 'boolean').map(r => r.column_name));
+          const commonCols = gaussCols.filter(c => mySet.has(c.toLowerCase()));
+          if (!commonCols.length) throw new Error('无共有列');
+
+          // 主键列（openGauss 不认 ON CONFLICT，用客户端预取 + 过滤代替）
+          const pkRes = await pgClient.query(
+            "SELECT a.attname FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)" +
+            " WHERE i.indrelid = ($1::regclass) AND i.indisprimary ORDER BY a.attnum",
+            ['public."' + table + '"']);
+          const pkCols = pkRes.rows.map(r => r.attname).filter(c => commonCols.includes(c));
+
+          // 行数（前）
+          const [c1] = await myConn.query('SELECT COUNT(*) AS c FROM `' + table + '`');
+          item.mysqlRows = Number(c1[0].c || 0);
+          const b = await pgClient.query('SELECT COUNT(*)::bigint AS c FROM "' + table + '"');
+          item.gaussBefore = Number(b.rows[0].c);
+
+          // TRUNCATE 或客户端幂等：预取已存 PK 集合
+          // 注意：openGauss（PGXC 分布式）不支持 RESTART IDENTITY，只能纯 TRUNCATE CASCADE；
+          // sequence 由后续 setval 逻辑重置到 MAX(id)+1
+          let existingPkSet = null;
+          if (dropExisting && item.gaussBefore > 0) {
+            await pgClient.query('TRUNCATE TABLE "' + table + '" CASCADE');
+          } else if (!dropExisting && item.gaussBefore > 0 && pkCols.length) {
+            // 拉出所有已存 PK 值组成 Set（key 用 '' 拼），下面 INSERT 前过滤
+            const pkSelect = pkCols.map(c => '"' + c + '"').join(',');
+            const ex = await pgClient.query('SELECT ' + pkSelect + ' FROM "' + table + '"');
+            existingPkSet = new Set();
+            for (const r of ex.rows) {
+              const key = pkCols.map(c => String(r[c])).join('');
+              existingPkSet.add(key);
+            }
+          }
+
+          // 批量搬
+          if (item.mysqlRows > 0) {
+            const BATCH = 500;
+            const colList = commonCols.map(c => '`' + c + '`').join(',');
+            for (let off = 0; off < item.mysqlRows; off += BATCH) {
+              const [rows] = await myConn.query(
+                'SELECT ' + colList + ' FROM `' + table + '` LIMIT ? OFFSET ?', [BATCH, off]);
+              if (!rows.length) break;
+
+              // 客户端过滤：跳过 PK 已存在的
+              const rowsToInsert = existingPkSet
+                ? rows.filter(row => {
+                    const key = pkCols.map(c => String(row[c])).join('');
+                    return !existingPkSet.has(key);
+                  })
+                : rows;
+              if (!rowsToInsert.length) continue;
+
+              // 构造多行 INSERT
+              const params = []; const placeholders = [];
+              for (const row of rowsToInsert) {
+                const rowP = [];
+                for (const col of commonCols) {
+                  let v = row[col];
+                  if (boolCols.has(col)) {
+                    if (v === null || v === undefined || v === '') v = null;
+                    else if (v === 0 || v === '0' || v === false) v = false;
+                    else if (v === 1 || v === '1' || v === true) v = true;
+                  }
+                  params.push(v);
+                  rowP.push('$' + params.length);
+                }
+                placeholders.push('(' + rowP.join(',') + ')');
+              }
+              const sql = 'INSERT INTO "' + table + '" (' +
+                commonCols.map(c => '"' + c + '"').join(',') + ') VALUES ' + placeholders.join(',');
+              const r = await pgClient.query(sql, params);
+              item.inserted += r.rowCount || 0;
+              // 更新已存 PK 集合，避免下一批冲突
+              if (existingPkSet) {
+                for (const row of rowsToInsert) {
+                  const key = pkCols.map(c => String(row[c])).join('');
+                  existingPkSet.add(key);
+                }
+              }
+            }
+          }
+
+          // 修 sequence：把 wvp 表的自增主键 sequence 推到 MAX(pk)+1
+          // 用两步查询 + 参数化，避免手拼字符串导致 MAX(列名) 变成 MAX('列名字符串')
+          const serialColsRes = await pgClient.query(
+            "SELECT column_name FROM information_schema.columns WHERE table_schema='public' " +
+            "AND table_name=$1 AND column_default LIKE 'nextval%'", [table]);
+          for (const sc of serialColsRes.rows) {
+            const col = sc.column_name;
+            if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(col)) continue;
+            try {
+              await pgClient.query(
+                'SELECT setval(pg_get_serial_sequence($1, $2), ' +
+                'COALESCE((SELECT MAX("' + col + '") FROM public."' + table + '"), 1), ' +
+                'EXISTS (SELECT 1 FROM public."' + table + '"))',
+                ['public."' + table + '"', col]);
+            } catch (_e) { /* setval 失败不算致命 */ }
+          }
+
+          const a = await pgClient.query('SELECT COUNT(*)::bigint AS c FROM "' + table + '"');
+          item.gaussAfter = Number(a.rows[0].c);
+        } catch (e) {
+          item.error = (e.message || String(e)).slice(0, 400);
+          // 出错也刷新 gaussAfter，避免 UI 看到 gauss=X→0 的假象（其实数据可能还在）
+          try {
+            const a2 = await pgClient.query('SELECT COUNT(*)::bigint AS c FROM "' + table + '"');
+            item.gaussAfter = Number(a2.rows[0].c);
+          } catch (_ee) { item.gaussAfter = item.gaussBefore; }
+        }
+        item.elapsedMs = Date.now() - t0;
+        report.push(item);
+      }
+    } finally {
+      try { await myConn.end(); } catch (_e) {}
+      try { await pgClient.end(); } catch (_e) {}
+    }
+
+    const totalMy = report.reduce((s, r) => s + r.mysqlRows, 0);
+    const totalIns = report.reduce((s, r) => s + r.inserted, 0);
+    const errCnt = report.filter(r => r.error).length;
+    appendLog('wvp-sync tables=' + report.length + ' mysqlRows=' + totalMy +
+      ' inserted=' + totalIns + ' errors=' + errCnt + ' dropExisting=' + dropExisting);
+    return { ok: errCnt === 0, dropExisting, tables: report,
+      summary: { totalMysqlRows: totalMy, totalInserted: totalIns, errorCount: errCnt } };
+  }
+
+  // 双库行数对比（页面加载弹窗时先查一次）
+  async function wvpSyncStatus() {
+    if (!mysql2) throw new Error('mysql2 未安装');
+    if (!pgLib)   throw new Error('pg 未安装');
+    const my = cfg.databases.mysql;
+    const gauss = cfg.databases.opengauss;
+    let myConn, pgClient;
+    try {
+      myConn = await mysql2.createConnection({
+        host: my.host, port: Number(my.port) || 3333,
+        user: my.username, password: my.password || '',
+        database: 'wvp', connectTimeout: 5000,
+      });
+      pgClient = new pgLib.Client({
+        host: gauss.host, port: Number(gauss.port) || 5432,
+        user: gauss.username, password: gauss.password || '',
+        database: gauss.database || 'dcim',
+        connectionTimeoutMillis: 5000,
+      });
+      await pgClient.connect();
+      const rows = [];
+      for (const table of WVP_TABLES) {
+        let mysqlRows = -1, gaussRows = -1, err = null;
+        try {
+          const [c1] = await myConn.query('SELECT COUNT(*) AS c FROM `' + table + '`');
+          mysqlRows = Number(c1[0].c || 0);
+        } catch (e) { err = 'mysql: ' + e.message.slice(0, 100); }
+        try {
+          const g = await pgClient.query('SELECT COUNT(*)::bigint AS c FROM "' + table + '"');
+          gaussRows = Number(g.rows[0].c);
+        } catch (e) { err = (err ? err + ' | ' : '') + 'gauss: ' + e.message.slice(0, 100); }
+        rows.push({ table, mysqlRows, gaussRows, error: err });
+      }
+      return rows;
+    } finally {
+      try { if (myConn) await myConn.end(); } catch (_e) {}
+      try { if (pgClient) await pgClient.end(); } catch (_e) {}
+    }
+  }
+
+  app.get('/api/db-manager/opengauss/wvp/sync-status', async (_req, res) => {
+    try { res.json({ ok: true, rows: await wvpSyncStatus() }); }
+    catch (e) { res.status(400).json({ ok: false, message: e.message }); }
+  });
+
+  app.post('/api/db-manager/opengauss/wvp/sync-from-mysql', async (req, res) => {
+    const b = req.body || {};
+    try {
+      const r = await syncWvpFromMysql({ dropExisting: b.dropExisting });
+      res.json(r);
+    } catch (e) {
+      appendLog('opengauss/wvp/sync-from-mysql 失败: ' + e.message);
+      res.status(400).json({ ok: false, message: e.message });
+    }
+  });
+
+  // 单独修 15 张 wvp_ 表的自增序列（推到 MAX(pk)+1）—— 无需重跑同步
+  async function fixWvpSequences() {
+    if (!pgLib) throw new Error('pg 未安装');
+    const gauss = cfg.databases.opengauss;
+    const pgClient = new pgLib.Client({
+      host: gauss.host, port: Number(gauss.port) || 5432,
+      user: gauss.username, password: gauss.password || '',
+      database: gauss.database || 'dcim',
+      connectionTimeoutMillis: 8000,
+    });
+    await pgClient.connect();
+    const results = [];
+    try {
+      for (const table of WVP_TABLES) {
+        const item = { table, sequences: [], error: null };
+        try {
+          const serialColsRes = await pgClient.query(
+            "SELECT column_name FROM information_schema.columns WHERE table_schema='public' " +
+            "AND table_name=$1 AND column_default LIKE 'nextval%'", [table]);
+          for (const sc of serialColsRes.rows) {
+            const col = sc.column_name;
+            if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(col)) continue;
+            // 拿 sequence 名 + max 值 + isCalled 前后值
+            const seqRes = await pgClient.query(
+              "SELECT pg_get_serial_sequence($1, $2) AS seq", ['public."' + table + '"', col]);
+            const seqName = seqRes.rows[0] && seqRes.rows[0].seq;
+            if (!seqName) continue;
+            const beforeRes = await pgClient.query('SELECT last_value, is_called FROM ' + seqName);
+            const maxRes = await pgClient.query(
+              'SELECT COALESCE(MAX("' + col + '"), 0)::bigint AS m, COUNT(*)::bigint AS n FROM public."' + table + '"');
+            const maxVal = Number(maxRes.rows[0].m);
+            const cnt = Number(maxRes.rows[0].n);
+            // 有数据：setval(seq, MAX, true) → 下次 nextval=MAX+1
+            // 无数据：setval(seq, 1, false) → 下次 nextval=1
+            await pgClient.query('SELECT setval($1, $2, $3)',
+              [seqName, cnt > 0 ? maxVal : 1, cnt > 0]);
+            const afterRes = await pgClient.query('SELECT last_value, is_called FROM ' + seqName);
+            item.sequences.push({
+              column: col, sequence: seqName, tableRows: cnt, maxPk: maxVal,
+              before: { last_value: String(beforeRes.rows[0].last_value), is_called: beforeRes.rows[0].is_called },
+              after:  { last_value: String(afterRes.rows[0].last_value),  is_called: afterRes.rows[0].is_called },
+            });
+          }
+        } catch (e) { item.error = (e.message || String(e)).slice(0, 300); }
+        results.push(item);
+      }
+    } finally {
+      try { await pgClient.end(); } catch (_e) {}
+    }
+    const fixed = results.reduce((s, r) => s + r.sequences.length, 0);
+    const errs = results.filter(r => r.error).length;
+    appendLog('wvp/fix-sequences fixed=' + fixed + ' errors=' + errs);
+    return { ok: errs === 0, fixed, errors: errs, tables: results };
+  }
+
+  app.post('/api/db-manager/opengauss/wvp/fix-sequences', async (_req, res) => {
+    try { res.json(await fixWvpSequences()); }
+    catch (e) {
+      appendLog('opengauss/wvp/fix-sequences 失败: ' + e.message);
+      res.status(400).json({ ok: false, message: e.message });
+    }
+  });
+
+  // ===== 达梦授权 / dm.key 管理 =====
+  // - GET  /api/db-manager/dm/license      查授权信息（SYSDBA 查 V$LICENSE + 探 dm.key 文件）
+  // - POST /api/db-manager/dm/upload-key   上传 dm.key（base64 content）→ 备份旧 key → 覆盖 → 重启 DM → 重查
+  const DM_KEY_PATH = '/home/dmdba/dmdbms/bin/dm.key'; // 达梦 V8 默认查找位置
+  async function queryDmLicense() {
+    if (!dmdbLib) throw new Error('dmdb 驱动未安装');
+    const db = cfg.databases.dm || {};
+    const sysPw = (db.sysdbaPassword && db.sysdbaPassword !== '') ? db.sysdbaPassword : db.password;
+    if (!sysPw) throw new Error('SYSDBA 密码未配置（在「连接信息」弹窗里填 达梦 SYSDBA 密码）');
+    const connStr = 'dm://SYSDBA:' + encodeURIComponent(sysPw) + '@' + (db.host || '127.0.0.1') + ':' + (Number(db.port) || 5236);
+    let conn;
+    try {
+      conn = await dmdbLib.getConnection(connStr);
+      // 查所有 license 字段
+      const sql = 'SELECT * FROM V' + String.fromCharCode(36) + 'LICENSE';
+      const r = await conn.execute(sql, [], { outFormat: dmdbLib.OUT_FORMAT_OBJECT });
+      const row = (r.rows || [])[0] || {};
+      // 版本
+      let dbVersion = '';
+      try {
+        const rv = await conn.execute('SELECT * FROM V' + String.fromCharCode(36) + 'VERSION', [], { outFormat: dmdbLib.OUT_FORMAT_OBJECT });
+        const v0 = (rv.rows || [])[0] || {};
+        dbVersion = Object.values(v0).filter(x => typeof x === 'string' && /DM/i.test(x)).join(' ') || Object.values(v0).join(' ');
+      } catch (_e) {}
+      // 计算剩余天数
+      let daysLeft = null;
+      const exp = row.EXPIRED_DATE || row.expired_date || row['EXPIRED_DATE'];
+      let expStr = '';
+      if (exp) {
+        const expDate = new Date(exp);
+        if (!isNaN(expDate.getTime())) {
+          expStr = expDate.toISOString().slice(0, 10);
+          daysLeft = Math.floor((expDate.getTime() - Date.now()) / 86400000);
+        } else expStr = String(exp);
+      }
+      return { fields: row, dbVersion: dbVersion, expiredDate: expStr, daysLeft: daysLeft };
+    } finally {
+      try { if (conn) await conn.close(); } catch (_e) {}
+    }
+  }
+  async function probeDmKey() {
+    // 探 dm.key 是否存在 + stat 信息（走 SSH docker exec）
+    const r = await sshRun(runInContainerCmd(cfg.container,
+      'if [ -f ' + DM_KEY_PATH + ' ]; then stat -c "%s %Y %U:%G %a" ' + DM_KEY_PATH + '; else echo MISSING; fi'));
+    const line = (r.stdout || '').trim();
+    if (line === 'MISSING' || !line) return { exists: false, path: DM_KEY_PATH };
+    const parts = line.split(/\s+/);
+    return { exists: true, path: DM_KEY_PATH, size: Number(parts[0]), mtime: Number(parts[1]) * 1000,
+      owner: parts[2], mode: parts[3] };
+  }
+  async function uploadDmKey(contentBase64) {
+    const buf = Buffer.from(contentBase64, 'base64');
+    if (buf.length === 0) throw new Error('文件内容为空');
+    if (buf.length > 1024 * 1024) throw new Error('dm.key 通常 < 10KB，收到 ' + buf.length + ' 字节可能不对');
+    // 简单校验：文件里应包含 "License" 或 "AUTHORIZED" 关键字（达梦 key 是明文 KV 格式）
+    const preview = buf.slice(0, Math.min(buf.length, 500)).toString('utf8');
+    if (!/License|AUTHORIZED|SERIES|EXPIRED/i.test(preview)) {
+      appendLog('dm.key 内容首部不含预期关键字，前 200 字节：' + preview.slice(0, 200).replace(/\s+/g, ' '));
+      throw new Error('文件内容不像 dm.key（缺少 License / AUTHORIZED / SERIES 等关键字）');
+    }
+    const ts = stampForFile();
+    // 1. 写宿主 tmp
+    const hostTmp = '/tmp/dm.key.upload-' + ts;
+    fs.mkdirSync(path.dirname(path.join(__dirname, 'tmp', 'dm-key')), { recursive: true });
+    const localTmp = path.join(__dirname, 'tmp', 'dm-key', 'dm.key.upload-' + ts);
+    fs.writeFileSync(localTmp, buf);
+    await sftpUpload(localTmp, hostTmp);
+    try { fs.unlinkSync(localTmp); } catch (_e) {}
+
+    // 2. 容器内先备份现有 dm.key（若有）
+    const bakPath = DM_KEY_PATH + '.bak.' + ts;
+    const bakCmd = runInContainerCmd(cfg.container,
+      'if [ -f ' + DM_KEY_PATH + ' ]; then cp -a ' + DM_KEY_PATH + ' ' + bakPath + '; fi');
+    const bakR = await sshRun(bakCmd);
+    appendLog('dm.key 旧文件备份 ' + (bakR.code === 0 ? bakPath : '失败/无原文件'));
+
+    // 3. docker cp 上传到容器
+    const cpR = await sshRun('docker cp ' + hostTmp + ' ' + shellEscape(cfg.container) + ':' + DM_KEY_PATH);
+    if (cpR.code !== 0) {
+      await sshRun('rm -f ' + shellEscape(hostTmp));
+      throw new Error('docker cp 上传失败: ' + (cpR.stderr || cpR.stdout).slice(0, 400));
+    }
+    await sshRun('rm -f ' + shellEscape(hostTmp));
+
+    // 4. 容器内改属主/权限（达梦 V8 官方推荐 dmdba:dinstall 0600）
+    await sshRun(runInContainerCmd(cfg.container,
+      'chown dmdba:dinstall ' + DM_KEY_PATH + ' && chmod 0600 ' + DM_KEY_PATH));
+
+    // 5. 重启 DmServiceDMSERVER
+    const restartR = await sshRun(runInContainerCmd(cfg.container,
+      'systemctl restart DmServiceDMSERVER.service 2>&1'));
+    // 6. 等 5236 就绪
+    let ready = false;
+    for (let i = 0; i < 30; i++) {
+      const p = await sshRun(runInContainerCmd(cfg.container,
+        "ss -lntp 2>/dev/null | grep -E ':5236' | head -1"));
+      if (p.stdout.trim()) { ready = true; break; }
+      await new Promise(r => setTimeout(r, 1000));
+    }
+    appendLog('dm.key 上传 size=' + buf.length + ' 备份=' + bakPath + ' 重启=' + (ready ? 'OK' : 'timeout'));
+
+    // 7. 重新查授权（成功后返回给前端）
+    let license = null;
+    try { license = await queryDmLicense(); } catch (e) { license = { error: e.message }; }
+    return { ok: true, uploaded: buf.length, backup: bakPath, restarted: ready, license: license };
+  }
+
+  app.get('/api/db-manager/dm/license', async (_req, res) => {
+    try {
+      const license = await queryDmLicense();
+      const keyFile = await probeDmKey();
+      res.json({ ok: true, license: license, keyFile: keyFile });
+    } catch (e) {
+      appendLog('dm/license 查询失败: ' + e.message);
+      res.status(400).json({ ok: false, message: e.message });
+    }
+  });
+
+  app.post('/api/db-manager/dm/upload-key', async (req, res) => {
+    const b = req.body || {};
+    if (!b.contentBase64) return res.status(400).json({ ok: false, message: 'contentBase64 必填' });
+    try {
+      const r = await uploadDmKey(String(b.contentBase64));
+      res.json(r);
+    } catch (e) {
+      appendLog('dm/upload-key 失败: ' + e.message);
+      res.status(400).json({ ok: false, message: e.message });
+    }
+  });
+
+  // ===== 数据源切换（Phase B）=====
+  // 版本快照存放路径（目标机）：/opt/dcim-datasource-versions/{mysql|opengauss|dm}/
+  //   snapshot.zip          代码快照（localhost_8080 + localhost_8086 + python 三个子目录打包）
+  //   dbconfig.json         对应版本的数据库连接配置（type/host/port/user/password）
+  // 切换目标（宿主机上的 bind mount 源，同步生效到容器）：
+  //   /dcim/admin/localhost_8080/  ↔ 容器 /www/wwwroot/localhost_8080/
+  //   /dcim/admin/localhost_8086/  ↔ 容器 /www/wwwroot/localhost_8086/
+  //   /dcim/python/                ↔ 容器 /www/python/
+  //   /dcim/conf/dbconfig.json     ↔ 容器 /www/dbconfig.json
+  const DS_VERSIONS_DIR = '/opt/dcim-datasource-versions';
+  const DS_KEYS = ['mysql', 'opengauss', 'dm'];
+  const DS_LABELS = { mysql: 'MySQL', opengauss: 'openGauss', dm: '达梦 DM' };
+  const DS_DEFAULT_DBCONFIG = {
+    mysql: {
+      type: 'mysql', host: '127.0.0.1', port: 3306, name: 'dcim',
+      user: 'dcim', password: '3seckmG7eKstTCRz', charset: 'UTF8',
+      schema: 'public', pdo_options: {},
+      pool_min: 1, pool_max: 128, pool_max_connections: 0, pool_max_usage: 0,
+      pool_blocking: true, pool_setsession: '', timeout: 5,
+    },
+    opengauss: {
+      type: 'opengauss', host: '127.0.0.1', port: 5432, name: 'dcim',
+      user: 'dcim', password: 'Gauss@2026', charset: 'UTF8',
+      schema: 'public',
+      pdo_options: { '1002': "SET client_encoding TO 'UTF8'" },
+      pool_min: 1, pool_max: 128, pool_max_connections: 0, pool_max_usage: 0,
+      pool_blocking: true, pool_setsession: '', timeout: 5,
+    },
+    dm: {
+      type: 'dm', host: '127.0.0.1', port: 5236, name: 'DCIM',
+      user: 'dcim', password: '3seckmG7eKstTCRz', charset: 'UTF8',
+      schema: 'DCIM', pdo_options: {},
+      pool_min: 1, pool_max: 128, pool_max_connections: 0, pool_max_usage: 0,
+      pool_blocking: true, pool_setsession: '', timeout: 5,
+    },
+  };
+  // dcim 代码从多个位置读 dbconfig.json，切换时必须全部覆盖（否则残留旧凭据导致 500）
+  // 优先级从 dcim/src/config.php:5-8 出来的搜索顺序：
+  //   1. /www/wwwroot/localhost_8086/wwwroot/dbconfig.json  = /dcim/admin/localhost_8086/wwwroot/dbconfig.json  ← 优先级最高
+  //   2. /www/wwwroot/localhost_8080/wwwroot/dbconfig.json  = /dcim/admin/localhost_8080/wwwroot/dbconfig.json
+  //   3. /www/dbconfig.json                                 = /dcim/conf/dbconfig.json
+  //   4. Python 采集独立配置（不走 bind mount，docker cp 单独更新）
+  const DS_DBCONFIG_HOST_PATHS = [
+    '/dcim/admin/localhost_8086/wwwroot/dbconfig.json',
+    '/dcim/admin/localhost_8080/wwwroot/dbconfig.json',
+    '/dcim/conf/dbconfig.json',
+  ];
+  const DS_DBCONFIG_CONTAINER_PATHS = [
+    '/www/python/src/collection/config/dbconfig.json',
+  ];
+
+  // 读目标机当前 dbconfig.json，判断当前是哪种数据库
+  async function detectCurrentDatasource() {
+    const r = await sshRun('cat /dcim/conf/dbconfig.json 2>/dev/null');
+    if (r.code !== 0 || !r.stdout) return { type: 'unknown', raw: r.stderr || r.stdout || '' };
+    try {
+      const conf = JSON.parse(r.stdout);
+      const t = String(conf.type || '').toLowerCase();
+      return { type: t || 'unknown', config: conf };
+    } catch (_e) {
+      return { type: 'unknown', raw: r.stdout };
+    }
+  }
+
+  // 列出目标机上已上传的版本快照
+  async function listDatasourceVersions() {
+    await sshRun('mkdir -p ' + DS_VERSIONS_DIR);
+    const result = {};
+    for (const key of DS_KEYS) {
+      const path = DS_VERSIONS_DIR + '/' + key;
+      const r = await sshRun(
+        'if [ -f ' + path + '/snapshot.zip ]; then ' +
+        '  echo READY:$(stat -c %s ' + path + '/snapshot.zip):$(stat -c %Y ' + path + '/snapshot.zip); ' +
+        'else echo MISSING; fi'
+      );
+      const line = r.stdout.trim();
+      if (line.startsWith('READY:')) {
+        const parts = line.slice(6).split(':');
+        result[key] = { ready: true, size: Number(parts[0]), mtime: Number(parts[1]) * 1000 };
+      } else {
+        result[key] = { ready: false };
+      }
+    }
+    return result;
+  }
+
+  // 从目标机当前生产 /dcim/admin + /dcim/python 抓一份基线快照（默认标签 mysql）
+  async function initCurrentBaseline(versionKey) {
+    if (!DS_KEYS.includes(versionKey)) throw new Error('非法 version: ' + versionKey);
+    const dst = DS_VERSIONS_DIR + '/' + versionKey;
+    const zip = dst + '/snapshot.zip';
+    // 需要 zip 工具；kylin 默认有
+    const cmd = [
+      'mkdir -p ' + dst,
+      'cd /dcim && rm -f ' + shellEscape(zip),
+      'zip -qr ' + shellEscape(zip) + ' admin/localhost_8080 admin/localhost_8086 python' +
+        " -x '*.bak.*' '*.localbak.*' '*.servercopy.*' '*.php1' '*.localbeforepull.*'" +
+        " '*/__pycache__/*' '*.pyc' 'php-beast.log' '**/.git/*' '**/.git' '**/.gitignore' '**/.gitattributes'",
+      'ls -la ' + shellEscape(zip),
+    ].join(' && ');
+    const r = await sshRun(cmd);
+    if (r.code !== 0) throw new Error('抓基线失败: ' + (r.stderr || r.stdout).slice(0, 400));
+    // 写默认 dbconfig.json（从目标机当前实际的复制过去）
+    const cur = await sshRun('cat /dcim/conf/dbconfig.json 2>/dev/null');
+    const dbconfigPath = dst + '/dbconfig.json';
+    if (cur.code === 0 && cur.stdout.trim()) {
+      await sshRun('echo ' + shellEscape(cur.stdout) + ' > ' + shellEscape(dbconfigPath));
+    } else {
+      // 兜底：用默认模板
+      await sshRun('echo ' + shellEscape(JSON.stringify(DS_DEFAULT_DBCONFIG[versionKey], null, 2)) +
+        ' > ' + shellEscape(dbconfigPath));
+    }
+    appendLog('baseline ' + versionKey + ' snapshot 生成');
+    return { ok: true, version: versionKey, zip: zip };
+  }
+
+  // 上传 zip 快照（浏览器分块传，后端累积写到目标机）
+  // body: { version, chunkIndex, totalChunks, dataBase64, sha256 (optional, 最后一块传) }
+  const dsUploadState = new Map(); // key: version → { totalChunks, receivedChunks, localTmpPath }
+  async function uploadChunk(body) {
+    const { version, chunkIndex, totalChunks } = body;
+    if (!DS_KEYS.includes(version)) throw new Error('非法 version');
+    const idx = Number(chunkIndex);
+    const total = Number(totalChunks);
+    if (!Number.isFinite(idx) || idx < 0 || idx >= total) throw new Error('非法 chunkIndex');
+    if (!body.dataBase64) throw new Error('dataBase64 必填');
+
+    // 本地临时目录
+    const tmpDir = path.join(__dirname, 'tmp', 'ds-upload', version);
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const chunkFile = path.join(tmpDir, 'chunk-' + String(idx).padStart(6, '0'));
+    fs.writeFileSync(chunkFile, Buffer.from(body.dataBase64, 'base64'));
+
+    let state = dsUploadState.get(version);
+    if (!state || state.totalChunks !== total) {
+      state = { totalChunks: total, receivedChunks: 0, tmpDir };
+      dsUploadState.set(version, state);
+    }
+    state.receivedChunks++;
+
+    if (state.receivedChunks < total) {
+      return { ok: true, received: state.receivedChunks, total: total, done: false };
+    }
+
+    // 全部收齐 → 拼接 → SFTP 上传到目标机
+    const finalZip = path.join(tmpDir, 'snapshot.zip');
+    const ws = fs.createWriteStream(finalZip);
+    for (let i = 0; i < total; i++) {
+      const cf = path.join(tmpDir, 'chunk-' + String(i).padStart(6, '0'));
+      ws.write(fs.readFileSync(cf));
+    }
+    await new Promise((resolve, reject) => { ws.end((e) => e ? reject(e) : resolve()); });
+
+    // 本地文件 ready，SFTP 上传
+    await sshRun('mkdir -p ' + DS_VERSIONS_DIR + '/' + version);
+    const remoteZip = DS_VERSIONS_DIR + '/' + version + '/snapshot.zip';
+    await sftpUpload(finalZip, remoteZip);
+    // 写对应版本的 dbconfig.json（用默认模板，避免复制生产的 mysql 密码到 opengauss/dm）
+    const dbconfigStr = JSON.stringify(DS_DEFAULT_DBCONFIG[version], null, 2) + '\n';
+    await sshRun('cat > ' + DS_VERSIONS_DIR + '/' + version + '/dbconfig.json << \'EOF\'\n' + dbconfigStr + '\nEOF');
+
+    // 清理 chunks 和 tmp
+    try {
+      for (let i = 0; i < total; i++) fs.unlinkSync(path.join(tmpDir, 'chunk-' + String(i).padStart(6, '0')));
+      fs.unlinkSync(finalZip);
+    } catch (_e) {}
+    dsUploadState.delete(version);
+    const stat = fs.existsSync(finalZip) ? fs.statSync(finalZip) : null;
+    const remoteSize = await sshRun('stat -c %s ' + remoteZip);
+    appendLog('datasource upload ok ' + version + ' size=' + remoteSize.stdout.trim());
+    return { ok: true, done: true, remoteZip: remoteZip, remoteSize: Number(remoteSize.stdout.trim() || 0) };
+  }
+
+  // 主切换流程：停服务 → 备份 → 解压快照 → 覆盖 dbconfig → 启服务 → 探活；失败自动回滚
+  async function switchDatasource(targetVersion) {
+    if (!DS_KEYS.includes(targetVersion)) throw new Error('非法 version: ' + targetVersion);
+    const remoteZip = DS_VERSIONS_DIR + '/' + targetVersion + '/snapshot.zip';
+    const remoteDbConf = DS_VERSIONS_DIR + '/' + targetVersion + '/dbconfig.json';
+
+    // 快照就绪校验
+    const chk = await sshRun('test -f ' + remoteZip + ' && test -f ' + remoteDbConf + ' && echo READY || echo MISSING');
+    if (chk.stdout.trim() !== 'READY') throw new Error('目标版本快照未就绪，请先上传（或跑「抓当前基线」）');
+
+    const ts = stampForFile();
+    const backupTag = 'ds-switch-' + ts;
+    const backupDir = '/dcim/admin/.datasource-backups/' + backupTag;
+    const steps = [];
+    const record = (name, out) => { steps.push('[' + name + '] ' + (out || '').slice(0, 400)); appendLog('ds-switch ' + name + ' ' + (out || '').split('\n')[0].slice(0, 200)); };
+
+    // 1. 停服务（容器内）
+    let r = await sshRun(runInContainerCmd(cfg.container,
+      'systemctl stop dcim httpd php-fpm-70 php-fpm-74 2>&1 || true'));
+    record('stop-services', r.stdout || r.stderr);
+
+    try {
+      // 2. 备份 /dcim/admin/localhost_808{0,6} + /dcim/python + /dcim/conf/dbconfig.json
+      const bakCmd = [
+        'mkdir -p ' + backupDir,
+        'cp -a /dcim/admin/localhost_8080 ' + backupDir + '/localhost_8080',
+        'cp -a /dcim/admin/localhost_8086 ' + backupDir + '/localhost_8086',
+        'cp -a /dcim/python ' + backupDir + '/python',
+        'cp -a /dcim/conf/dbconfig.json ' + backupDir + '/dbconfig.json',
+      ].join(' && ');
+      r = await sshRun(bakCmd);
+      if (r.code !== 0) throw new Error('备份失败: ' + (r.stderr || r.stdout).slice(0, 400));
+      record('backup', backupDir);
+
+      // 3. 清空目标目录（保留目录本身，只清内容）
+      const cleanCmd = [
+        'rm -rf /dcim/admin/localhost_8080/* /dcim/admin/localhost_8080/.[!.]* 2>/dev/null',
+        'rm -rf /dcim/admin/localhost_8086/* /dcim/admin/localhost_8086/.[!.]* 2>/dev/null',
+        'rm -rf /dcim/python/src /dcim/python/deps 2>/dev/null',
+        'true',
+      ].join('; ');
+      await sshRun(cleanCmd);
+      record('clean', '已清空目标目录');
+
+      // 4. 解压快照到 /dcim/（zip 包内根应有 admin/localhost_8080 / admin/localhost_8086 / python）
+      // 用 unzip -o 覆盖；unzip 一般宿主机有；容器内不用
+      const unzipR = await sshRun('cd /dcim && unzip -o -q ' + remoteZip + ' && echo UNZIP_OK');
+      if (!/UNZIP_OK/.test(unzipR.stdout)) {
+        // fallback：装 unzip 或 python 解压
+        const pyR = await sshRun('cd /dcim && python3 -c "import zipfile; zipfile.ZipFile(\'' +
+          remoteZip + '\').extractall(\'/dcim\')" && echo PY_OK');
+        if (!/PY_OK/.test(pyR.stdout)) throw new Error('解压失败（unzip 和 python3 都失败）: ' + unzipR.stderr + ' | ' + pyR.stderr);
+      }
+      record('extract', '快照已解压到 /dcim/');
+
+      // 5. 覆盖 dbconfig.json：所有 dcim 会读的位置都必须写（否则旧 dbconfig 残留会导致 500）
+      //   - 宿主 3 处（bind mount 到容器）
+      //   - 容器内 python collection 1 处（不是 bind mount）
+      const cpConfLines = DS_DBCONFIG_HOST_PATHS.map(p =>
+        'mkdir -p "$(dirname ' + p + ')" && cp -f ' + remoteDbConf + ' ' + p);
+      cpConfLines.push('chown www:www ' + DS_DBCONFIG_HOST_PATHS.join(' ') + ' 2>/dev/null; true');
+      await sshRun(cpConfLines.join(' && '));
+      for (const cp of DS_DBCONFIG_CONTAINER_PATHS) {
+        await sshRun('docker cp ' + remoteDbConf + ' ' + cfg.container + ':' + cp);
+      }
+      record('dbconfig', '已覆盖到 ' + (DS_DBCONFIG_HOST_PATHS.length + DS_DBCONFIG_CONTAINER_PATHS.length) + ' 个位置');
+
+      // 6. 权限修复：/dcim/admin 属主是 www:www；/dcim/python 属主是 1000:www
+      await sshRun('chown -R www:www /dcim/admin/localhost_8080 /dcim/admin/localhost_8086 2>/dev/null; ' +
+        'chown -R 1000:www /dcim/python 2>/dev/null; true');
+      record('chown', '权限已修复');
+
+      // 7. 启动服务
+      r = await sshRun(runInContainerCmd(cfg.container,
+        'systemctl start php-fpm-70 php-fpm-74 httpd dcim 2>&1 || true'));
+      record('start-services', r.stdout || r.stderr);
+
+      // 8. 探活：等 httpd 8086/8080 都起来 + dcim 进程活着
+      let alive = false;
+      for (let i = 0; i < 20; i++) {
+        const p = await sshRun(runInContainerCmd(cfg.container,
+          "systemctl is-active httpd 2>/dev/null; systemctl is-active dcim 2>/dev/null; ss -lntp 2>/dev/null | grep -E ':(8080|8086) ' | wc -l"));
+        if (/active[\s\S]*active[\s\S]*[2-9]/.test(p.stdout)) { alive = true; break; }
+        await new Promise(r => setTimeout(r, 1000));
+      }
+      record('probe', alive ? '服务就绪' : '探活超时（服务可能异常）');
+      if (!alive) throw new Error('切换后服务探活失败');
+
+      // 9. 记录当前活动版本（写个 marker 文件）
+      await sshRun('echo ' + shellEscape(JSON.stringify({
+        active: targetVersion, switchedAt: new Date().toISOString(), backup: backupDir,
+      }, null, 2)) + ' > ' + DS_VERSIONS_DIR + '/.active.json');
+
+      // 10. 清理老备份（保留最近 5 个）
+      await sshRun('ls -1td /dcim/admin/.datasource-backups/*/ 2>/dev/null | tail -n +6 | xargs -r rm -rf');
+
+      appendLog('ds-switch success → ' + targetVersion + ' (backup=' + backupTag + ')');
+      return { ok: true, version: targetVersion, backup: backupDir, steps };
+    } catch (err) {
+      // 回滚
+      record('ROLLBACK', err.message);
+      const rbCmd = [
+        'rm -rf /dcim/admin/localhost_8080/* /dcim/admin/localhost_8080/.[!.]* 2>/dev/null',
+        'rm -rf /dcim/admin/localhost_8086/* /dcim/admin/localhost_8086/.[!.]* 2>/dev/null',
+        'cp -a ' + backupDir + '/localhost_8080/. /dcim/admin/localhost_8080/',
+        'cp -a ' + backupDir + '/localhost_8086/. /dcim/admin/localhost_8086/',
+        'rm -rf /dcim/python/src /dcim/python/deps 2>/dev/null; true',
+        'cp -a ' + backupDir + '/python/. /dcim/python/',
+        'cp -f ' + backupDir + '/dbconfig.json /dcim/conf/dbconfig.json',
+      ].join(' && ');
+      await sshRun(rbCmd);
+      await sshRun('docker cp ' + backupDir + '/dbconfig.json ' + cfg.container +
+        ':/www/python/src/collection/config/dbconfig.json');
+      await sshRun(runInContainerCmd(cfg.container,
+        'systemctl start php-fpm-70 php-fpm-74 httpd dcim 2>&1 || true'));
+      appendLog('ds-switch ROLLBACK from ' + targetVersion + ' → ' + err.message);
+      throw new Error('切换失败已自动回滚：' + err.message + '\n步骤：\n' + steps.join('\n'));
+    }
+  }
+
+  // ===== 数据源切换 路由 =====
+  app.get('/api/db-manager/datasource/current', async (_req, res) => {
+    try {
+      const cur = await detectCurrentDatasource();
+      const versions = await listDatasourceVersions();
+      // 读 marker
+      const mk = await sshRun('cat ' + DS_VERSIONS_DIR + '/.active.json 2>/dev/null');
+      let marker = null;
+      try { marker = JSON.parse(mk.stdout); } catch (_e) {}
+      res.json({ ok: true, current: cur, versions: versions, marker: marker, labels: DS_LABELS });
+    } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  });
+
+  app.post('/api/db-manager/datasource/init-current', async (req, res) => {
+    const b = req.body || {};
+    const v = b.version || 'mysql';
+    try {
+      const r = await initCurrentBaseline(v);
+      res.json(r);
+    } catch (e) { res.status(400).json({ ok: false, message: e.message }); }
+  });
+
+  app.post('/api/db-manager/datasource/upload-chunk', async (req, res) => {
+    try {
+      const r = await uploadChunk(req.body || {});
+      res.json(r);
+    } catch (e) { res.status(400).json({ ok: false, message: e.message }); }
+  });
+
+  app.post('/api/db-manager/datasource/switch', async (req, res) => {
+    const b = req.body || {};
+    if (!DS_KEYS.includes(b.version)) return res.status(400).json({ ok: false, message: '非法 version' });
+    try {
+      const r = await switchDatasource(b.version);
+      res.json(r);
+    } catch (e) {
+      appendLog('ds-switch 失败: ' + e.message);
+      res.status(400).json({ ok: false, message: e.message });
+    }
+  });
+
+  app.delete('/api/db-manager/datasource/:version', async (req, res) => {
+    const v = req.params.version;
+    if (!DS_KEYS.includes(v)) return res.status(400).json({ ok: false, message: '非法 version' });
+    try {
+      await sshRun('rm -rf ' + DS_VERSIONS_DIR + '/' + v);
+      appendLog('ds delete version=' + v);
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ ok: false, message: e.message }); }
+  });
+
+
+  appendLog('数据库管理模块就绪 ssh=' + (cfg.ssh.host || '(未配置)') + ' container=' + cfg.container +
+    ' drivers=' + JSON.stringify({ mysql2: !!mysql2, pg: !!pgLib, dmdb: !!dmdbLib }));
+
+  // 预留给 Phase B（dcim 数据源切换）复用
+  global.__dbMgr = {
+    getCfg: () => cfg,
+    runQuery: runQuery,
+    probeAll: probeAll,
+    sshRun: sshRun,
+    appendLog: appendLog,
+    backupDatabase: backupDatabase,
+    restoreDatabase: restoreDatabase,
   };
 })();
 

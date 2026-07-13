@@ -1,0 +1,42 @@
+{
+  "ssh": {
+    "host": "192.168.0.60",
+    "port": 22,
+    "username": "root",
+    "password": "PUT_PASSWORD_HERE"
+  },
+  "container": "dcim",
+  "databases": {
+    "mysql": {
+      "enabled": true,
+      "host": "192.168.0.60",
+      "port": 3333,
+      "username": "root",
+      "password": "PUT_PASSWORD_HERE",
+      "systemdUnit": "mysqld.service",
+      "dockerCli": "/www/server/mysql/bin/mysql",
+      "dockerDump": "/www/server/mysql/bin/mysqldump"
+    },
+    "opengauss": {
+      "enabled": true,
+      "host": "192.168.0.60",
+      "port": 5432,
+      "username": "omm",
+      "password": "",
+      "database": "postgres",
+      "systemdUnit": "opengauss.service",
+      "dockerCli": "sudo -u omm /opt/software/openGauss/app/bin/gsql",
+      "dockerDump": "sudo -u omm /opt/software/openGauss/app/bin/gs_dump"
+    },
+    "dm": {
+      "enabled": true,
+      "host": "192.168.0.60",
+      "port": 5236,
+      "username": "SYSDBA",
+      "password": "SYSDBA",
+      "systemdUnit": "DmServiceDMSERVER.service",
+      "dockerCli": "/home/dmdba/dmdbms/bin/disql",
+      "dockerDump": "/home/dmdba/dmdbms/bin/dexp"
+    }
+  }
+}

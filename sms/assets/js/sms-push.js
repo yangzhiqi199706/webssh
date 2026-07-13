@@ -24,6 +24,15 @@
     pushTimeout: $('pushTimeout'),
     pushQueryInterval: $('pushQueryInterval'),
     pushEncoding: $('pushEncoding'),
+
+    // HBOS 医疗云短信平台专有字段
+    hbosHost: $('hbosHost'),
+    hbosPort: $('hbosPort'),
+    hbosAppKey: $('hbosAppKey'),
+    hbosTemplateCode: $('hbosTemplateCode'),
+    hbosSenderJobNumber: $('hbosSenderJobNumber'),
+    hbosOrgId: $('hbosOrgId'),
+
     btnPushSave: $('btnPushSave'),
     pushSaveHint: $('pushSaveHint'),
     pushMetaBox: $('pushMetaBox'),
@@ -156,17 +165,28 @@
     if (sel.value !== want) sel.value = want;
   }
 
-  // 根据当前激活品牌的 capabilities 显隐 SIM 卡相关 UI
+  // 根据当前激活品牌的 capabilities + brand key 切换字段显隐
+  //   [data-brand-hbos]         → 仅 hbos 品牌显示
+  //   [data-brand-xinchuang]    → 仅 xinchuang 品牌显示
+  //   [data-brand-not="hbos"]   → 非 hbos 品牌显示（用于信创网关 IP/端口 等命名）
+  //   [data-cap="sim"] / capabilities.sim=false → 隐藏（老逻辑）
   function applyCapabilities(s) {
     var caps = (s && s.capabilities) || {};
+    var brand = (s && s.brand) || '';
     var simOk = !!caps.sim;
     if (el.simCard) el.simCard.style.display = simOk ? '' : 'none';
     if (el.btnQuerySim) el.btnQuerySim.style.display = simOk ? '' : 'none';
-    // 推送设置弹窗里的"SIM 状态路径"那一项也跟着 cap 走
-    if (el.simPath) {
-      var fld = el.simPath.closest && el.simPath.closest('.field');
-      if (fld) fld.style.display = simOk ? '' : 'none';
-    }
+
+    // 品牌维度显隐（弹窗内的 label.field 携带 data-brand-* 属性）
+    var toggles = document.querySelectorAll('[data-brand-hbos], [data-brand-xinchuang], [data-brand-not]');
+    toggles.forEach(function (node) {
+      var show = true;
+      if (node.hasAttribute('data-brand-hbos') && brand !== 'hbos') show = false;
+      if (node.hasAttribute('data-brand-xinchuang') && brand !== 'xinchuang') show = false;
+      var notBrand = node.getAttribute('data-brand-not');
+      if (notBrand && brand === notBrand) show = false;
+      node.style.display = show ? '' : 'none';
+    });
   }
 
   function renderState(s) {
@@ -224,6 +244,15 @@
     el.pushTimeout.value = String(s.httpTimeoutMs || 8000);
     el.pushQueryInterval.value = String(s.autoQueryResultIntervalSec || 30);
     el.pushEncoding.value = s.encoding || 'UTF-8';
+    // HBOS 专有字段：与 gatewayHost/Port 复用后端 cfg，但前端展示成独立输入框
+    if (brand === 'hbos') {
+      if (el.hbosHost) el.hbosHost.value = s.gatewayHost || 'open-gyfy.cfuture.shop';
+      if (el.hbosPort) el.hbosPort.value = String(s.gatewayPort || 80);
+      if (el.hbosAppKey) el.hbosAppKey.value = s.appKey || '';
+      if (el.hbosTemplateCode) el.hbosTemplateCode.value = s.templateCode || 'appletSms';
+      if (el.hbosSenderJobNumber) el.hbosSenderJobNumber.value = s.senderJobNumber || 'ZZJ0001';
+      if (el.hbosOrgId) el.hbosOrgId.value = s.orgId || '';
+    }
   }
 
   // ==== 收件人弹窗（只读）====
@@ -453,12 +482,20 @@
   }
 
   async function saveConfig() {
+    var isHbos = currentBrand === 'hbos';
+    // HBOS 品牌用 hbosHost/hbosPort 覆盖通用 gatewayHost/Port；其他品牌仍走 pushHost/Port
+    var gatewayHost = isHbos
+      ? (el.hbosHost && el.hbosHost.value || '').trim()
+      : (el.pushHost.value || '').trim();
+    var gatewayPort = isHbos
+      ? (Number(el.hbosPort && el.hbosPort.value) || 80)
+      : (Number(el.pushPort.value) || 8791);
     var body = {
       enabled: el.pushEnabled.value === '1',
       autoPushOnAlarm: el.pushAutoOnAlarm.value === '1',
       autoPushOnCancel: el.pushAutoOnCancel ? el.pushAutoOnCancel.value === '1' : false,
-      gatewayHost: (el.pushHost.value || '').trim(),
-      gatewayPort: Number(el.pushPort.value) || 8791,
+      gatewayHost: gatewayHost,
+      gatewayPort: gatewayPort,
       pushPath: (el.pushPath.value || '/cgi-bin/NoticePush').trim(),
       resultsPath: (el.resultsPath.value || '/cgi-bin/NoticeResults').trim(),
       simStatusPath: (el.simPath.value || '/cgi-bin/SimStatus').trim(),
@@ -466,7 +503,15 @@
       autoQueryResultIntervalSec: Number(el.pushQueryInterval.value) || 30,
       encoding: el.pushEncoding.value,
     };
-    if (!body.gatewayHost) { hint(el.pushSaveHint, '网关 IP 不能为空', '#fca5a5'); return; }
+    if (isHbos) {
+      body.appKey = (el.hbosAppKey && el.hbosAppKey.value || '').trim();
+      body.templateCode = (el.hbosTemplateCode && el.hbosTemplateCode.value || 'appletSms').trim() || 'appletSms';
+      body.senderJobNumber = (el.hbosSenderJobNumber && el.hbosSenderJobNumber.value || 'ZZJ0001').trim() || 'ZZJ0001';
+      body.orgId = (el.hbosOrgId && el.hbosOrgId.value || '').trim();
+    }
+    if (!body.gatewayHost) { hint(el.pushSaveHint, isHbos ? '服务器域名不能为空' : '网关 IP 不能为空', '#fca5a5'); return; }
+    if (isHbos && !body.appKey) { hint(el.pushSaveHint, 'App-Key 不能为空', '#fca5a5'); return; }
+    if (isHbos && !body.orgId) { hint(el.pushSaveHint, '机构 ID (orgId) 不能为空', '#fca5a5'); return; }
     el.btnPushSave.disabled = true;
     hint(el.pushSaveHint, '保存中…');
     try {

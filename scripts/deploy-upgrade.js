@@ -46,6 +46,7 @@ const PAYLOAD_ENTRIES = [
   'ha',
   'proto-conv',
   'video',
+  'db',
   'snmp-bundle',
   'node_modules',
 ];

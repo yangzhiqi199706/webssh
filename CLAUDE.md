@@ -948,7 +948,9 @@ session.subtree('1.3.6.1.4.1.99999', vbs => console.log(vbs), () => session.clos
 | `POST /api/proto-conv/iec104/stop`    | 显式停用 |
 | `GET  /api/proto-conv/iec104/status`  | enabled / running / port / pointCount / singlePointCount / measuredFloatCount / clientCount / totalSent / **totalSpont** / lastSyncAt / **lastSpontAt** / lastError + clients[] |
 | `GET  /api/proto-conv/iec104/clients` | 当前连接的 master 列表（IP / STARTDT / N(S) N(R) / 已收发 I-frame / 最近活动） |
-| `GET  /api/proto-conv/iec104/map.csv` | 点表 CSV：IOA / 类型标识 / 字段 / 设备ID / 设备名称 / 参数名 / 单位 / 数据类型 |
+| `GET  /api/proto-conv/iec104/map.csv` | 点表 CSV（全量，含遥信+遥测）：IOA / 类型标识 / 字段 / 设备ID / 设备名称 / 参数名 / 单位 / 数据类型 |
+| `GET  /api/proto-conv/iec104/map-yx.csv` | 遥信点表 CSV（M_SP_NA_1：DeviceStatus + dataType=开关量） |
+| `GET  /api/proto-conv/iec104/map-yc.csv` | 遥测点表 CSV（M_ME_NC_1：dataType=模拟量） |
 
 **UI 入口**：协议转换顶栏「IEC 104 转发」按钮（紫色，LED 灯指示状态：灰未启用 / 绿运行中 / 红错误）。
 弹窗里能改端口 / CA / 遥信遥测两段起始点号 / 周期 / **SPONT 开关 / 模拟量死区** / IP 白名单，
@@ -1436,3 +1438,146 @@ journalctl -u webssh-wvp -f       # wvp 日志，grep "注册请求" 看 401/403
 - ❌ webssh 本地录像（用 NVR 自带）
 - ❌ WebRTC / HLS（wvp 默认 FLV 已够用）
 - ❌ 装独立 MySQL（直接复用 dcim 的，仅独立库 `wvp_webssh`）
+
+------------------------------------------------------------
+
+## 十二、数据库管理板块（2026-07-08 新增，Phase A 完成）
+
+### 12.1 背景
+目标机 **192.168.0.60** 上 dcim 容器里跑着三套「信创组合」数据库：
+- **MySQL 5.7.39**（容器内 3306，宿主 3333）— dcim 主业务库（148 张表）+ wvp 库（15 张表）
+- **openGauss**（容器内 5432/5433，宿主 5432）— 华为高斯 DB，PG 协议兼容
+- **达梦 DM**（容器内 5236，宿主 5236）— 装了但**默认未启动**（`inactive dead`）
+
+需求：webssh 左侧菜单新增「数据库管理」板块 → 三库统一管理 → 最终实现 **dcim 业务数据源自由切换**。
+
+### 12.2 交付范围（两阶段）
+- **Phase A（已完成，本节）**：三库统一管理台 — 状态监控 / 服务启停 / SQL 控制台 / 备份还原（导入导出）/ 库表浏览
+- **Phase B（后续独立立项）**：dcim 数据源切换 — 定位 PHP/Python/Java 服务的 datasource 配置文件 → 一键切换 → 服务重启
+
+### 12.3 架构
+**前端**：iframe 子站 `db/index.html`（自包含单文件，~910 行），完全照 [ha/index.html](ha/index.html) 骨架，4 tab：
+- **概览**：三库并排卡片（LED + 版本 + 库数 + 表数 + systemd unit + 启停按钮）
+- **SQL 控制台**：三库 tab 切换 → textarea 编辑器（Ctrl+Enter 执行）→ 结果表格
+- **备份 · 还原**：备份表单 + 本地备份文件列表（下载/删除/上传）+ 还原表单
+- **库表浏览**：左树（库列表）→ 右表结构 + 前 100 行预览
+
+**后端**：[server.js](server.js) 末尾 `setupDbManager()` IIFE。
+
+**存储**：`config/db-manager.json`（chmod 0600，**不入 git**），schema：
+```json
+{
+  "ssh": { "host": "192.168.0.60", "port": 22, "username": "root", "password": "..." },
+  "container": "dcim",
+  "databases": {
+    "mysql":     { "host": "...", "port": 3333, "username": "root",   "password": "...", "systemdUnit": "mysqld.service",             "dockerCli": "/www/server/mysql/bin/mysql",              "dockerDump": "/www/server/mysql/bin/mysqldump" },
+    "opengauss": { "host": "...", "port": 5432, "username": "omm",    "password": "...", "database": "postgres", "systemdUnit": "opengauss.service", "dockerCli": "sudo -u omm /opt/software/openGauss/app/bin/gsql", "dockerDump": "sudo -u omm /opt/software/openGauss/app/bin/gs_dump" },
+    "dm":        { "host": "...", "port": 5236, "username": "SYSDBA", "password": "SYSDBA", "systemdUnit": "DmServiceDMSERVER.service", "dockerCli": "/home/dmdba/dmdbms/bin/disql",        "dockerDump": "/home/dmdba/dmdbms/bin/dexp" }
+  }
+}
+```
+
+### 12.4 npm 驱动
+- `mysql2@^2.3.3`（原有）— MySQL
+- **`pg@8.7.3`（新增，⚠ 版本必须锁死）** — openGauss 走 PG 协议。**不能用 8.8+**：从 8.8 开始 pg 源码用了 optional chaining (`?.`) 和 nullish coalescing (`??`)，Node 12.22.12 会 `SyntaxError: Unexpected token '.'`。跟 CLAUDE.md §五坑（net-snmp 3.9.7 只能用 3.9.x）同理。锁 `pg@8.7.3` 是最后一个不用 ES2020 语法的版本。
+- **`dmdb@^1.0.49630`（新增）** — 达梦官方 Node 驱动，Node 12 兼容 OK
+- 三个驱动都在 IIFE 顶部 try/catch require，未装时对应库功能降级
+
+### 12.5 路由清单（`setupDbManager` IIFE）
+
+| Method | Path | 用途 |
+|---|---|---|
+| GET  | `/api/db-manager/config` | 读配置 + 脱敏（密码 `***` + `hasPassword`）+ 驱动可用性 |
+| PUT  | `/api/db-manager/config` | 保存（密码 `***`/空则不覆盖）；写盘 chmod 0600；销毁连接池 |
+| POST | `/api/db-manager/test-connection` | body `{target: ssh|mysql|opengauss|dm}`，SSH 走 `echo ok`，DB 走 `SELECT 1` |
+| GET  | `/api/db-manager/status` | 聚合：SSH 通 + 三库 systemctl 状态 + 版本 + 库数/表数 |
+| POST | `/api/db-manager/service/:db/:action` | action ∈ `start/stop/restart/status`；SSH → `docker exec dcim systemctl <action> <unit>` |
+| POST | `/api/db-manager/query` | body `{db, sql, limit}`；结果 `{columns, rows, rowCount, elapsedMs, notice?}`；超过 limit 截断（默认 500，上限 5000） |
+| GET  | `/api/db-manager/databases/:db` | 库列表（MySQL: schemata；openGauss: pg_database；DM: DBA_USERS） |
+| GET  | `/api/db-manager/tables/:db/:database` | 表列表（含行数 + 大小，DM 用 ALL_TABLES） |
+| GET  | `/api/db-manager/table/:db/:database/:table` | 表结构（列 + 索引）+ 前 100 行预览 |
+| POST | `/api/db-manager/backup` | body `{db, database}`；容器内 dump → SFTP 拉回 `backups/db-manager/` |
+| GET  | `/api/db-manager/backups` | 本地备份列表 |
+| GET  | `/api/db-manager/backups/:file` | 下载备份（`res.download`） |
+| DELETE | `/api/db-manager/backups/:file` | 删本地备份 |
+| POST | `/api/db-manager/upload-backup` | body `{name, content}` (base64/dataURL)，上限 2GB |
+| POST | `/api/db-manager/restore` | body `{db, database, file}`；SFTP 推 → 容器内 restore 命令 |
+| POST | `/api/db-manager/opengauss/init` | 一键启用 openGauss + 建 dcim 应用账号 + 局域网白名单（2026-07-10 新增）|
+
+**日志**：`logs/db-manager.log`。
+
+**openGauss 一键启用**（前端概览页 openGauss 卡片的「🚀 启用 & 建 dcim 用户」按钮）：
+- body：`{ password: 'Gauss@2026', cidr: '192.168.0.0/24' }`（都有默认值）
+- 流程：路径自适应探测（`find gaussdb` 定位 `$GAUSSHOME`）→ `systemctl enable+start opengauss` → 等 5432 就绪 → 容器内 omm 用户跑 gsql 建 `dcim` 用户 + `GRANT CONNECT ON DATABASE postgres` + `search_path=public` → 改 `postgresql.conf` `listen_addresses='*'` → `pg_hba.conf` 加白名单 → `systemctl restart opengauss` → 用 dcim 密码登录验证
+- **密码强度校验**（openGauss 硬要求）：≥ 8 位，包含大小写/数字/特殊字符至少 3 类
+- **成功后**自动把 db-manager 配置里的 opengauss.username/password 同步为 dcim/新密码
+- **提示**：如需从 dcim 容器外部主机访问，宿主 5432 端口映射必须存在（`docker port dcim` 里能看到 `5432/tcp -> 0.0.0.0:5432`），部分老容器可能没做端口映射
+
+**暴露给 Phase B**：`global.__dbMgr = { getCfg, runQuery, probeAll, sshRun, appendLog, backupDatabase, restoreDatabase }`。
+
+### 12.6 关键设计约定
+1. **所有对目标机操作都走 SSH**（复用 [server.js:857](server.js#L857) `sshExecCommand`），不与 dcim 容器共享网络栈
+2. **容器内命令统一封装** `runInContainerCmd()` / `runInContainerAs()` — `docker exec <container> sh -c '<cmd>'`，敏感字段一律 `shellEscape()`（[server.js:742](server.js#L742)）
+3. **备份必须走容器内原生工具**（`mysqldump / gs_dump / dexp`）—— **不要用宿主机工具**（参考 §五铁律第 13 条：MariaDB mysqldump 会把 STORED 生成列打错）
+4. **openGauss 使用 `sudo -u omm`** 切用户（omm 是 openGauss 的 DB owner，root 直接跑 gs_dump 会失败）
+5. **达梦 DM 备份用 `dexp` 逻辑导出**（USERID + SCHEMAS + FILE）；还原用 `dimp`
+6. **数据库参数一律走 npm 驱动**（不走容器内 CLI），性能好且不依赖容器内客户端工具（容器内 gsql 缺 `libcjson.so.1` 用不了）
+7. **连接池模式**：每库一个 pool（MySQL/PG max=3，DM poolMax=3），配置 PUT 后 `destroyPools()` 销毁重建
+
+### 12.7 已知坑（Phase A 阶段）
+1. **⚠ 0.22 → 0.60 网络不通（部署时发现）**：webssh 主机 192.168.0.22 到目标机 192.168.0.60 是**同一 /24 子网**（都在 192.168.0.0/24），但 0.22 上 `ping 192.168.0.60` 100% 丢包，任何 TCP 端口都 `EHOSTUNREACH / 没有到主机的路由`。**从其他机（如开发本机）却能正常 SSH 到 0.60**。判断是 0.60 端 firewalld/iptables 做了 IP 白名单，或者交换机做了端口/MAC 隔离。**必须先解决网络可达性，Phase A 才能真正跑起来**。可能的处理：
+   - 让运维在 0.60 的 firewalld 放行 0.22：`firewall-cmd --add-rich-rule='rule family="ipv4" source address="192.168.0.22" accept' --permanent && firewall-cmd --reload`
+   - 或者用 webssh 自带的「设置 → 防火墙」面板（10.x 章节）对 0.60 做规则（但需要先 SSH 上 0.60，说明本地已经能连）
+   - 或者把 webssh 部署机换成一台能 ping 通 0.60 的机器
+2. **openGauss `pg_hba.conf` 白名单**：目标机 openGauss 默认可能只允许本机连接，从 webssh 主机远程连会报 `no pg_hba.conf entry for host "..."`。要在 dcim 容器内加白名单：
+   ```
+   host all omm 192.168.0.0/24 md5
+   ```
+   然后 `SELECT pg_reload_conf();`。**openGauss 的 `pg_hba.conf` 位置在 `/opt/software/openGauss/data/`，改前必须 sudo 到 omm**。
+3. **达梦默认未启动**：概览页面「一键启动 DM」按钮实际执行 `docker exec dcim systemctl start DmServiceDMSERVER.service`。SYSDBA 默认密码就是 `SYSDBA`（不同装机可能改过）。
+4. **服务启停会影响 dcim 业务**：MySQL 停了 dcim 完全瘫，openGauss 停了对应业务瘫，DM 目前没被 dcim 使用（预备用）。停止操作有 confirm 二次确认，但生产库要小心。
+5. **备份文件路径穿越防护**：文件名严格 `^[A-Za-z0-9._-]+$`，其他一律拒绝。
+6. **npm 驱动连接首次慢**：mysql2/pg/dmdb 冷启动可能 3-5 秒，`test-connection` 第一次可能 ETIMEDOUT，重试即可（pool 建好之后正常快）。
+7. **DM 元数据用大写标识符**：达梦 ALL_TABLES / ALL_TAB_COLUMNS 里的 OWNER 和 TABLE_NAME 都是大写，前端传参会自动 upper。
+
+### 12.8 前端集成（主壳 index.html 6 处对称改动）
+1. `menuItems` 追加 `{ id: 'db', label: '数据库管理', icon: 'DB', title: '...' }`
+2. `<div class="serial-view" id="dbView"><iframe id="dbFrame" ...></iframe></div>`
+3. `el.dbView` / `el.dbFrame` DOM 缓存
+4. `showView(view)` 新增 `const isDb = view === 'db';`
+5. `if (el.dbView) el.dbView.classList.toggle('active', isDb);`
+6. iframe 懒加载分支：`el.dbFrame.src = './db/index.html'`
+
+### 12.9 验证（本机手测已通过）
+```bash
+PORT=3010 node server.js
+# 浏览器 http://127.0.0.1:3010/  → 左菜单「数据库管理」
+# 1. 「连接信息」录 SSH（0.60/root/REDACTED_DEPLOY_PASS）+ 三库凭据 → 保存
+# 2. 概览 tab → MySQL/openGauss 绿灯，DM 灰灯 + 显示「一键启动 DM」按钮
+# 3. SQL 控制台切 MySQL → SHOW DATABASES → 出 6 库（含 dcim/wvp）
+# 4. 库表浏览切 MySQL → 点 dcim → 148 张表列出 → 点任一表 → 结构 + 100 行预览
+# 5. 备份 tab → MySQL / dcim → 开始备份 → backups/db-manager/mysql-dcim-*.sql 出现
+```
+
+后端 API 单测：
+```bash
+curl -s http://127.0.0.1:3010/api/db-manager/status | jq
+# 期望：ssh.ok:true + mysql.running:true + opengauss.running:true + dm.running:false
+```
+
+### 12.10 部署
+属于主壳改动，走 `deploy-upgrade.js`：
+```bash
+WEBSSH_HOST=192.168.0.22 WEBSSH_DEPLOY_PASS='REDACTED_DEPLOY_PASS' \
+  node scripts/deploy-upgrade.js
+```
+**注意**：新装了 `pg` + `dmdb` 两个 npm 包，`deploy-upgrade.js` 会把整个 `node_modules` 同步过去。若目标机磁盘紧张可以先本地 `npm prune --production` 再打包。
+
+### 12.11 Phase B 前置调研（未启动，本节留位）
+数据源切换需要先摸清：
+1. `/www/wwwroot/localhost_808x/` PHP 配置文件位置 + datasource 字段（各 vhost 单独看）
+2. `/www/python/src/collection/` Python 配置文件位置（predictably 是 `.yaml` 或 `settings.py`）
+3. `dcim.service` 是不是 supervisor，重启粒度是啥（整体 vs 单组件）
+4. dcim 是否原生支持三种 DB 方言（如果只支持 MySQL 则需要业务侧适配层）
+
+用户已确认走「人工迁移」路线：Phase B 只做「改配置 → 重启服务」，数据迁移由用户在 Phase A 的备份/还原能力里手动做完。

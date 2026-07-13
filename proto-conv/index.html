@@ -645,7 +645,8 @@
           <button class="btn modbus" id="i4BtnEnable" type="button">启用并保存（重启后自动恢复）</button>
           <button class="btn" id="i4BtnSave" type="button">仅保存（不改运行状态）</button>
           <button class="btn danger" id="i4BtnDisable" type="button">停用</button>
-          <button class="btn" id="i4BtnDownloadCsv" type="button">下载点表 CSV</button>
+          <button class="btn" id="i4BtnDownloadYxCsv" type="button">下载遥信 CSV</button>
+          <button class="btn" id="i4BtnDownloadYcCsv" type="button">下载遥测 CSV</button>
           <span class="hint" id="i4SaveHint" style="margin-left:auto;align-self:center"></span>
         </div>
 
@@ -664,7 +665,7 @@
             <li>SPONT 触发：modbus 每 5 秒拉一次 dcim 数据，与上一次基线对比，开关量翻转 / 模拟量超死区 / IV 标志变化即推</li>
             <li><b>本期不实现遥控</b>：C_SC/DC/RC/SE_*_1 一律回 negative ACT_CON</li>
             <li>验证：用 <a href="https://sourceforge.net/projects/qtester104/" target="_blank" rel="noreferrer">QTester104</a> 或其他 master 连 <code class="k">&lt;host&gt;:2405</code>，下发 STARTDT_ACT 后总召唤即可</li>
-            <li>完整点表请点上面「下载点表 CSV」</li>
+            <li>完整点表请点上面「下载遥信 CSV / 下载遥测 CSV」</li>
           </ul>
         </div>
       </div>

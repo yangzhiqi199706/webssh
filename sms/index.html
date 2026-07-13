@@ -392,23 +392,47 @@
               <option value="0">关闭</option>
             </select>
           </label>
-          <label class="field">
+          <label class="field" data-brand-not="hbos">
             <span>网关 IP</span>
             <input id="pushHost" type="text" placeholder="192.168.50.199" />
           </label>
-          <label class="field">
+          <label class="field" data-brand-not="hbos">
             <span>网关端口</span>
             <input id="pushPort" type="number" min="1" max="65535" placeholder="8791" />
+          </label>
+          <label class="field" data-brand-hbos>
+            <span>服务器域名</span>
+            <input id="hbosHost" type="text" placeholder="open-gyfy.cfuture.shop" />
+          </label>
+          <label class="field" data-brand-hbos>
+            <span>端口</span>
+            <input id="hbosPort" type="number" min="1" max="65535" placeholder="80" />
           </label>
           <label class="field">
             <span>推送路径</span>
             <input id="pushPath" type="text" placeholder="/cgi-bin/NoticePush" />
           </label>
-          <label class="field">
+          <label class="field" data-brand-hbos>
+            <span>App-Key（请求头鉴权）</span>
+            <input id="hbosAppKey" type="text" placeholder="ak-xxxxxxxxxxxxxxxxxxxxxx" />
+          </label>
+          <label class="field" data-brand-hbos>
+            <span>模板编码 templateCode</span>
+            <input id="hbosTemplateCode" type="text" placeholder="appletSms" />
+          </label>
+          <label class="field" data-brand-hbos>
+            <span>工号 senderJobNumber</span>
+            <input id="hbosSenderJobNumber" type="text" placeholder="ZZJ0001" />
+          </label>
+          <label class="field" data-brand-hbos>
+            <span>机构 ID orgId</span>
+            <input id="hbosOrgId" type="text" placeholder="20389001" />
+          </label>
+          <label class="field" data-brand-xinchuang>
             <span>结果查询路径</span>
             <input id="resultsPath" type="text" placeholder="/cgi-bin/NoticeResults" />
           </label>
-          <label class="field">
+          <label class="field" data-brand-xinchuang>
             <span>SIM 状态路径</span>
             <input id="simPath" type="text" placeholder="/cgi-bin/SimStatus" />
           </label>
@@ -416,11 +440,11 @@
             <span>请求超时（毫秒）</span>
             <input id="pushTimeout" type="number" min="1000" max="60000" step="500" />
           </label>
-          <label class="field">
+          <label class="field" data-brand-xinchuang>
             <span>结果轮询间隔（秒，5-600）</span>
             <input id="pushQueryInterval" type="number" min="5" max="600" />
           </label>
-          <label class="field">
+          <label class="field" data-brand-not="hbos">
             <span>编码</span>
             <select id="pushEncoding">
               <option value="UTF-8">UTF-8</option>
@@ -429,7 +453,8 @@
           </label>
         </div>
         <div style="font-size:11px;color:#64748b;margin-top:-4px">
-          推送类型（SMS / Call / All）由告警的 NotifyModeID 经 dcim-alarmnotifymode 自动决定，无需在此设置默认值。
+          推送类型（SMS / Call / All）由告警的 NotifyModeID 经 dcim-alarmnotifymode 自动决定，无需在此设置默认值。<br>
+          <span data-brand-hbos>HBOS 短信平台仅支持发送短信（不支持 Call/All 与结果轮询），Call/All 会自动降级为 SMS。</span>
         </div>
         <div class="actions">
           <button class="btn primary" id="btnPushSave" type="button">保存</button>
