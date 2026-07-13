@@ -349,6 +349,33 @@ sdp-ip:    192.168.0.22</pre>
       return runtime.stopPath(state.source, 'live', state.deviceId, state.channelId, '');
     }
 
+    function releaseTileStream(tile, runtime, request) {
+      var state = {
+        source: tile.source,
+        mode: tile.mode,
+        deviceId: tile.deviceId,
+        channelId: tile.channelId,
+        streamKey: tile.streamKey,
+      };
+      tile.revision++;
+      tile._destroyPlayer();
+      tile.streamKey = null;
+      tile.deviceId = null;
+      tile.channelId = null;
+      tile.source = null;
+      tile.mode = 'live';
+      var path = tileStopPathForState(state, runtime);
+      if (path) request(path, { method: 'POST' }).catch(function () {});
+      return state;
+    }
+
+    function handleTilePlaybackFailure(tile, message, setHint) {
+      if (!tile || tile.mode !== 'playback') return false;
+      tile.stop();
+      setHint(message, 'err');
+      return true;
+    }
+
     function replaceTileStream(tile, params) {
       if (!tile) return false;
       if (tile.streamKey || tile.deviceId || tile.channelId || tile.player) tile.stop();
@@ -564,6 +591,10 @@ sdp-ip:    192.168.0.22</pre>
         loadChannels: loadChannels,
         start: start,
         control: control,
+        showFailure: function (message) {
+          setHint(message, 'err');
+          syncControls();
+        },
         syncControls: syncControls,
       };
     }
@@ -574,6 +605,7 @@ sdp-ip:    192.168.0.22</pre>
     var activeIdx = 0;
     var currentSource = 'webssh';  // 默认走 webssh-wvp（5070），切到 dcim 时改 'dcim'
     var sourceEpoch = 0;
+    var sourceRequestEpoch = 0;
     var playbackController = null;
 
     function localDateTimeValue(date) {
@@ -628,10 +660,14 @@ sdp-ip:    192.168.0.22</pre>
       this.elActions.hidden = false;
       this.elLoader.hidden = false;
       if (!window.flvjs || !window.flvjs.isSupported()) {
+        var unsupportedMessage = '当前浏览器不支持 MSE / flv.js，已停止录像流';
         this.elLoader.hidden = true;
         this.elEmpty.style.display = '';
         this.video.style.display = 'none';
-        this.elEmpty.innerHTML = '当前浏览器不支持 MSE / flv.js';
+        this.elEmpty.textContent = unsupportedMessage;
+        if (handleTilePlaybackFailure(this, unsupportedMessage, function (message) {
+          if (playbackController) playbackController.showFailure(message);
+        })) return;
         if (playbackController) playbackController.syncControls();
         return;
       }
@@ -643,6 +679,9 @@ sdp-ip:    192.168.0.22</pre>
       p.on(window.flvjs.Events.MEDIA_INFO, function () { self.elLoader.hidden = true; });
       p.on(window.flvjs.Events.ERROR, function (et, ed) {
         self.elLoader.hidden = true;
+        if (handleTilePlaybackFailure(self, '回放播放器发生错误，已停止录像流', function (message) {
+          if (playbackController) playbackController.showFailure(message);
+        })) return;
         console.warn('[tile ' + self.idx + '] flv error', et, ed);
       });
       try { p.load(); } catch (_e) {}
@@ -661,16 +700,7 @@ sdp-ip:    192.168.0.22</pre>
       try { this.video.removeAttribute('src'); this.video.load(); } catch (_e) {}
     };
     Tile.prototype.stop = function () {
-      var state = {
-        source: this.source,
-        mode: this.mode,
-        deviceId: this.deviceId,
-        channelId: this.channelId,
-        streamKey: this.streamKey,
-      };
-      this.revision++;
-      this._destroyPlayer();
-      this.streamKey = null; this.deviceId = null; this.channelId = null; this.source = null; this.mode = 'live';
+      var state = releaseTileStream(this, window.DcimVideoRuntime, fetch);
       this.elEmpty.style.display = '';
       this.video.style.display = 'none';
       this.elOverlay.hidden = true;
@@ -678,8 +708,6 @@ sdp-ip:    192.168.0.22</pre>
       this.elLoader.hidden = true;
       this.elBadge.textContent = 'LIVE';
       this.elBadge.classList.remove('pb');
-      var path = tileStopPathForState(state, window.DcimVideoRuntime);
-      if (path) fetch(path, { method: 'POST' }).catch(function () {});
       if (playbackController) playbackController.syncControls();
     };
 
@@ -886,10 +914,7 @@ sdp-ip:    192.168.0.22</pre>
     // ==================== 加载 dcim/webssh 配置和设备 ====================
     function loadSource(source, btnId) {
       var btn = $(btnId);
-      var requestEpoch = ++sourceEpoch;
-      if (currentSource !== source) tiles.forEach(function (tile) { tile.stop(); });
-      currentSource = source;
-      playbackController.setDevices([], source);
+      var requestEpoch = ++sourceRequestEpoch;
       btn.disabled = true;
       var oldText = btn.textContent;
       btn.textContent = "加载中…";
@@ -901,21 +926,27 @@ sdp-ip:    192.168.0.22</pre>
         fetch(apiPrefix + "/config").then(function (r) { return r.json(); }),
         fetch(apiPrefix + "/devices?page=1&count=200").then(function (r) { return r.json(); }),
       ]).then(function (results) {
-        if (requestEpoch !== sourceEpoch || currentSource !== source) return;
+        if (requestEpoch !== sourceRequestEpoch) return;
         var cfgResp = results[0], devResp = results[1];
+        if (!devResp.ok) {
+          $("dcimDevHint").textContent = "加载失败：" + (devResp.message || "未知");
+          return;
+        }
+        if (currentSource !== source) tiles.forEach(function (tile) { tile.stop(); });
+        currentSource = source;
+        sourceEpoch++;
         if (cfgResp.ok && cfgResp.data) renderConfig(cfgResp.data, source);
         else $("dcimCfgHint").textContent = "加载失败：" + (cfgResp.message || "未知");
-        if (devResp.ok) {
-          renderDevices(devResp.list, devResp.total, source);
-          playbackController.setDevices(devResp.list, source);
-        } else {
-          $("dcimDevHint").textContent = "加载失败：" + (devResp.message || "未知");
-        }
+        renderDevices(devResp.list, devResp.total, source);
+        playbackController.setDevices(devResp.list, source);
         if (source === "dcim") refreshDcimStatus(); else refreshWebsshStatus();
         hint.textContent = "当前数据源：" + (source === "dcim" ? "dcim（5060）" : "webssh（5070）")
           + " · 双击左侧设备名播放到当前激活分屏";
       }).catch(function (e) {
-        if (requestEpoch === sourceEpoch && currentSource === source) $("dcimCfgHint").textContent = "请求失败：" + e.message;
+        if (requestEpoch === sourceRequestEpoch) {
+          $("dcimCfgHint").textContent = "请求失败：" + e.message;
+          $("dcimDevHint").textContent = "请求失败：" + e.message;
+        }
       })
       .then(function () { btn.disabled = false; btn.textContent = oldText; });
     }

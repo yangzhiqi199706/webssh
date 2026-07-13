@@ -1280,6 +1280,15 @@ const stopEndedPlayback = vm.runInNewContext(
   '(' + extractVideoFunction('stopEndedPlayback') + ')',
   {}
 );
+const releaseTileStream = vm.runInNewContext(
+  '(' + extractVideoFunction('releaseTileStream') + ')',
+  { tileStopPathForState: tileStopPathForState }
+);
+const handleTilePlaybackFailure = vm.runInNewContext(
+  '(' + extractVideoFunction('handleTilePlaybackFailure') + ')',
+  {}
+);
+const loadVideoSource = extractVideoFunction('loadSource');
 
 function createPlaybackSelect(value) {
   return {
@@ -1330,6 +1339,60 @@ function createPlaybackControllerHarness(overrides) {
   };
 }
 
+function createVideoSourceLoadHarness() {
+  const elements = {
+    btnLoadDcim: { disabled: false, textContent: '加载 dcim' },
+    dcimPanels: { hidden: true },
+    dcimCfgHint: { textContent: '' },
+    dcimDevHint: { textContent: '' },
+  };
+  const playbackCalls = [];
+  const renderCalls = [];
+  const context = {
+    Promise: Promise,
+    currentSource: 'webssh',
+    sourceEpoch: 7,
+    sourceRequestEpoch: 0,
+    tiles: [],
+    hint: { textContent: '当前数据源：webssh（5070）' },
+    playbackController: { setDevices: function (list, source) { playbackCalls.push({ list: list, source: source }); } },
+    $: function (id) { return elements[id]; },
+    renderConfig: function (_cfg, source) { renderCalls.push({ type: 'config', source: source }); },
+    renderDevices: function (_list, _total, source) { renderCalls.push({ type: 'devices', source: source }); },
+    refreshDcimStatus: function () {},
+    refreshWebsshStatus: function () {},
+    fetch: function (url) {
+      const result = url.indexOf('/config') !== -1
+        ? { ok: true, data: { sip: {} } }
+        : { ok: false, message: 'dcim 设备加载失败' };
+      return Promise.resolve({ json: function () { return Promise.resolve(result); } });
+    },
+  };
+  vm.runInNewContext(loadVideoSource, context);
+  return {
+    loadSource: context.loadSource,
+    getCurrentSource: function () { return context.currentSource; },
+    getSourceEpoch: function () { return context.sourceEpoch; },
+    playbackCalls: playbackCalls,
+    renderCalls: renderCalls,
+    elements: elements,
+  };
+}
+
+async function runVideoSourceLoadFailureTests() {
+  const harness = createVideoSourceLoadHarness();
+  harness.loadSource('dcim', 'btnLoadDcim');
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  await new Promise(function (resolve) { setImmediate(resolve); });
+  assert.strictEqual(harness.getCurrentSource(), 'webssh');
+  assert.strictEqual(harness.getSourceEpoch(), 7);
+  assert.deepStrictEqual(harness.playbackCalls, []);
+  assert.deepStrictEqual(harness.renderCalls, []);
+  assert.strictEqual(harness.elements.dcimDevHint.textContent, '加载失败：dcim 设备加载失败');
+}
+
 async function runVideoPlaybackUiTests() {
   const playbackPlayerConfig = buildTilePlayerConfig({ flvUrl: '/media/record.flv', mode: 'playback' });
   assert.strictEqual(playbackPlayerConfig.type, 'flv');
@@ -1356,6 +1419,35 @@ async function runVideoPlaybackUiTests() {
   assert.strictEqual(stopEndedPlayback({ mode: 'playback', stop: function () { endedCalls.push('stop'); } }), true);
   assert.strictEqual(stopEndedPlayback({ mode: 'live', stop: function () { endedCalls.push('live-stop'); } }), false);
   assert.deepStrictEqual(endedCalls, ['stop']);
+  const playbackStopRequests = [];
+  const failedPlaybackTile = {
+    source: 'dcim', mode: 'playback', deviceId: 'device-1', channelId: 'channel-1', streamKey: 'record/1', revision: 4,
+    _destroyPlayer: function () { this.destroyed = true; },
+  };
+  const playbackFailureHint = { message: '', state: '' };
+  failedPlaybackTile.stop = function () {
+    releaseTileStream(this, runtime, function (url, options) {
+      playbackStopRequests.push({ url: url, options: options });
+      return { catch: function () {} };
+    });
+  };
+  assert.strictEqual(handleTilePlaybackFailure(failedPlaybackTile, '回放播放器不可用', function (message, state) {
+    playbackFailureHint.message = message;
+    playbackFailureHint.state = state;
+  }), true);
+  assert.strictEqual(failedPlaybackTile.destroyed, true);
+  assert.strictEqual(failedPlaybackTile.mode, 'live');
+  assert.strictEqual(failedPlaybackTile.streamKey, null);
+  assert.strictEqual(failedPlaybackTile.deviceId, null);
+  assert.strictEqual(failedPlaybackTile.revision, 5);
+  assert.strictEqual(playbackStopRequests.length, 1);
+  assert.strictEqual(playbackStopRequests[0].url, '/api/dcim-video/playback/stop/record%2F1');
+  assert.strictEqual(playbackStopRequests[0].options.method, 'POST');
+  assert.deepStrictEqual(playbackFailureHint, { message: '回放播放器不可用', state: 'err' });
+  const liveFailureTile = { mode: 'live', stop: function () { throw new Error('实时错误不得停止回放'); } };
+  assert.strictEqual(handleTilePlaybackFailure(liveFailureTile, '实时播放器错误', function () {
+    throw new Error('实时错误不得写入回放提示');
+  }), false);
 
   const validationHarness = createPlaybackControllerHarness();
   validationHarness.controller.setDevices([{ deviceId: 'd1', name: '设备一' }], 'dcim');
@@ -1608,7 +1700,7 @@ try {
   try { fs.unlinkSync(shellPath); } catch (error) {}
 }
 
-runWvpRuntimeOperationTests().then(runSshCommandTimeoutTests).then(runSshCommandLateEventTests).then(runWvpRuntimeRouteContractTests).then(runDcimVideoConnectionRouteContractTests).then(runDcimVideoConnectionRaceTests).then(runDcimVideoAtomicWriteTests).then(runDcimVideoConnectionUiTests).then(runVideoPlaybackUiTests).then(runProtocolMainSyncRollbackFailureTests).then(() => {
+runWvpRuntimeOperationTests().then(runSshCommandTimeoutTests).then(runSshCommandLateEventTests).then(runWvpRuntimeRouteContractTests).then(runDcimVideoConnectionRouteContractTests).then(runDcimVideoConnectionRaceTests).then(runDcimVideoAtomicWriteTests).then(runDcimVideoConnectionUiTests).then(runVideoSourceLoadFailureTests).then(runVideoPlaybackUiTests).then(runProtocolMainSyncRollbackFailureTests).then(() => {
   console.log('dcim wvp opengauss tests: PASS');
 }).catch((error) => {
   console.error(error);
