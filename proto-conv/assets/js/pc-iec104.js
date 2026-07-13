@@ -28,7 +28,8 @@
     btnSave: $('i4BtnSave'),
     btnEnable: $('i4BtnEnable'),
     btnDisable: $('i4BtnDisable'),
-    btnDownloadCsv: $('i4BtnDownloadCsv'),
+    btnDownloadYxCsv: $('i4BtnDownloadYxCsv'),
+    btnDownloadYcCsv: $('i4BtnDownloadYcCsv'),
     saveHint: $('i4SaveHint'),
   };
   if (!el.btnOpen || !el.modal) return;
@@ -213,7 +214,8 @@
   el.btnSave.addEventListener('click', function () { saveAndApply(); });
   el.btnEnable.addEventListener('click', doEnable);
   el.btnDisable.addEventListener('click', doDisable);
-  el.btnDownloadCsv.addEventListener('click', function () { window.open('/api/proto-conv/iec104/map.csv'); });
+  el.btnDownloadYxCsv.addEventListener('click', function () { window.open('/api/proto-conv/iec104/map-yx.csv'); });
+  el.btnDownloadYcCsv.addEventListener('click', function () { window.open('/api/proto-conv/iec104/map-yc.csv'); });
 
   // 主面板首屏拉一次状态刷顶栏 LED
   refreshStatus();

@@ -1,0 +1,1726 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>数据库管理 · Web SSH</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #020617;
+      --panel: #0f172a;
+      --panel-2: #111827;
+      --border: #1f2937;
+      --text: #e5e7eb;
+      --muted: #94a3b8;
+      --cyan: #22d3ee;
+      --green: #34d399;
+      --amber: #fbbf24;
+      --red: #f87171;
+      --purple: #a78bfa;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      background: var(--bg); color: var(--text);
+      font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 13px;
+    }
+    #app { display: flex; flex-direction: column; height: 100vh; }
+
+    /* 顶栏 */
+    .top-bar {
+      height: 46px; flex-shrink: 0;
+      display: flex; align-items: center; gap: 10px;
+      padding: 0 14px;
+      background: #0f172a;
+      border-bottom: 1px solid var(--border);
+    }
+    .top-bar .title { font-weight: 700; color: var(--cyan); letter-spacing: .06em; }
+    .top-bar .subtitle { color: var(--muted); font-size: 12px; }
+    .top-bar .spacer { flex: 1; }
+
+    /* 按钮 */
+    .btn {
+      border: 1px solid #334155; background: #0b1220; color: var(--text);
+      border-radius: 8px; padding: 7px 12px; font-size: 12px;
+      cursor: pointer; font-family: inherit;
+    }
+    .btn:hover { border-color: #475569; background: #111827; }
+    .btn.primary { background: #06b6d4; color: #082f49; border-color: transparent; font-weight: 700; }
+    .btn.primary:hover { background: #22d3ee; }
+    .btn.danger { background: #7f1d1d; color: #fecaca; border-color: transparent; }
+    .btn.danger:hover { background: #991b1b; }
+    .btn.sm { padding: 4px 8px; font-size: 11px; border-radius: 6px; }
+    .btn:disabled { opacity: .5; cursor: not-allowed; }
+
+    /* LED 灯 */
+    .switch {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 4px 10px; border: 1px solid #334155; border-radius: 999px;
+      background: #0b1220; font-size: 12px;
+    }
+    .switch .led { width: 8px; height: 8px; border-radius: 50%; background: #64748b; }
+    .switch.on { border-color: rgba(52,211,153,.4); background: rgba(52,211,153,.08); }
+    .switch.on .led { background: var(--green); box-shadow: 0 0 0 3px rgba(52,211,153,.18); }
+    .switch.warn { border-color: rgba(251,191,36,.4); background: rgba(251,191,36,.08); }
+    .switch.warn .led { background: var(--amber); box-shadow: 0 0 0 3px rgba(251,191,36,.18); }
+    .switch.err { border-color: rgba(248,113,113,.4); background: rgba(248,113,113,.08); }
+    .switch.err .led { background: var(--red); box-shadow: 0 0 0 3px rgba(248,113,113,.18); }
+
+    /* Tabs */
+    .tabs {
+      display: flex; gap: 4px; padding: 8px 14px 0; background: #0b1220;
+      border-bottom: 1px solid var(--border); flex-shrink: 0;
+    }
+    .tabs button {
+      background: transparent; border: 1px solid transparent; color: var(--muted);
+      padding: 8px 14px; font-size: 13px; border-radius: 8px 8px 0 0;
+      cursor: pointer; font-family: inherit; border-bottom: 0;
+    }
+    .tabs button:hover { color: var(--text); background: rgba(30,41,59,.5); }
+    .tabs button.active {
+      color: var(--cyan); background: var(--bg);
+      border-color: var(--border); border-bottom-color: var(--bg);
+      margin-bottom: -1px;
+    }
+
+    /* Tab pane —— 仅 active 时占据剩余空间；隐藏时不参与 flex 计算，避免反复切换的 rendering 问题 */
+    .tab-pane {
+      display: none;
+      flex-direction: column;
+      gap: 12px;
+      overflow: auto;
+      padding: 14px;
+      min-height: 0;
+    }
+    .tab-pane.active {
+      display: flex !important;
+      flex: 1 1 auto;
+    }
+
+    /* 卡片 */
+    .card {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: rgba(2, 6, 23, .5);
+      padding: 14px;
+    }
+    .card-title {
+      font-size: 13px; font-weight: 700; color: #e2e8f0;
+      margin: 0 0 10px; display: flex; align-items: center; gap: 8px;
+    }
+    .card-title .name { flex: 1; }
+    .card-title .actions { display: flex; gap: 6px; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #64748b; }
+    .dot.on { background: var(--green); box-shadow: 0 0 0 3px rgba(52, 211, 153, .18); }
+    .dot.off { background: #64748b; }
+    .dot.warn { background: var(--amber); box-shadow: 0 0 0 3px rgba(251,191,36,.18); }
+    .dot.err { background: var(--red); box-shadow: 0 0 0 3px rgba(248,113,113,.18); }
+
+    /* KV 列表 */
+    .kv-list { display: flex; flex-direction: column; }
+    .kv-row {
+      display: grid; grid-template-columns: 110px 1fr auto;
+      gap: 10px; padding: 8px 0;
+      border-bottom: 1px dashed #1e293b;
+      font-size: 13px; align-items: center;
+    }
+    .kv-row:last-child { border-bottom: 0; }
+    .kv-row .k { color: var(--muted); }
+    .kv-row .v { color: #e2e8f0; word-break: break-all; }
+    .kv-row .v.mono { font-family: ui-monospace, monospace; font-size: 12px; color: #cbd5e1; }
+    .pill {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 2px 8px; border-radius: 999px; font-size: 11px;
+      border: 1px solid #334155; background: #0b1220; color: #cbd5e1;
+    }
+    .pill.ok { color: #a7f3d0; border-color: rgba(52,211,153,.4); background: rgba(52,211,153,.08); }
+    .pill.warn { color: #fcd34d; border-color: rgba(251,191,36,.35); background: rgba(251,191,36,.08); }
+    .pill.err { color: #fca5a5; border-color: rgba(248,113,113,.4); background: rgba(248,113,113,.08); }
+
+    /* 3 库并排卡片 */
+    .db-row { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 12px; }
+    @media (max-width: 1100px) { .db-row { grid-template-columns: 1fr; } }
+    .db-card .card-title .icon { font-size: 16px; }
+
+    /* 弹窗 */
+    .modal-mask {
+      position: fixed; inset: 0; background: rgba(2, 6, 23, .72);
+      display: none; align-items: flex-start; justify-content: center;
+      padding: 24px 20px; z-index: 80; overflow: auto;
+    }
+    .modal-mask.open { display: flex; }
+    .modal {
+      width: min(760px, 100%); border: 1px solid #334155;
+      border-radius: 16px; background: #0f172a;
+      box-shadow: 0 24px 80px rgba(2,6,23,.6);
+      overflow: hidden; display: flex; flex-direction: column;
+    }
+    .modal-head {
+      padding: 14px 16px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .modal-head h3 { margin: 0; font-size: 14px; font-weight: 700; color: #e2e8f0; }
+    .modal-body { padding: 16px; display: flex; flex-direction: column; gap: 12px; max-height: 75vh; overflow: auto; }
+
+    /* 表单 */
+    .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; }
+    .field { display: flex; flex-direction: column; gap: 5px; font-size: 12px; }
+    .field.span-2 { grid-column: span 2; }
+    .field span { color: var(--muted); }
+    .field input, .field select, .field textarea {
+      font: inherit; font-size: 13px;
+      border-radius: 8px; border: 1px solid #334155;
+      background: #020617; color: var(--text);
+      padding: 8px 10px; outline: none;
+    }
+    .field textarea { font-family: ui-monospace, monospace; font-size: 12px; resize: vertical; min-height: 120px; }
+    .field input:focus, .field select:focus, .field textarea:focus {
+      border-color: rgba(34, 211, 238, .6);
+      box-shadow: 0 0 0 3px rgba(34, 211, 238, .12);
+    }
+    .field input:disabled, .field select:disabled { opacity: .6; background: #0b1220; }
+    .section-title {
+      font-size: 12px; font-weight: 700; color: #67e8f9;
+      letter-spacing: .04em; margin: 6px 0 0;
+      padding-bottom: 6px; border-bottom: 1px dashed #1e293b;
+    }
+    .actions { display: flex; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
+    .hint { font-size: 11px; color: var(--muted); }
+    .hint.err { color: #fca5a5; }
+    .hint.ok { color: #a7f3d0; }
+    .status-box {
+      padding: 10px 12px; border: 1px solid var(--border);
+      border-radius: 10px; background: #0b1220;
+      font-size: 12px; line-height: 1.7; color: #cbd5e1;
+      white-space: pre-wrap; word-break: break-all;
+    }
+    .status-box .err { color: #fecaca; }
+
+    /* SQL 控制台 */
+    .console-shell { display: flex; flex-direction: column; gap: 10px; flex: 1; min-height: 0; }
+    .sub-tabs { display: flex; gap: 6px; }
+    .sub-tabs button {
+      background: transparent; border: 1px solid #334155; color: var(--muted);
+      padding: 5px 12px; border-radius: 999px; font-size: 12px; cursor: pointer; font-family: inherit;
+    }
+    .sub-tabs button.active {
+      color: #67e8f9; background: rgba(34,211,238,.1); border-color: rgba(34,211,238,.4);
+    }
+    .sql-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .sql-editor {
+      width: 100%; min-height: 180px; padding: 10px 12px;
+      border-radius: 10px; border: 1px solid var(--border); background: #0b1020;
+      color: #e5e7eb; font-family: ui-monospace, monospace; font-size: 13px;
+      outline: none; resize: vertical;
+    }
+    .sql-editor:focus { border-color: rgba(34,211,238,.5); }
+
+    /* 结果表格 */
+    .result-wrap {
+      flex: 1; min-height: 0; overflow: auto;
+      border: 1px solid var(--border); border-radius: 10px; background: #0b1020;
+    }
+    .result-meta {
+      display: flex; gap: 12px; align-items: center; padding: 8px 12px;
+      border-bottom: 1px solid var(--border); font-size: 12px; color: var(--muted);
+      position: sticky; top: 0; background: #0b1020; z-index: 2;
+    }
+    .result-meta .ok { color: var(--green); }
+    .result-meta .err { color: var(--red); }
+    table.result-table {
+      width: 100%; border-collapse: collapse; font-size: 12px;
+    }
+    .result-table th, .result-table td {
+      padding: 6px 10px; border-bottom: 1px solid #1e293b;
+      text-align: left; vertical-align: top;
+      max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .result-table th {
+      background: rgba(34,211,238,.08); color: #a5f3fc;
+      font-weight: 600; position: sticky; top: 40px; z-index: 1;
+    }
+    .result-table tr:hover td { background: rgba(30,41,59,.5); }
+    .result-table td.mono { font-family: ui-monospace, monospace; color: #cbd5e1; }
+    .result-table td.null { color: #64748b; font-style: italic; }
+
+    /* 浏览器 */
+    .browser-shell { display: grid; grid-template-columns: 260px 1fr; gap: 12px; flex: 1; min-height: 0; }
+    .browser-left, .browser-right {
+      border: 1px solid var(--border); border-radius: 10px; background: rgba(2,6,23,.5);
+      overflow: auto; padding: 10px;
+    }
+    .tree-item {
+      padding: 5px 8px; border-radius: 6px; cursor: pointer;
+      font-size: 12px; color: var(--muted);
+    }
+    .tree-item:hover { background: rgba(30,41,59,.5); color: var(--text); }
+    .tree-item.active { color: var(--cyan); background: rgba(34,211,238,.1); }
+    .tree-group { font-size: 11px; color: #64748b; margin: 8px 4px 4px; text-transform: uppercase; letter-spacing: .1em; }
+
+    /* 危险按钮 */
+    .danger-banner {
+      padding: 8px 12px; border-radius: 8px;
+      background: rgba(248,113,113,.1); border: 1px solid rgba(248,113,113,.35);
+      color: #fca5a5; font-size: 12px;
+    }
+    .empty {
+      padding: 40px 20px; text-align: center; color: var(--muted); font-size: 13px;
+    }
+    /* end of styles */
+  </style>
+  <script src="./vendor/jszip.min.js"></script>
+</head>
+<body>
+  <div id="app">
+    <header class="top-bar">
+      <div class="title">数据库管理</div>
+      <div class="subtitle">MySQL · openGauss · 达梦 DM 三库统一管理台</div>
+      <div class="spacer"></div>
+      <div class="switch" id="sshLed" title="SSH 通道状态"><span class="led"></span><span id="sshLedText">SSH: 未连</span></div>
+      <button class="btn" id="btnRefresh" type="button" title="刷新状态">↻</button>
+      <button class="btn primary" id="btnConfig" type="button">连接信息</button>
+    </header>
+
+    <nav class="tabs" id="mainTabs">
+      <button data-tab="overview" class="active">概览</button>
+      <button data-tab="console">SQL 控制台</button>
+      <button data-tab="backup">备份 · 还原</button>
+      <button data-tab="browser">库表浏览</button>
+      <button data-tab="datasource">数据源切换</button>
+    </nav>
+
+    <!-- 概览：三库并排卡片 -->
+    <section class="tab-pane active" data-pane="overview">
+      <div class="db-row">
+        <div class="card db-card" id="cardMysql">
+          <div class="card-title"><span class="dot" id="mysqlDot"></span><span class="name">MySQL</span><span class="actions" id="mysqlActions"></span></div>
+          <div class="kv-list" id="mysqlKv"><div class="kv-row"><span class="k">状态</span><span class="v">未探测</span><span></span></div></div>
+        </div>
+        <div class="card db-card" id="cardGauss">
+          <div class="card-title"><span class="dot" id="gaussDot"></span><span class="name">openGauss</span><span class="actions" id="gaussActions"></span></div>
+          <div class="kv-list" id="gaussKv"><div class="kv-row"><span class="k">状态</span><span class="v">未探测</span><span></span></div></div>
+        </div>
+        <div class="card db-card" id="cardDm">
+          <div class="card-title"><span class="dot" id="dmDot"></span><span class="name">达梦 DM</span><span class="actions" id="dmActions"></span></div>
+          <div class="kv-list" id="dmKv"><div class="kv-row"><span class="k">状态</span><span class="v">未探测</span><span></span></div></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title"><span class="dot on"></span><span>说明</span></div>
+        <div class="hint">
+          点击「连接信息」录入 SSH（目标机 root）与三库凭据。三库都通过 SSH 转发 <code>docker exec dcim systemctl</code> 操作服务。SQL 控制台走各库对应 npm 驱动直连（MySQL/mysql2、openGauss/pg、达梦/dmdb）。备份走容器内原生工具（mysqldump/gs_dump/dexp）→ SFTP 拉回本机。<b>docker restart dcim 会重启 3 套数据库</b>，请配合「设置 → docker 重启」注意时机。
+        </div>
+      </div>
+    </section>
+
+    <!-- SQL 控制台 -->
+    <section class="tab-pane" data-pane="console">
+      <div class="console-shell">
+        <div class="sub-tabs" id="consoleDbTabs">
+          <button data-db="mysql" class="active">MySQL</button>
+          <button data-db="opengauss">openGauss</button>
+          <button data-db="dm">达梦 DM</button>
+        </div>
+        <div class="sql-toolbar">
+          <button class="btn primary" id="btnRunSql" type="button">执行 (Ctrl+Enter)</button>
+          <button class="btn" id="btnFmtSql" type="button" title="小写关键字换行">整理</button>
+          <span class="hint" id="sqlHint">编辑 SQL，仅执行第一条语句</span>
+          <label class="hint" style="margin-left:auto">结果上限
+            <input id="sqlLimit" type="number" value="500" min="1" max="5000" style="width:70px;padding:2px 6px;background:#020617;color:var(--text);border:1px solid #334155;border-radius:4px" />
+          </label>
+        </div>
+        <textarea class="sql-editor" id="sqlEditor" spellcheck="false" placeholder="-- 输入 SQL 后按 Ctrl+Enter 执行
+SHOW DATABASES;"></textarea>
+        <div class="result-wrap" id="sqlResult">
+          <div class="empty">尚未执行 SQL</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 备份 · 还原 -->
+    <section class="tab-pane" data-pane="backup">
+      <div class="card">
+        <div class="card-title"><span class="dot on"></span><span>备份</span></div>
+        <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr auto">
+          <label class="field"><span>数据库类型</span>
+            <select id="bkDbId">
+              <option value="mysql">MySQL</option>
+              <option value="opengauss">openGauss</option>
+              <option value="dm">达梦 DM</option>
+            </select>
+          </label>
+          <label class="field"><span>库/Schema 名</span>
+            <input id="bkDbName" placeholder="例如 dcim" />
+          </label>
+          <label class="field"><span>预览</span>
+            <input readonly id="bkPreviewCmd" style="font-family:ui-monospace,monospace;font-size:11px;color:#94a3b8" />
+          </label>
+          <label class="field"><span>&nbsp;</span>
+            <button class="btn primary" id="btnBackup" type="button">开始备份</button>
+          </label>
+        </div>
+        <div class="hint" style="margin-top:8px" id="bkHint">备份走容器内原生工具，产物落地 <code>backups/db-manager/</code>。</div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">
+          <span class="dot warn"></span><span>本地备份文件</span>
+          <span class="actions">
+            <button class="btn sm" id="btnRefreshBackups" type="button">刷新</button>
+            <button class="btn sm" id="btnUploadBackup" type="button">上传本地文件</button>
+            <input type="file" id="uploadBackupFile" style="display:none" />
+          </span>
+        </div>
+        <div id="backupList"><div class="empty">尚未有备份</div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><span class="dot err"></span><span>还原</span></div>
+        <div class="danger-banner">⚠ 还原会覆盖目标库现有数据，请务必先备份当前数据。仅支持来自本机备份列表的文件。</div>
+        <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr auto;margin-top:10px">
+          <label class="field"><span>目标数据库</span>
+            <select id="rsDbId">
+              <option value="mysql">MySQL</option>
+              <option value="opengauss">openGauss</option>
+              <option value="dm">达梦 DM</option>
+            </select>
+          </label>
+          <label class="field"><span>目标库/Schema</span>
+            <input id="rsDbName" placeholder="例如 dcim_restore" />
+          </label>
+          <label class="field"><span>选择备份文件</span>
+            <select id="rsFile"><option value="">(先刷新备份列表)</option></select>
+          </label>
+          <label class="field"><span>&nbsp;</span>
+            <button class="btn danger" id="btnRestore" type="button">执行还原</button>
+          </label>
+        </div>
+        <div class="hint" id="rsHint" style="margin-top:6px">目标库需已存在（否则先在 SQL 控制台 <code>CREATE DATABASE</code>）</div>
+      </div>
+    </section>
+
+    <!-- 库表浏览 -->
+    <section class="tab-pane" data-pane="browser">
+      <div class="sub-tabs" id="browserDbTabs">
+        <button data-db="mysql" class="active">MySQL</button>
+        <button data-db="opengauss">openGauss</button>
+        <button data-db="dm">达梦 DM</button>
+        <button class="btn sm" id="btnReloadTree" type="button" style="margin-left:auto">重新加载</button>
+      </div>
+      <div class="browser-shell">
+        <div class="browser-left" id="browserTree"><div class="empty">加载中…</div></div>
+        <div class="browser-right" id="browserDetail"><div class="empty">左侧选择表</div></div>
+      </div>
+    </section>
+
+    <!-- 数据源切换（Phase B）-->
+    <section class="tab-pane" data-pane="datasource">
+      <div class="card">
+        <div class="card-title"><span class="dot on" id="dsCurDot"></span><span>当前数据源</span></div>
+        <div class="kv-list" id="dsCurKv"><div class="kv-row"><span class="k">状态</span><span class="v">加载中…</span><span></span></div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><span class="dot warn"></span><span>版本快照管理</span>
+          <span class="actions" style="margin-left:auto">
+            <button class="btn sm" id="btnRefreshDs" type="button">刷新</button>
+            <button class="btn sm" id="btnInitMysqlBaseline" type="button" title="从目标机当前 /dcim/admin 抓一份基线快照">📥 抓取当前基线（MySQL）</button>
+          </span>
+        </div>
+        <div class="db-row" id="dsVersions">
+          <!-- 3 张卡：MySQL / openGauss / DM -->
+        </div>
+        <div class="hint" style="margin-top:10px">
+          「抓取当前基线」：从 <code>/dcim/admin/localhost_8080 + localhost_8086 + /dcim/python</code> 打个 zip 到 <code>/opt/dcim-datasource-versions/mysql/snapshot.zip</code>，作为回退兜底。<br>
+          「上传目录」：浏览器选本地 <code>数据库管理/{高斯,达梦}数据库/</code> 目录 → 客户端过滤 <code>.bak.* / .localbak.* / __pycache__</code> 等垃圾 → JSZip 打包 → 分块上传到目标机。
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><span class="dot"></span><span>切换执行</span></div>
+        <div class="danger-banner">⚠ 切换过程会：停 <code>httpd + php-fpm + dcim</code> → 覆盖代码 → 覆盖 dbconfig → 重启服务。业务中断约 <b>5-15 秒</b>。失败自动回滚。</div>
+        <div class="form-grid" style="grid-template-columns:1fr auto;margin-top:10px">
+          <label class="field"><span>目标版本</span>
+            <select id="dsSwitchTarget">
+              <option value="mysql">MySQL</option>
+              <option value="opengauss">openGauss</option>
+              <option value="dm">达梦 DM</option>
+            </select>
+          </label>
+          <label class="field"><span>&nbsp;</span>
+            <button class="btn danger" id="btnDoSwitch" type="button">⚡ 执行切换</button>
+          </label>
+        </div>
+        <div class="status-box" id="dsSwitchStatus" style="display:none;max-height:400px;overflow:auto"></div>
+      </div>
+    </section>
+
+    <!-- 连接信息弹窗 -->
+    <div class="modal-mask" id="configModal" aria-hidden="true">
+      <div class="modal">
+        <div class="modal-head">
+          <h3>连接信息</h3>
+          <button class="btn" id="btnCloseConfig" type="button">关闭</button>
+        </div>
+        <div class="modal-body">
+          <div class="section-title">SSH（连到 dcim 容器所在的目标机）</div>
+          <div class="form-grid">
+            <label class="field"><span>Host</span><input id="cfSshHost" placeholder="192.168.0.60" /></label>
+            <label class="field"><span>Port</span><input id="cfSshPort" type="number" value="22" /></label>
+            <label class="field"><span>Username</span><input id="cfSshUser" placeholder="root" /></label>
+            <label class="field"><span>Password（留空保持原值）</span><input id="cfSshPass" type="password" /></label>
+            <label class="field span-2"><span>Docker 容器名</span><input id="cfContainer" placeholder="dcim" /></label>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:2px">
+            <button class="btn" id="btnTestSsh" type="button">测试 SSH</button>
+            <span class="hint" id="hintSsh">未测试</span>
+          </div>
+
+          <div class="section-title">MySQL</div>
+          <div class="form-grid">
+            <label class="field"><span>Host</span><input id="cfMysqlHost" placeholder="192.168.0.60" /></label>
+            <label class="field"><span>Port</span><input id="cfMysqlPort" type="number" value="3333" /></label>
+            <label class="field"><span>Username</span><input id="cfMysqlUser" placeholder="root" /></label>
+            <label class="field"><span>Password</span><input id="cfMysqlPass" type="password" /></label>
+            <label class="field span-2"><span>systemd Unit</span><input id="cfMysqlUnit" placeholder="mysqld.service" /></label>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:2px">
+            <button class="btn" id="btnTestMysql" type="button">测试连接</button>
+            <span class="hint" id="hintMysql">未测试</span>
+          </div>
+
+          <div class="section-title">openGauss</div>
+          <div class="form-grid">
+            <label class="field"><span>Host</span><input id="cfGaussHost" placeholder="192.168.0.60" /></label>
+            <label class="field"><span>Port</span><input id="cfGaussPort" type="number" value="5432" /></label>
+            <label class="field"><span>Username</span><input id="cfGaussUser" placeholder="omm" /></label>
+            <label class="field"><span>Password</span><input id="cfGaussPass" type="password" /></label>
+            <label class="field"><span>默认库</span><input id="cfGaussDb" placeholder="dcim" /></label>
+            <label class="field"><span>systemd Unit</span><input id="cfGaussUnit" placeholder="opengauss.service" /></label>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:2px">
+            <button class="btn" id="btnTestGauss" type="button">测试连接</button>
+            <span class="hint" id="hintGauss">未测试</span>
+          </div>
+
+          <div class="section-title">达梦 DM</div>
+          <div class="form-grid">
+            <label class="field"><span>Host</span><input id="cfDmHost" placeholder="192.168.0.60" /></label>
+            <label class="field"><span>Port</span><input id="cfDmPort" type="number" value="5236" /></label>
+            <label class="field"><span>Username</span><input id="cfDmUser" placeholder="SYSDBA" /></label>
+            <label class="field"><span>Password</span><input id="cfDmPass" type="password" /></label>
+            <label class="field span-2"><span>systemd Unit</span><input id="cfDmUnit" placeholder="DmServiceDMSERVER.service" /></label>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:2px">
+            <button class="btn" id="btnTestDm" type="button">测试连接</button>
+            <span class="hint" id="hintDm">未测试</span>
+          </div>
+
+          <div class="actions" style="justify-content:flex-end;margin-top:8px">
+            <button class="btn" id="btnReloadCfg" type="button">重载</button>
+            <button class="btn primary" id="btnSaveCfg" type="button">保存</button>
+          </div>
+          <div class="status-box" id="cfgStatus" style="display:none"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- openGauss 一键启用弹窗 -->
+    <div class="modal-mask" id="gaussInitModal" aria-hidden="true">
+      <div class="modal">
+        <div class="modal-head">
+          <h3>openGauss 一键启用</h3>
+          <button class="btn" id="btnCloseGaussInit" type="button">关闭</button>
+        </div>
+        <div class="modal-body">
+          <div class="hint">
+            这个操作会：<br>
+            ① 启动 openGauss 服务并 <code>systemctl enable</code>（开机自启）<br>
+            ② 创建/更新应用账号 <code>dcim</code>（不用初始 <code>omm</code>，openGauss 禁止 omm 远程连）<br>
+            ③ 授权 <code>dcim</code> 连接 <code>postgres</code> 数据库、<code>search_path=public</code><br>
+            ④ 修改 <code>postgresql.conf</code>：<code>listen_addresses = '*'</code><br>
+            ⑤ 修改 <code>pg_hba.conf</code>：允许指定 CIDR 内的 <code>dcim</code> 用户以 sha256 连接<br>
+            ⑥ 重启 openGauss 让配置生效<br>
+            <br>
+            成功后 <code>dcim / &lt;密码&gt;</code> 可从局域网 <code>&lt;CIDR&gt;</code> 通过 <code>5432</code> 连接。
+          </div>
+          <div class="form-grid">
+            <label class="field"><span>dcim 账号密码</span>
+              <input id="giPassword" value="Gauss@2026" placeholder="Gauss@2026" />
+            </label>
+            <label class="field"><span>允许访问的 CIDR</span>
+              <input id="giCidr" value="192.168.0.0/24" placeholder="192.168.0.0/24" />
+            </label>
+          </div>
+          <div class="hint">
+            <b>密码要求</b>：≥ 8 位，包含大小写/数字/特殊字符至少 3 类。默认 <code>Gauss@2026</code> 满足。<br>
+            <b>CIDR</b>：默认允许 <code>192.168.0.0/24</code>。如现场客户端在其他网段（例如 <code>192.168.1.0/24</code>）请改。
+          </div>
+          <div class="danger-banner">⚠ 会重启 openGauss。如有客户端正在连，会短暂中断（约 3-5 秒）。</div>
+          <div class="actions" style="justify-content:flex-end">
+            <button class="btn primary" id="btnDoGaussInit" type="button">开始执行</button>
+          </div>
+          <div class="status-box" id="giStatus" style="display:none;max-height:300px;overflow:auto"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- openGauss 一键建 WVP 表弹窗 -->
+    <div class="modal-mask" id="wvpInitModal" aria-hidden="true">
+      <div class="modal">
+        <div class="modal-head">
+          <h3>🎬 新建 WVP 数据库表</h3>
+          <button class="btn" id="btnCloseWvpInit" type="button">关闭</button>
+        </div>
+        <div class="modal-body">
+          <div class="hint">
+            在 openGauss <b>dcim</b> 库的 <code>public</code> schema 里新建 <b>15 张 WVP 业务表</b>：<br>
+            <span class="v mono" id="wvpTableList" style="display:block;padding:6px 10px;background:#0b1020;border-radius:6px;font-size:11px;margin-top:6px">加载中…</span>
+            并插入 2 条初始数据（admin 账号 + admin 角色，密码 hash 为 <code>21232f297a57a5a743894a0e4a801fc3</code> = MD5(admin)）。<br>
+            SQL 直接来自 WVP 官方 <code>初始化.sql</code>（本身已是 PostgreSQL 语法），用 <code>dcim/Gauss@2026</code> 账号执行。
+          </div>
+
+          <div class="section-title">当前 openGauss dcim 库中 wvp_ 表状态</div>
+          <div class="kv-list" id="wvpStatusKv">
+            <div class="kv-row"><span class="k">检测中…</span><span class="v"></span><span></span></div>
+          </div>
+
+          <div class="section-title">选项</div>
+          <div class="form-grid" style="grid-template-columns:1fr">
+            <label class="field" style="flex-direction:row;align-items:center;gap:8px">
+              <input type="checkbox" id="wvpDropExisting" style="width:16px;height:16px" />
+              <span style="color:#e5e7eb">如已存在则先 <b style="color:#fca5a5">DROP TABLE ... CASCADE</b> 再重建（清空所有 wvp_* 数据）</span>
+            </label>
+          </div>
+          <div class="danger-banner" style="margin-top:8px">⚠ 勾选「先 DROP 再建」会永久删除已有 wvp_* 表的所有数据。不勾选时如遇同名表会报错终止。</div>
+
+          <div class="actions" style="justify-content:flex-end">
+            <button class="btn" id="btnRefreshWvpStatus" type="button">刷新状态</button>
+            <button class="btn primary" id="btnDoWvpInit" type="button">开始建表</button>
+          </div>
+          <div class="status-box" id="wvpStatus" style="display:none;max-height:300px;overflow:auto"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- WVP 数据同步弹窗（MySQL → openGauss）-->
+    <div class="modal-mask" id="wvpSyncModal" aria-hidden="true">
+      <div class="modal">
+        <div class="modal-head">
+          <h3>🔄 从 MySQL 同步 WVP 数据到 openGauss</h3>
+          <button class="btn" id="btnCloseWvpSync" type="button">关闭</button>
+        </div>
+        <div class="modal-body">
+          <div class="hint">
+            将 MySQL <code>wvp</code> 库 <b>15 张 wvp_ 表</b> 数据搬到 openGauss <code>dcim.public</code>。<br>
+            <b>WVP 服务本身不动</b>（继续连 MySQL），此操作只做<b>数据镜像</b>——为未来切 openGauss 做准备。<br>
+            自动处理：MySQL <code>tinyint(1)</code> 的 0/1 → openGauss <code>boolean</code> true/false；保留原主键；同步完修 sequence。
+          </div>
+
+          <div class="section-title">当前双库行数对比</div>
+          <div class="result-wrap" id="wvpSyncStatusWrap" style="max-height:280px">
+            <div class="empty">加载中…</div>
+          </div>
+
+          <div class="section-title">选项</div>
+          <div class="form-grid" style="grid-template-columns:1fr">
+            <label class="field" style="flex-direction:row;align-items:center;gap:8px">
+              <input type="checkbox" id="wvpSyncDrop" style="width:16px;height:16px" />
+              <span>先 <b style="color:#fca5a5">TRUNCATE</b> openGauss wvp_* 表，再从 MySQL 灌新数据（清空 openGauss 里已有数据）</span>
+            </label>
+          </div>
+          <div class="hint" id="wvpSyncModeHint">默认：<b>幂等追加</b>——ON CONFLICT DO NOTHING，主键冲突的行跳过。</div>
+
+          <div class="actions" style="justify-content:flex-end">
+            <button class="btn" id="btnRefreshWvpSync" type="button">刷新对比</button>
+            <button class="btn" id="btnFixWvpSequences" type="button" title="把 15 张 wvp_ 表的自增序列推到 MAX(id)+1，避免新增记录时主键冲突">🔧 修序列</button>
+            <button class="btn primary" id="btnDoWvpSync" type="button">开始同步</button>
+          </div>
+          <div class="status-box" id="wvpSyncResult" style="display:none;max-height:400px;overflow:auto"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 达梦授权信息弹窗 -->
+    <div class="modal-mask" id="dmLicenseModal" aria-hidden="true">
+      <div class="modal">
+        <div class="modal-head">
+          <h3>🔑 达梦授权信息</h3>
+          <button class="btn" id="btnCloseDmLicense" type="button">关闭</button>
+        </div>
+        <div class="modal-body">
+          <div class="section-title">SYSDBA 密码（查授权用）</div>
+          <div class="form-grid" style="grid-template-columns:1fr auto">
+            <label class="field"><span>SYSDBA 密码（留空保持原值）</span>
+              <input id="dmSysdbaPass" type="password" placeholder="留空保持原值" />
+            </label>
+            <label class="field"><span>&nbsp;</span>
+              <button class="btn" id="btnSaveDmSysdba" type="button">保存并查询</button>
+            </label>
+          </div>
+          <div class="hint" id="dmSysdbaHint">V$LICENSE 只有 SYSDBA 能查。dcim 应用账号无权访问。</div>
+
+          <div class="section-title">授权详情</div>
+          <div class="kv-list" id="dmLicenseKv">
+            <div class="kv-row"><span class="k">状态</span><span class="v">加载中…</span><span></span></div>
+          </div>
+
+          <div class="section-title">当前 dm.key 文件</div>
+          <div class="kv-list" id="dmKeyFileKv">
+            <div class="kv-row"><span class="k">状态</span><span class="v">加载中…</span><span></span></div>
+          </div>
+
+          <div class="section-title">上传新 dm.key 授权文件</div>
+          <div class="danger-banner">⚠ 上传后会：备份旧 dm.key → 覆盖 → 重启 DmServiceDMSERVER → 重新查授权。业务中断约 5-10 秒。</div>
+          <div class="form-grid" style="grid-template-columns:1fr auto;margin-top:8px">
+            <label class="field"><span>选择本地 dm.key 文件</span>
+              <input type="file" id="dmKeyFile" accept=".key,application/octet-stream" />
+            </label>
+            <label class="field"><span>&nbsp;</span>
+              <button class="btn danger" id="btnUploadDmKey" type="button" disabled>上传并生效</button>
+            </label>
+          </div>
+          <div class="hint" id="dmKeyHint">选文件后点「上传并生效」；文件通常在 1-10 KB。</div>
+          <div class="status-box" id="dmKeyStatus" style="display:none;max-height:250px;overflow:auto"></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+  <script>
+
+    'use strict';
+    const $ = (id) => document.getElementById(id);
+    const $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
+    const esc = (s) => String(s == null ? '' : s)
+      .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;').replaceAll("'", '&#39;');
+    const API = '/api/db-manager';
+    async function jfetch(url, opts) {
+      const o = Object.assign({ headers: { 'Content-Type': 'application/json' } }, opts || {});
+      if (o.body && typeof o.body !== 'string') o.body = JSON.stringify(o.body);
+      const resp = await fetch(url, o);
+      const text = await resp.text();
+      let data;
+      try { data = JSON.parse(text); } catch (_e) { data = { ok: false, message: text }; }
+      if (!resp.ok && data.ok !== false) data.ok = false;
+      return data;
+    }
+    function fmtBytes(n) {
+      if (n == null) return '';
+      if (n < 1024) return n + ' B';
+      if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+      if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
+      return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+    }
+    function fmtTime(ms) {
+      if (!ms) return '';
+      const d = new Date(ms);
+      const p = (n) => (n < 10 ? '0' + n : '' + n);
+      return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' +
+        p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+    }
+    // 主 tabs（切换：先清所有 tab-pane 的 active + 显式设 display:none，再给目标 pane 加 active + display:flex；
+    // 双重设置避免部分浏览器多次切换后 flex 布局失效）
+    function switchMainTab(targetTab) {
+      $$('#mainTabs button').forEach(b => {
+        b.classList.toggle('active', b.dataset.tab === targetTab);
+      });
+      $$('.tab-pane').forEach(p => {
+        const isActive = p.dataset.pane === targetTab;
+        p.classList.toggle('active', isActive);
+        // 显式设置 style.display 兜底 CSS，避免 flex 反复切换时布局不刷新
+        p.style.display = isActive ? 'flex' : 'none';
+        if (isActive) p.scrollTop = 0;
+      });
+      if (targetTab === 'backup') loadBackups();
+      if (targetTab === 'browser') loadTree();
+      if (targetTab === 'datasource') loadDatasource();
+    }
+    $$('#mainTabs button').forEach((btn) => {
+      btn.addEventListener('click', () => switchMainTab(btn.dataset.tab));
+    });
+    // 子 tabs（SQL 控制台 + 库表浏览）
+    let activeConsoleDb = 'mysql';
+    let activeBrowserDb = 'mysql';
+    $$('#consoleDbTabs button[data-db]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        $$('#consoleDbTabs button[data-db]').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        activeConsoleDb = btn.dataset.db;
+        $('sqlHint').textContent = '当前库：' + btn.textContent + '（仅执行第一条语句）';
+      });
+    });
+    $$('#browserDbTabs button[data-db]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        $$('#browserDbTabs button[data-db]').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        activeBrowserDb = btn.dataset.db;
+        loadTree();
+      });
+    });
+
+    // ========== 连接信息弹窗 ==========
+    function openConfig() { $('configModal').classList.add('open'); loadConfig(); }
+    function closeConfig() { $('configModal').classList.remove('open'); }
+    $('btnConfig').addEventListener('click', openConfig);
+    $('btnCloseConfig').addEventListener('click', closeConfig);
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeConfig(); });
+
+    async function loadConfig() {
+      const r = await jfetch(API + '/config');
+      if (!r.ok) { setCfgStatus('读取配置失败: ' + r.message, true); return; }
+      const c = r.config || {};
+      const ssh = c.ssh || {};
+      $('cfSshHost').value = ssh.host || '';
+      $('cfSshPort').value = ssh.port || 22;
+      $('cfSshUser').value = ssh.username || '';
+      $('cfSshPass').value = '';
+      $('cfSshPass').placeholder = ssh.hasPassword ? '(保持原值)' : '';
+      $('cfContainer').value = c.container || 'dcim';
+      const dbs = c.databases || {};
+      ['mysql', 'gauss', 'dm'].forEach((short, idx) => {
+        const map = { mysql: 'mysql', gauss: 'opengauss', dm: 'dm' };
+        const d = dbs[map[short]] || {};
+        $('cf' + cap(short) + 'Host').value = d.host || '';
+        $('cf' + cap(short) + 'Port').value = d.port || '';
+        $('cf' + cap(short) + 'User').value = d.username || '';
+        $('cf' + cap(short) + 'Pass').value = '';
+        $('cf' + cap(short) + 'Pass').placeholder = d.hasPassword ? '(保持原值)' : '';
+        $('cf' + cap(short) + 'Unit').value = d.systemdUnit || '';
+        if (short === 'gauss') $('cfGaussDb').value = d.database || 'dcim';
+      });
+      const dv = r.drivers || {};
+      const driversMsg = 'npm 驱动：mysql2 ' + (dv.mysql2 ? '✓' : '✗') +
+        '，pg ' + (dv.pg ? '✓' : '✗') + '，dmdb ' + (dv.dmdb ? '✓' : '✗');
+      setCfgStatus(driversMsg, !(dv.mysql2 && dv.pg && dv.dmdb));
+    }
+    function cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+    function setCfgStatus(text, isErr) {
+      const box = $('cfgStatus');
+      if (!text) { box.style.display = 'none'; return; }
+      box.style.display = ''; box.innerHTML = isErr ? '<span class="err">' + esc(text) + '</span>' : esc(text);
+    }
+    async function saveConfig() {
+      const body = {
+        ssh: {
+          host: $('cfSshHost').value.trim(),
+          port: Number($('cfSshPort').value) || 22,
+          username: $('cfSshUser').value.trim(),
+          password: $('cfSshPass').value || '',
+        },
+        container: $('cfContainer').value.trim() || 'dcim',
+        databases: {
+          mysql: {
+            host: $('cfMysqlHost').value.trim(), port: Number($('cfMysqlPort').value) || 3333,
+            username: $('cfMysqlUser').value.trim(), password: $('cfMysqlPass').value || '',
+            systemdUnit: $('cfMysqlUnit').value.trim(),
+          },
+          opengauss: {
+            host: $('cfGaussHost').value.trim(), port: Number($('cfGaussPort').value) || 5432,
+            username: $('cfGaussUser').value.trim(), password: $('cfGaussPass').value || '',
+            database: $('cfGaussDb').value.trim() || 'dcim',
+            systemdUnit: $('cfGaussUnit').value.trim(),
+          },
+          dm: {
+            host: $('cfDmHost').value.trim(), port: Number($('cfDmPort').value) || 5236,
+            username: $('cfDmUser').value.trim(), password: $('cfDmPass').value || '',
+            systemdUnit: $('cfDmUnit').value.trim(),
+          },
+        },
+      };
+      setCfgStatus('保存中…', false);
+      const r = await jfetch(API + '/config', { method: 'PUT', body: body });
+      if (r.ok) { setCfgStatus('已保存，正在刷新状态…', false); refreshStatus(); loadConfig(); }
+      else setCfgStatus('保存失败: ' + r.message, true);
+    }
+    $('btnSaveCfg').addEventListener('click', saveConfig);
+    $('btnReloadCfg').addEventListener('click', loadConfig);
+
+    // 测试连接：从弹窗当前 form 取值发给后端（不需要先保存）
+    function collectInlineCreds(target) {
+      if (target === 'ssh') {
+        const pw = $('cfSshPass').value;
+        if (!pw) return null; // 密码留空 = 用后端已保存的
+        return { host: $('cfSshHost').value.trim(), port: Number($('cfSshPort').value) || 22,
+          username: $('cfSshUser').value.trim(), password: pw };
+      }
+      const map = { mysql: 'Mysql', opengauss: 'Gauss', dm: 'Dm' };
+      const short = map[target]; if (!short) return null;
+      const pw = $('cf' + short + 'Pass').value;
+      if (!pw) return null;
+      const cr = { host: $('cf' + short + 'Host').value.trim(), port: Number($('cf' + short + 'Port').value) || 0,
+        username: $('cf' + short + 'User').value.trim(), password: pw };
+      if (target === 'opengauss') cr.database = $('cfGaussDb').value.trim() || 'dcim';
+      return cr;
+    }
+    async function testTarget(target, hintId) {
+      const hint = $(hintId);
+      hint.className = 'hint'; hint.textContent = '测试中…';
+      const body = { target };
+      const inline = collectInlineCreds(target);
+      if (inline) body.credentials = inline;
+      const r = await jfetch(API + '/test-connection', { method: 'POST', body: body });
+      hint.className = 'hint ' + (r.ok ? 'ok' : 'err');
+      hint.textContent = r.ok ? ('✓ ' + (r.message || '连通')) : ('✗ ' + (r.message || '失败'));
+    }
+    $('btnTestSsh').addEventListener('click', () => testTarget('ssh', 'hintSsh'));
+    $('btnTestMysql').addEventListener('click', () => testTarget('mysql', 'hintMysql'));
+    $('btnTestGauss').addEventListener('click', () => testTarget('opengauss', 'hintGauss'));
+    $('btnTestDm').addEventListener('click', () => testTarget('dm', 'hintDm'));
+
+    // ========== 状态概览 ==========
+    async function refreshStatus() {
+      const r = await jfetch(API + '/status');
+      if (!r.ok) {
+        setLed('sshLed', 'sshLedText', 'err', 'SSH: 失败');
+        return;
+      }
+      const st = r.status || {};
+      const ssh = st.ssh || {};
+      setLed('sshLed', 'sshLedText', ssh.ok ? 'on' : 'err', 'SSH: ' + (ssh.ok ? '连通' : '不通'));
+      renderDbCard('mysql', 'Mysql', st.databases && st.databases.mysql);
+      renderDbCard('gauss', 'Gauss', st.databases && st.databases.opengauss);
+      renderDbCard('dm', 'Dm', st.databases && st.databases.dm);
+    }
+    function setLed(elId, textId, cls, text) {
+      const el = $(elId); el.classList.remove('on', 'warn', 'err');
+      if (cls) el.classList.add(cls);
+      $(textId).textContent = text;
+    }
+    function renderDbCard(short, capName, info) {
+      const dot = $(short === 'mysql' ? 'mysqlDot' : short + 'Dot');
+      const kv = $(short === 'mysql' ? 'mysqlKv' : short + 'Kv');
+      const actions = $(short === 'mysql' ? 'mysqlActions' : short + 'Actions');
+      if (!info) {
+        dot.className = 'dot off'; kv.innerHTML = '<div class="kv-row"><span class="k">状态</span><span class="v">未探测</span><span></span></div>';
+        actions.innerHTML = ''; return;
+      }
+      dot.className = 'dot ' + (info.running ? 'on' : 'err');
+      const items = [
+        ['状态', info.running ? '<span class="pill ok">运行中</span>' : '<span class="pill err">已停</span>'],
+        ['版本', info.version || '—'],
+        ['库数', info.databases != null ? String(info.databases) : '—'],
+        ['表数', info.tables != null ? String(info.tables) : '—'],
+        ['systemd', '<span class="v mono">' + esc(info.unit) + '</span>'],
+      ];
+      kv.innerHTML = items.map(([k, v]) => '<div class="kv-row"><span class="k">' + k + '</span><span class="v">' + v + '</span><span></span></div>').join('');
+      const dbId = info.id;
+      let btns = '';
+      if (info.running) {
+        btns += '<button class="btn sm" data-svc="' + dbId + '" data-action="restart">重启</button>';
+        btns += '<button class="btn sm danger" data-svc="' + dbId + '" data-action="stop">停止</button>';
+      } else {
+        btns += '<button class="btn sm primary" data-svc="' + dbId + '" data-action="start">' +
+          (dbId === 'dm' ? '一键启动 DM' : '启动') + '</button>';
+      }
+      // openGauss 专属：一键启用（enable+start+创建 dcim 用户+开局域网白名单）
+      if (dbId === 'opengauss') {
+        btns += '<button class="btn sm primary" id="btnGaussInit" title="启用 openGauss 并创建 dcim 应用账号 + 开放局域网访问">🚀 启用 &amp; 建 dcim 用户</button>';
+        btns += '<button class="btn sm" id="btnGaussInitWvp" title="在 dcim 库 public schema 里新建 15 张 WVP 业务表 + 初始 admin 账号">🎬 建 WVP 表</button>';
+        btns += '<button class="btn sm" id="btnGaussSyncWvp" title="从 MySQL wvp 库把 15 张 WVP 业务表数据同步到 openGauss dcim.public（WVP 服务不动继续用 MySQL）">🔄 同步 WVP 数据</button>';
+      }
+      // 达梦专属：授权信息 + 上传 dm.key
+      if (dbId === 'dm') {
+        btns += '<button class="btn sm" id="btnDmLicense" title="查看到期时间 / 上传 dm.key 授权文件">🔑 授权信息</button>';
+      }
+      actions.innerHTML = btns;
+      actions.querySelectorAll('button[data-svc]').forEach(b => b.addEventListener('click', () => doService(b.dataset.svc, b.dataset.action)));
+      const gi = $('btnGaussInit');
+      if (gi) gi.addEventListener('click', openGaussInitModal);
+      const gw = $('btnGaussInitWvp');
+      if (gw) gw.addEventListener('click', openWvpInitModal);
+      const gs = $('btnGaussSyncWvp');
+      if (gs) gs.addEventListener('click', openWvpSyncModal);
+      const dl = $('btnDmLicense');
+      if (dl) dl.addEventListener('click', openDmLicenseModal);
+    }
+    async function doService(dbId, action) {
+      if (action === 'stop' && !confirm('确定停止 ' + dbId + ' 服务？dcim 业务可能会失败。')) return;
+      const r = await jfetch(API + '/service/' + dbId + '/' + action, { method: 'POST' });
+      alert('操作结果：' + (r.ok ? '成功' : '失败') + '\n' + (r.stderr || r.stdout || r.message || ''));
+      setTimeout(refreshStatus, 1500);
+    }
+    $('btnRefresh').addEventListener('click', refreshStatus);
+
+    // openGauss 一键启用
+    function openGaussInitModal() {
+      $('giStatus').style.display = 'none';
+      $('giStatus').innerHTML = '';
+      $('gaussInitModal').classList.add('open');
+    }
+    $('btnCloseGaussInit').addEventListener('click', () => $('gaussInitModal').classList.remove('open'));
+    $('btnDoGaussInit').addEventListener('click', async () => {
+      const password = $('giPassword').value.trim();
+      const cidr = $('giCidr').value.trim();
+      if (!password || password.length < 8) { alert('密码至少 8 位'); return; }
+      // 前端 kinds 校验（跟后端一致）
+      let kinds = 0;
+      if (/[a-z]/.test(password)) kinds++;
+      if (/[A-Z]/.test(password)) kinds++;
+      if (/[0-9]/.test(password)) kinds++;
+      if (/[^A-Za-z0-9]/.test(password)) kinds++;
+      if (kinds < 3) { alert('密码要包含大小写/数字/特殊字符至少 3 类'); return; }
+      if (!/^[0-9.]+\/\d+$/.test(cidr)) { alert('CIDR 格式非法'); return; }
+      if (!confirm('确定执行？会启动 openGauss + 建 dcim 用户 + 重启服务。')) return;
+      const btn = $('btnDoGaussInit'); btn.disabled = true;
+      const box = $('giStatus'); box.style.display = ''; box.innerHTML = '执行中，请耐心等待（15-45 秒）…';
+      try {
+        const r = await jfetch(API + '/opengauss/init', { method: 'POST', body: { password: password, cidr: cidr } });
+        if (r.ok) {
+          const logs = (r.logs || []).map(l => '  ' + esc(l)).join('\n');
+          box.innerHTML = '<span style="color:#a7f3d0">✓ 完成</span>\n\n' +
+            '<b>GAUSSHOME</b>: ' + esc(r.gaussHome) + '\n' +
+            '<b>DATA DIR</b>: ' + esc(r.dataDir) + '\n' +
+            '<b>账号</b>: ' + esc(r.dbUser) + '（密码见弹窗上方，请安全保管）\n' +
+            '<b>白名单</b>: ' + esc(r.cidr) + '\n' +
+            '<b>登录验证</b>: ' + (r.verified ? '<span style="color:#a7f3d0">✓ 成功</span>' : '<span style="color:#fcd34d">⚠ 未验证</span>') + '\n' +
+            '<b>提示</b>: ' + esc(r.hostMap5432 || '') + '\n\n' +
+            '<b>执行步骤</b>:\n' + logs;
+          setTimeout(refreshStatus, 2000);
+        } else {
+          box.innerHTML = '<span class="err">✗ 失败: ' + esc(r.message) + '</span>';
+        }
+      } catch (e) {
+        box.innerHTML = '<span class="err">✗ 异常: ' + esc(e.message) + '</span>';
+      } finally { btn.disabled = false; }
+    });
+
+    // ========== openGauss 一键建 WVP 表 ==========
+    const WVP_TABLE_LIST = ['wvp_device','wvp_device_alarm','wvp_device_channel','wvp_device_mobile_position',
+      'wvp_gb_stream','wvp_log','wvp_media_server','wvp_platform','wvp_platform_catalog',
+      'wvp_platform_gb_channel','wvp_platform_gb_stream','wvp_stream_proxy','wvp_stream_push',
+      'wvp_user','wvp_user_role'];
+
+    function openWvpInitModal() {
+      $('wvpInitModal').classList.add('open');
+      $('wvpTableList').textContent = WVP_TABLE_LIST.join(', ');
+      $('wvpDropExisting').checked = false;
+      $('wvpStatus').style.display = 'none';
+      $('wvpStatus').innerHTML = '';
+      loadWvpStatus();
+    }
+    $('btnCloseWvpInit').addEventListener('click', () => $('wvpInitModal').classList.remove('open'));
+    $('btnRefreshWvpStatus').addEventListener('click', loadWvpStatus);
+
+    async function loadWvpStatus() {
+      const kv = $('wvpStatusKv');
+      kv.innerHTML = '<div class="kv-row"><span class="k">检测中…</span><span class="v"></span><span></span></div>';
+      const r = await jfetch(API + '/opengauss/wvp/status');
+      if (!r.ok) {
+        kv.innerHTML = '<div class="kv-row"><span class="k" style="color:#fca5a5">✗ 查询失败</span><span class="v">' + esc(r.message || '') + '</span><span></span></div>';
+        return;
+      }
+      const missing = (r.expectedList || WVP_TABLE_LIST).filter(t => !r.tables.includes(t));
+      const extra = (r.tables || []).filter(t => !(r.expectedList || WVP_TABLE_LIST).includes(t));
+      const complete = r.count === r.expected && missing.length === 0;
+      kv.innerHTML = [
+        ['当前表数', '<span class="pill ' + (complete ? 'ok' : (r.count === 0 ? 'warn' : 'err')) + '">' +
+          r.count + ' / ' + r.expected + (complete ? ' 完整' : '') + '</span>'],
+        ['已存在', r.tables.length ? '<span class="v mono" style="font-size:11px">' + esc(r.tables.join(', ')) + '</span>' : '<span class="pill warn">无</span>'],
+        ['缺失', missing.length ? '<span class="v mono" style="font-size:11px;color:#fcd34d">' + esc(missing.join(', ')) + '</span>' : '<span class="pill ok">无</span>'],
+      ].map(([k, v]) => '<div class="kv-row"><span class="k">' + k + '</span><span class="v">' + v + '</span><span></span></div>').join('');
+      if (extra.length) kv.insertAdjacentHTML('beforeend', '<div class="kv-row"><span class="k">额外</span><span class="v mono" style="font-size:11px">' + esc(extra.join(', ')) + '</span><span></span></div>');
+    }
+
+    $('btnDoWvpInit').addEventListener('click', async () => {
+      const dropExisting = $('wvpDropExisting').checked;
+      const warn = dropExisting
+        ? '确定？会先 DROP 所有 wvp_* 表（清空数据）再建新表。'
+        : '确定？会在 dcim 库执行 WVP 初始化 SQL。若已存在同名表会报错终止。';
+      if (!confirm(warn)) return;
+      const btn = $('btnDoWvpInit'); btn.disabled = true;
+      const box = $('wvpStatus'); box.style.display = ''; box.innerHTML = '执行中（10-30 秒）…';
+      try {
+        const r = await jfetch(API + '/opengauss/wvp/init', {
+          method: 'POST', body: { database: 'dcim', dropExisting: dropExisting },
+        });
+        if (r.ok) {
+          box.innerHTML = '<span style="color:#a7f3d0">✓ 完成</span>\n\n' +
+            '<b>数据库</b>: ' + esc(r.database) + '\n' +
+            '<b>DROP 重建</b>: ' + (r.dropExisting ? '是' : '否') + '\n' +
+            '<b>建表数</b>: ' + r.createdCount + ' / ' + r.expectedCount +
+            (r.createdCount === r.expectedCount ? ' <span style="color:#a7f3d0">✓</span>' : ' <span style="color:#fcd34d">⚠ 未达预期</span>') + '\n' +
+            '<b>建成的表</b>: ' + esc((r.created || []).join(', ')) + '\n\n' +
+            '<b>gsql 输出</b>:\n<pre style="white-space:pre-wrap;font-size:11px">' + esc(r.output || '') + '</pre>';
+          setTimeout(loadWvpStatus, 500);
+        } else {
+          box.innerHTML = '<span class="err">✗ 失败: ' + esc(r.message) + '</span>';
+        }
+      } catch (e) {
+        box.innerHTML = '<span class="err">✗ 异常: ' + esc(e.message) + '</span>';
+      } finally { btn.disabled = false; }
+    });
+
+    // ========== WVP 数据同步（MySQL → openGauss） ==========
+    function openWvpSyncModal() {
+      $('wvpSyncModal').classList.add('open');
+      $('wvpSyncDrop').checked = false;
+      $('wvpSyncResult').style.display = 'none';
+      $('wvpSyncResult').innerHTML = '';
+      loadWvpSyncStatus();
+    }
+    $('btnCloseWvpSync').addEventListener('click', () => $('wvpSyncModal').classList.remove('open'));
+    $('btnRefreshWvpSync').addEventListener('click', loadWvpSyncStatus);
+    $('btnFixWvpSequences').addEventListener('click', async () => {
+      if (!confirm('把 15 张 wvp_ 表的自增序列推到 MAX(id)+1（有数据）或 1（空表）。避免下次新增记录主键冲突。')) return;
+      const btn = $('btnFixWvpSequences'); btn.disabled = true;
+      const box = $('wvpSyncResult'); box.style.display = ''; box.innerHTML = '修序列中…';
+      try {
+        const r = await jfetch(API + '/opengauss/wvp/fix-sequences', { method: 'POST' });
+        if (r.ok || r.tables) {
+          let html = (r.ok ? '<span style="color:#a7f3d0">✓ 修完</span>' : '<span class="err">⚠ 有 ' + r.errors + ' 张表失败</span>') +
+            '\n共修复 <b>' + r.fixed + '</b> 个序列\n\n<b>逐表</b>：\n';
+          (r.tables || []).forEach(t => {
+            if (t.error) { html += '✗ ' + t.table + '  ' + esc(t.error) + '\n'; return; }
+            if (!t.sequences.length) { html += '  ' + t.table + '  (无 serial 列)\n'; return; }
+            t.sequences.forEach(s => {
+              const changed = s.before.last_value !== s.after.last_value || s.before.is_called !== s.after.is_called;
+              html += (changed ? '✓ ' : '  ') + t.table + '.' + s.column +
+                ' rows=' + s.tableRows + ' max=' + s.maxPk +
+                '  seq: last=' + s.before.last_value + '(called=' + s.before.is_called + ')' +
+                ' → last=' + s.after.last_value + '(called=' + s.after.is_called + ')\n';
+            });
+          });
+          box.innerHTML = html;
+        } else {
+          box.innerHTML = '<span class="err">✗ ' + esc(r.message) + '</span>';
+        }
+      } catch (e) {
+        box.innerHTML = '<span class="err">✗ 异常: ' + esc(e.message) + '</span>';
+      } finally { btn.disabled = false; }
+    });
+    $('wvpSyncDrop').addEventListener('change', () => {
+      const drop = $('wvpSyncDrop').checked;
+      $('wvpSyncModeHint').innerHTML = drop
+        ? '<span style="color:#fca5a5">TRUNCATE 模式</span>：先清空 openGauss 15 张 wvp_ 表，再从 MySQL 全量灌入。已有数据会丢！'
+        : '默认：<b>幂等追加</b>——ON CONFLICT DO NOTHING，主键冲突的行跳过。';
+    });
+
+    async function loadWvpSyncStatus() {
+      const wrap = $('wvpSyncStatusWrap');
+      wrap.innerHTML = '<div class="empty">查询中…</div>';
+      const r = await jfetch(API + '/opengauss/wvp/sync-status');
+      if (!r.ok) {
+        wrap.innerHTML = '<div class="empty" style="color:#fca5a5">✗ ' + esc(r.message || '') + '</div>';
+        return;
+      }
+      const rows = r.rows || [];
+      let totalMy = 0, totalGa = 0, diff = 0;
+      let html = '<table class="result-table"><thead><tr><th>表名</th><th style="text-align:right">MySQL</th><th style="text-align:right">openGauss</th><th style="text-align:right">差</th><th>状态</th></tr></thead><tbody>';
+      rows.forEach(row => {
+        totalMy += Math.max(0, row.mysqlRows);
+        totalGa += Math.max(0, row.gaussRows);
+        const d = row.mysqlRows - row.gaussRows;
+        if (row.mysqlRows > 0 || row.gaussRows > 0) diff += Math.abs(d);
+        const pill = row.error ? '<span class="pill err">' + esc(row.error) + '</span>'
+          : (d === 0 ? '<span class="pill ok">已同步</span>'
+             : (d > 0 ? '<span class="pill warn">缺 ' + d + ' 行</span>'
+                : '<span class="pill">gauss 多 ' + (-d) + '</span>'));
+        html += '<tr><td class="mono">' + esc(row.table) + '</td>' +
+          '<td style="text-align:right" class="mono">' + (row.mysqlRows < 0 ? '—' : row.mysqlRows) + '</td>' +
+          '<td style="text-align:right" class="mono">' + (row.gaussRows < 0 ? '—' : row.gaussRows) + '</td>' +
+          '<td style="text-align:right" class="mono">' + (row.error ? '?' : (d === 0 ? '' : (d > 0 ? '+' + d : d))) + '</td>' +
+          '<td>' + pill + '</td></tr>';
+      });
+      html += '</tbody></table>';
+      wrap.innerHTML = '<div class="result-meta"><span>MySQL 总行 <b>' + totalMy + '</b></span>' +
+        '<span>openGauss 总行 <b>' + totalGa + '</b></span>' +
+        '<span>' + (diff === 0 ? '<span class="ok">✓ 已一致</span>' : '<span class="warn">差 ' + diff + ' 行</span>') + '</span></div>' + html;
+    }
+
+    $('btnDoWvpSync').addEventListener('click', async () => {
+      const drop = $('wvpSyncDrop').checked;
+      const warn = drop
+        ? '确定？将 TRUNCATE 清空 openGauss 里 15 张 wvp_* 表，再从 MySQL 全量灌入。已有数据会丢！'
+        : '确定？将从 MySQL 增量同步到 openGauss（幂等追加，冲突跳过）。';
+      if (!confirm(warn)) return;
+      const btn = $('btnDoWvpSync'); btn.disabled = true;
+      const box = $('wvpSyncResult'); box.style.display = ''; box.innerHTML = '同步中（30-120 秒，视数据量）…';
+      try {
+        const r = await jfetch(API + '/opengauss/wvp/sync-from-mysql', { method: 'POST', body: { dropExisting: drop } });
+        if (r.ok || r.tables) {
+          const s = r.summary || {};
+          let html = '<b>结果</b>: ' + (r.ok ? '<span style="color:#a7f3d0">✓ 全部成功</span>' : '<span class="err">⚠ 有 ' + s.errorCount + ' 表失败</span>') + '\n';
+          html += 'MySQL 总行 ' + s.totalMysqlRows + '，本次插入 ' + s.totalInserted + '\n\n';
+          html += '<b>逐表</b>：\n';
+          (r.tables || []).forEach(t => {
+            const ok = !t.error && t.gaussAfter >= t.mysqlRows;
+            html += (ok ? '✓ ' : '✗ ') + t.table.padEnd(30) +
+              ' mysql=' + String(t.mysqlRows).padStart(6) +
+              ' gauss ' + String(t.gaussBefore).padStart(6) + '→' + String(t.gaussAfter).padEnd(6) +
+              ' 插=' + String(t.inserted).padStart(6) +
+              ' ' + t.elapsedMs + 'ms' +
+              (t.error ? '  <span style="color:#fca5a5">' + esc(t.error) + '</span>' : '') + '\n';
+          });
+          box.innerHTML = html;
+          setTimeout(loadWvpSyncStatus, 500);
+        } else {
+          box.innerHTML = '<span class="err">✗ ' + esc(r.message) + '</span>';
+        }
+      } catch (e) {
+        box.innerHTML = '<span class="err">✗ 异常: ' + esc(e.message) + '</span>';
+      } finally { btn.disabled = false; }
+    });
+
+    // ========== 达梦授权信息弹窗 ==========
+    function openDmLicenseModal() {
+      $('dmLicenseModal').classList.add('open');
+      $('dmSysdbaPass').value = '';
+      $('dmKeyFile').value = '';
+      $('btnUploadDmKey').disabled = true;
+      $('dmKeyStatus').style.display = 'none';
+      $('dmKeyStatus').innerHTML = '';
+      loadDmLicense();
+    }
+    $('btnCloseDmLicense').addEventListener('click', () => $('dmLicenseModal').classList.remove('open'));
+
+    async function loadDmLicense() {
+      $('dmLicenseKv').innerHTML = '<div class="kv-row"><span class="k">状态</span><span class="v">查询中…</span><span></span></div>';
+      $('dmKeyFileKv').innerHTML = '<div class="kv-row"><span class="k">状态</span><span class="v">查询中…</span><span></span></div>';
+      const r = await jfetch(API + '/dm/license');
+      renderDmKeyFile(r.keyFile || {});
+      if (!r.ok) {
+        $('dmLicenseKv').innerHTML = '<div class="kv-row"><span class="k">状态</span><span class="v" style="color:#fca5a5">✗ ' + esc(r.message || '查询失败') + '</span><span></span></div>';
+        $('dmSysdbaHint').className = 'hint err';
+        $('dmSysdbaHint').textContent = '需要 SYSDBA 密码 —— 请在上方输入后点「保存并查询」';
+        return;
+      }
+      renderDmLicense(r.license || {});
+    }
+    function renderDmLicense(lic) {
+      const f = lic.fields || {};
+      const daysLeft = lic.daysLeft;
+      const daysCls = daysLeft == null ? '' : (daysLeft < 0 ? 'err' : (daysLeft < 30 ? 'warn' : 'ok'));
+      const daysTxt = daysLeft == null ? '—' :
+        (daysLeft < 0 ? ('已过期 ' + (-daysLeft) + ' 天') : ('剩余 ' + daysLeft + ' 天'));
+      // 常用字段：AUTHORIZED_CUSTOMER / SERIES_NO / EXPIRED_DATE / MAX_USERS / PRODUCT_TYPE
+      const primary = [
+        ['数据库版本', lic.dbVersion || '—'],
+        ['授权客户', f.AUTHORIZED_CUSTOMER || f.authorized_customer || '—'],
+        ['授权序列号', f.SERIES_NO || f.series_no || '—'],
+        ['产品类型', f.PRODUCT_TYPE || f.product_type || '—'],
+        ['到期日期', '<span class="pill ' + daysCls + '">' + esc(lic.expiredDate || '—') + '</span>'],
+        ['剩余时间', '<span class="pill ' + daysCls + '">' + esc(daysTxt) + '</span>'],
+        ['授权用户数', f.MAX_USERS || f.max_users || '—'],
+      ];
+      let html = primary.map(([k, v]) =>
+        '<div class="kv-row"><span class="k">' + k + '</span><span class="v">' + v + '</span><span></span></div>'
+      ).join('');
+      // 其他字段折叠
+      const seen = new Set(['AUTHORIZED_CUSTOMER', 'SERIES_NO', 'EXPIRED_DATE', 'PRODUCT_TYPE', 'MAX_USERS']);
+      const extras = Object.entries(f).filter(([k]) => !seen.has(String(k).toUpperCase()));
+      if (extras.length) {
+        html += '<div class="kv-row" style="grid-template-columns:1fr">' +
+          '<details style="grid-column:1/-1"><summary style="cursor:pointer;color:#94a3b8">其他字段 (' + extras.length + ')</summary>' +
+          '<div style="padding:8px 0 0 12px">' +
+          extras.map(([k, v]) => '<div style="font-size:12px;margin:2px 0"><span style="color:#64748b">' + esc(k) + '</span>: <span class="mono">' + esc(v == null ? '' : v) + '</span></div>').join('') +
+          '</div></details></div>';
+      }
+      $('dmLicenseKv').innerHTML = html;
+      $('dmSysdbaHint').className = 'hint ok';
+      $('dmSysdbaHint').textContent = '✓ SYSDBA 已认证，授权信息如上';
+    }
+    function renderDmKeyFile(kf) {
+      if (!kf.exists) {
+        $('dmKeyFileKv').innerHTML =
+          '<div class="kv-row"><span class="k">状态</span><span class="v"><span class="pill warn">未找到独立文件</span></span><span></span></div>' +
+          '<div class="kv-row"><span class="k">预期路径</span><span class="v mono">' + esc(kf.path || '') + '</span><span></span></div>' +
+          '<div class="kv-row"><span class="k">说明</span><span class="v" style="font-size:12px;color:#94a3b8">试用/开发版授权嵌在二进制里；正式部署需要上传单独的 dm.key</span><span></span></div>';
+        return;
+      }
+      $('dmKeyFileKv').innerHTML = [
+        ['路径', '<span class="v mono">' + esc(kf.path) + '</span>'],
+        ['大小', kf.size + ' bytes'],
+        ['修改时间', fmtTime(kf.mtime)],
+        ['属主/权限', '<span class="mono">' + esc(kf.owner) + ' ' + esc(kf.mode) + '</span>'],
+      ].map(([k, v]) => '<div class="kv-row"><span class="k">' + k + '</span><span class="v">' + v + '</span><span></span></div>').join('');
+    }
+
+    // 保存 SYSDBA 密码 + 重查
+    $('btnSaveDmSysdba').addEventListener('click', async () => {
+      const pw = $('dmSysdbaPass').value;
+      if (!pw) { alert('请先填 SYSDBA 密码'); return; }
+      const btn = $('btnSaveDmSysdba'); btn.disabled = true;
+      try {
+        const r = await jfetch(API + '/config', { method: 'PUT', body: { databases: { dm: { sysdbaPassword: pw } } } });
+        if (!r.ok) { alert('保存失败: ' + r.message); return; }
+        $('dmSysdbaPass').value = '';
+        await loadDmLicense();
+      } finally { btn.disabled = false; }
+    });
+
+    // dm.key 文件选择 → 启用上传按钮
+    $('dmKeyFile').addEventListener('change', (e) => {
+      $('btnUploadDmKey').disabled = !(e.target.files && e.target.files[0]);
+    });
+    $('btnUploadDmKey').addEventListener('click', async () => {
+      const file = $('dmKeyFile').files[0]; if (!file) return;
+      if (file.size > 1024 * 1024) { alert('文件超过 1MB，太大了，请确认是 dm.key 授权文件'); return; }
+      if (!confirm('确定用「' + file.name + '」(' + file.size + ' bytes) 覆盖 dm.key？会重启 DmServiceDMSERVER 服务，业务中断 5-10 秒。')) return;
+      const btn = $('btnUploadDmKey'); btn.disabled = true;
+      const box = $('dmKeyStatus'); box.style.display = ''; box.innerHTML = '读取文件 → base64 → 上传 …';
+      try {
+        // 用 FileReader 读为 base64
+        const b64 = await new Promise((resolve, reject) => {
+          const fr = new FileReader();
+          fr.onload = () => {
+            const dataUrl = String(fr.result || '');
+            const i = dataUrl.indexOf(','); resolve(i >= 0 ? dataUrl.slice(i + 1) : dataUrl);
+          };
+          fr.onerror = () => reject(new Error('读文件失败'));
+          fr.readAsDataURL(file);
+        });
+        box.innerHTML = '上传中，服务重启 + 探活约 10-20 秒 …';
+        const r = await jfetch(API + '/dm/upload-key', { method: 'POST', body: { contentBase64: b64 } });
+        if (r.ok) {
+          box.innerHTML = '<span style="color:#a7f3d0">✓ 上传成功</span>\n' +
+            '<b>大小</b>: ' + r.uploaded + ' bytes\n' +
+            '<b>旧文件备份</b>: ' + esc(r.backup || '(无原文件)') + '\n' +
+            '<b>服务重启</b>: ' + (r.restarted ? '✓ 就绪' : '⚠ 超时') + '\n';
+          // 重查授权信息展示新的到期时间
+          setTimeout(loadDmLicense, 1500);
+        } else {
+          box.innerHTML = '<span class="err">✗ 失败: ' + esc(r.message || '') + '</span>';
+        }
+      } catch (e) {
+        box.innerHTML = '<span class="err">✗ 异常: ' + esc(e.message) + '</span>';
+      } finally { btn.disabled = false; }
+    });
+
+    // ========== SQL 控制台 ==========
+    async function runSql() {
+      const sql = $('sqlEditor').value.trim();
+      if (!sql) return;
+      const limit = Math.max(1, Math.min(5000, Number($('sqlLimit').value) || 500));
+      $('sqlResult').innerHTML = '<div class="empty">执行中…</div>';
+      const r = await jfetch(API + '/query', { method: 'POST', body: { db: activeConsoleDb, sql: sql, limit: limit } });
+      renderSqlResult(r);
+    }
+    function renderSqlResult(r) {
+      const wrap = $('sqlResult');
+      if (!r.ok) {
+        wrap.innerHTML = '<div class="result-meta"><span class="err">✗ 执行失败</span></div>' +
+          '<div style="padding:10px 12px"><pre style="white-space:pre-wrap;color:#fca5a5;margin:0">' + esc(r.message || '') + '</pre></div>';
+        return;
+      }
+      const meta = '<div class="result-meta"><span class="ok">✓ 成功</span>' +
+        '<span>行数 ' + (r.rowCount || 0) + '</span>' +
+        '<span>耗时 ' + (r.elapsedMs || 0) + ' ms</span>' +
+        (r.notice ? '<span style="color:#fcd34d">⚠ ' + esc(r.notice) + '</span>' : '') + '</div>';
+      const cols = r.columns || [];
+      const rows = r.rows || [];
+      if (!cols.length) { wrap.innerHTML = meta + '<div class="empty">无返回列</div>'; return; }
+      let html = meta + '<table class="result-table"><thead><tr>';
+      cols.forEach(c => html += '<th>' + esc(c) + '</th>');
+      html += '</tr></thead><tbody>';
+      rows.forEach(row => {
+        html += '<tr>';
+        cols.forEach(c => {
+          const v = row[c];
+          if (v == null) html += '<td class="null">NULL</td>';
+          else if (typeof v === 'object') html += '<td class="mono">' + esc(JSON.stringify(v)) + '</td>';
+          else html += '<td class="mono">' + esc(v) + '</td>';
+        });
+        html += '</tr>';
+      });
+      html += '</tbody></table>';
+      wrap.innerHTML = html;
+    }
+    $('btnRunSql').addEventListener('click', runSql);
+    $('sqlEditor').addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); runSql(); }
+    });
+    $('btnFmtSql').addEventListener('click', () => {
+      const ta = $('sqlEditor');
+      let s = ta.value;
+      s = s.replace(/\b(SELECT|FROM|WHERE|AND|OR|ORDER BY|GROUP BY|LIMIT|JOIN|LEFT JOIN|RIGHT JOIN|INNER JOIN|ON|AS|CREATE|TABLE|INSERT INTO|UPDATE|SET|DELETE|VALUES)\b/gi,
+        (m) => '\n' + m.toUpperCase());
+      ta.value = s.trim();
+    });
+
+    // ========== 备份 · 还原 ==========
+    function updateBkPreview() {
+      const id = $('bkDbId').value;
+      const name = $('bkDbName').value.trim();
+      const cmds = {
+        mysql: 'docker exec dcim mysqldump ' + (name || '<database>') + ' > /tmp/…',
+        opengauss: 'docker exec dcim sudo -u omm gs_dump -F c ' + (name || '<database>') + ' -f /tmp/…',
+        dm: 'docker exec dcim dexp SCHEMAS=' + (name || '<schema>') + ' FILE=/tmp/…',
+      };
+      $('bkPreviewCmd').value = cmds[id] || '';
+    }
+    $('bkDbId').addEventListener('change', updateBkPreview);
+    $('bkDbName').addEventListener('input', updateBkPreview);
+    updateBkPreview();
+
+    async function doBackup() {
+      const id = $('bkDbId').value;
+      const name = $('bkDbName').value.trim();
+      if (!name) { alert('请填库/Schema 名'); return; }
+      $('bkHint').textContent = '备份中，请耐心等待（大库可能几分钟）…';
+      $('bkHint').className = 'hint';
+      const btn = $('btnBackup'); btn.disabled = true;
+      try {
+        const r = await jfetch(API + '/backup', { method: 'POST', body: { db: id, database: name } });
+        if (r.ok) {
+          $('bkHint').className = 'hint ok';
+          $('bkHint').textContent = '✓ 已生成 ' + r.file + '（' + fmtBytes(r.size) + '）';
+          loadBackups();
+        } else {
+          $('bkHint').className = 'hint err';
+          $('bkHint').textContent = '✗ ' + (r.message || '失败');
+        }
+      } finally { btn.disabled = false; }
+    }
+    $('btnBackup').addEventListener('click', doBackup);
+
+    async function loadBackups() {
+      const r = await jfetch(API + '/backups');
+      const list = $('backupList');
+      const sel = $('rsFile');
+      if (!r.ok || !r.files || !r.files.length) {
+        list.innerHTML = '<div class="empty">尚未有备份</div>';
+        sel.innerHTML = '<option value="">(尚无备份文件)</option>';
+        return;
+      }
+      list.innerHTML = '<table class="result-table"><thead><tr><th>文件名</th><th>大小</th><th>时间</th><th style="width:180px">操作</th></tr></thead><tbody>' +
+        r.files.map(f => '<tr><td class="mono">' + esc(f.name) + '</td>' +
+          '<td>' + fmtBytes(f.size) + '</td>' +
+          '<td>' + fmtTime(f.mtime) + '</td>' +
+          '<td><a class="btn sm" href="' + API + '/backups/' + encodeURIComponent(f.name) + '" download>下载</a> ' +
+          '<button class="btn sm danger" data-del="' + esc(f.name) + '">删除</button></td></tr>').join('') +
+        '</tbody></table>';
+      list.querySelectorAll('button[data-del]').forEach(b => b.addEventListener('click', async () => {
+        if (!confirm('删除 ' + b.dataset.del + '？')) return;
+        await jfetch(API + '/backups/' + encodeURIComponent(b.dataset.del), { method: 'DELETE' });
+        loadBackups();
+      }));
+      sel.innerHTML = '<option value="">(选择备份文件)</option>' +
+        r.files.map(f => '<option value="' + esc(f.name) + '">' + esc(f.name) + '</option>').join('');
+    }
+    $('btnRefreshBackups').addEventListener('click', loadBackups);
+
+    $('btnUploadBackup').addEventListener('click', () => $('uploadBackupFile').click());
+    $('uploadBackupFile').addEventListener('change', async (e) => {
+      const file = e.target.files && e.target.files[0]; if (!file) return;
+      if (!/^[A-Za-z0-9._-]+$/.test(file.name)) { alert('文件名只能包含字母数字._-'); return; }
+      if (file.size > 2 * 1024 * 1024 * 1024) { alert('单文件不能超过 2GB'); return; }
+      const reader = new FileReader();
+      reader.onload = async () => {
+        const r = await jfetch(API + '/upload-backup', { method: 'POST', body: { name: file.name, content: reader.result } });
+        if (r.ok) { alert('上传成功: ' + r.file); loadBackups(); }
+        else alert('上传失败: ' + r.message);
+        e.target.value = '';
+      };
+      reader.readAsDataURL(file);
+    });
+
+    async function doRestore() {
+      const id = $('rsDbId').value;
+      const name = $('rsDbName').value.trim();
+      const file = $('rsFile').value;
+      if (!name || !file) { alert('目标库和文件都要选'); return; }
+      if (!confirm('确定用 ' + file + ' 还原到 ' + id + '/' + name + '？会覆盖数据！')) return;
+      $('rsHint').textContent = '还原中…'; $('rsHint').className = 'hint';
+      const btn = $('btnRestore'); btn.disabled = true;
+      try {
+        const r = await jfetch(API + '/restore', { method: 'POST', body: { db: id, database: name, file: file } });
+        $('rsHint').className = 'hint ' + (r.ok ? 'ok' : 'err');
+        $('rsHint').textContent = r.ok ? '✓ 还原完成' : ('✗ ' + (r.message || '失败'));
+      } finally { btn.disabled = false; }
+    }
+    $('btnRestore').addEventListener('click', doRestore);
+
+    // ========== 库表浏览 ==========
+    let currentTreeDbName = null;
+    async function loadTree() {
+      const tree = $('browserTree');
+      tree.innerHTML = '<div class="empty">加载中…</div>';
+      const r = await jfetch(API + '/databases/' + activeBrowserDb);
+      if (!r.ok) { tree.innerHTML = '<div class="empty" style="color:#fca5a5">✗ ' + esc(r.message) + '</div>'; return; }
+      const dbs = r.databases || [];
+      if (!dbs.length) { tree.innerHTML = '<div class="empty">未发现库</div>'; return; }
+      tree.innerHTML = '<div class="tree-group">数据库</div>' +
+        dbs.map(db => '<div class="tree-item" data-db="' + esc(db) + '">📁 ' + esc(db) + '</div>').join('');
+      tree.querySelectorAll('.tree-item[data-db]').forEach(it => it.addEventListener('click', () => selectTreeDb(it.dataset.db, it)));
+    }
+    async function selectTreeDb(dbName, node) {
+      currentTreeDbName = dbName;
+      $$('#browserTree .tree-item').forEach(x => x.classList.remove('active'));
+      if (node) node.classList.add('active');
+      const detail = $('browserDetail');
+      detail.innerHTML = '<div class="empty">加载表列表中…</div>';
+      const r = await jfetch(API + '/tables/' + activeBrowserDb + '/' + encodeURIComponent(dbName));
+      if (!r.ok) { detail.innerHTML = '<div class="empty" style="color:#fca5a5">✗ ' + esc(r.message) + '</div>'; return; }
+      const tbls = r.tables || [];
+      if (!tbls.length) { detail.innerHTML = '<div class="empty">该库无表</div>'; return; }
+      detail.innerHTML = '<div class="card"><div class="card-title"><span class="dot on"></span><span>' + esc(dbName) + '（共 ' + tbls.length + ' 张表）</span></div>' +
+        '<table class="result-table"><thead><tr><th>表名</th><th>行数</th><th>大小</th><th style="width:80px">操作</th></tr></thead><tbody>' +
+        tbls.map(t => '<tr><td class="mono">' + esc(t.name) + '</td>' +
+          '<td>' + (t.rows != null ? t.rows : '—') + '</td>' +
+          '<td>' + (t.bytes != null ? fmtBytes(t.bytes) : '—') + '</td>' +
+          '<td><button class="btn sm" data-tbl="' + esc(t.name) + '">查看</button></td></tr>').join('') + '</tbody></table></div>';
+      detail.querySelectorAll('button[data-tbl]').forEach(b => b.addEventListener('click', () => viewTable(dbName, b.dataset.tbl)));
+    }
+
+    async function viewTable(dbName, tblName) {
+      const detail = $('browserDetail');
+      detail.innerHTML = '<div class="empty">加载表结构中…</div>';
+      const r = await jfetch(API + '/table/' + activeBrowserDb + '/' + encodeURIComponent(dbName) + '/' + encodeURIComponent(tblName));
+      if (!r.ok) { detail.innerHTML = '<div class="empty" style="color:#fca5a5">✗ ' + esc(r.message) + '</div>'; return; }
+      const cols = r.columns || [];
+      const prev = r.preview || { columns: [], rows: [] };
+      let html = '<div class="card"><div class="card-title"><span class="dot on"></span><span>' + esc(dbName) + '.' + esc(tblName) + '</span>' +
+        '<span class="actions"><button class="btn sm" id="btnBackToTables">← 返回表列表</button></span></div>' +
+        '<div class="section-title">列（' + cols.length + '）</div>' +
+        '<table class="result-table"><thead><tr><th>字段</th><th>类型</th><th>可空</th><th>默认</th><th>注释</th></tr></thead><tbody>' +
+        cols.map(c => '<tr><td class="mono">' + esc(c.name) + '</td>' +
+          '<td class="mono">' + esc(c.type) + '</td>' +
+          '<td>' + esc(c.nullable) + '</td>' +
+          '<td class="mono">' + esc(c.default == null ? '' : c.default) + '</td>' +
+          '<td>' + esc(c.comment || '') + '</td></tr>').join('') + '</tbody></table>' +
+        '<div class="section-title" style="margin-top:14px">前 100 行预览' + (prev.notice ? ' <span style="color:#fcd34d">(⚠ ' + esc(prev.notice) + ')</span>' : '') + '</div>';
+      if (!prev.rows.length) {
+        html += '<div class="empty">无数据</div>';
+      } else {
+        const pcols = prev.columns.length ? prev.columns : Object.keys(prev.rows[0] || {});
+        html += '<table class="result-table"><thead><tr>' + pcols.map(c => '<th>' + esc(c) + '</th>').join('') + '</tr></thead><tbody>';
+        prev.rows.forEach(row => {
+          html += '<tr>';
+          pcols.forEach(c => {
+            const v = row[c];
+            if (v == null) html += '<td class="null">NULL</td>';
+            else if (typeof v === 'object') html += '<td class="mono">' + esc(JSON.stringify(v)) + '</td>';
+            else html += '<td class="mono">' + esc(v) + '</td>';
+          });
+          html += '</tr>';
+        });
+        html += '</tbody></table>';
+      }
+      html += '</div>';
+      detail.innerHTML = html;
+      const back = $('btnBackToTables');
+      if (back) back.addEventListener('click', () => selectTreeDb(currentTreeDbName, null));
+    }
+    $('btnReloadTree').addEventListener('click', loadTree);
+
+    // ========== 数据源切换（Phase B）==========
+    const DS_LABELS = { mysql: 'MySQL', opengauss: 'openGauss', dm: '达梦 DM' };
+    const DS_KEYS = ['mysql', 'opengauss', 'dm'];
+    // 打包过滤规则（跟后端保持一致）
+    const DS_EXCLUDE_PATTERNS = [
+      /\.bak\./, /\.localbak\./, /\.servercopy\./, /\.php1$/, /\.localbeforepull\./,
+      /__pycache__\//, /\.pyc$/, /^php-beast\.log$/, /php-beast\.log$/,
+      /\.gitignore$/, /\.gitattributes$/, /\.git\//, /\.DS_Store$/,
+    ];
+    function dsShouldExclude(relPath) {
+      return DS_EXCLUDE_PATTERNS.some(re => re.test(relPath));
+    }
+
+    async function loadDatasource() {
+      const r = await jfetch(API + '/datasource/current');
+      if (!r.ok) { $('dsCurKv').innerHTML = '<div class="kv-row"><span class="k">状态</span><span class="v" style="color:#fca5a5">✗ ' + esc(r.message) + '</span><span></span></div>'; return; }
+      const curType = (r.current && r.current.type) || 'unknown';
+      const curCfg = (r.current && r.current.config) || {};
+      const label = DS_LABELS[curType] || '未知（' + curType + '）';
+      const dot = $('dsCurDot');
+      dot.className = 'dot ' + (curType === 'unknown' ? 'err' : 'on');
+      $('dsCurKv').innerHTML = [
+        ['当前类型', '<span class="pill ' + (curType === 'unknown' ? 'err' : 'ok') + '">' + esc(label) + '</span>'],
+        ['dbconfig.json type', '<span class="v mono">' + esc(curType) + '</span>'],
+        ['host', '<span class="v mono">' + esc(curCfg.host || '—') + ':' + esc(curCfg.port || '—') + '</span>'],
+        ['用户', '<span class="v mono">' + esc(curCfg.user || '—') + '</span>'],
+        ['数据库名', '<span class="v mono">' + esc(curCfg.name || '—') + '</span>'],
+      ].map(([k, v]) => '<div class="kv-row"><span class="k">' + k + '</span><span class="v">' + v + '</span><span></span></div>').join('');
+      renderDsVersions(r.versions || {});
+      if (r.marker && r.marker.switchedAt) {
+        $('dsCurKv').insertAdjacentHTML('beforeend',
+          '<div class="kv-row"><span class="k">上次切换</span><span class="v">' + esc(r.marker.switchedAt) + '</span><span></span></div>');
+      }
+    }
+    function renderDsVersions(versions) {
+      const wrap = $('dsVersions');
+      wrap.innerHTML = DS_KEYS.map((key) => {
+        const v = versions[key] || { ready: false };
+        return '<div class="card"><div class="card-title">' +
+          '<span class="dot ' + (v.ready ? 'on' : 'off') + '"></span>' +
+          '<span class="name">' + esc(DS_LABELS[key]) + '</span></div>' +
+          '<div class="kv-list">' +
+            '<div class="kv-row"><span class="k">快照</span><span class="v">' + (v.ready ? '已就绪' : '<span class="pill err">未上传</span>') + '</span><span></span></div>' +
+            (v.ready ? '<div class="kv-row"><span class="k">大小</span><span class="v">' + fmtBytes(v.size) + '</span><span></span></div>' : '') +
+            (v.ready ? '<div class="kv-row"><span class="k">上传时间</span><span class="v">' + fmtTime(v.mtime) + '</span><span></span></div>' : '') +
+          '</div>' +
+          '<div class="actions" style="margin-top:8px">' +
+            '<button class="btn sm primary" data-upload-ds="' + key + '">📤 上传目录</button>' +
+            (v.ready ? '<button class="btn sm danger" data-delete-ds="' + key + '">🗑 删除</button>' : '') +
+          '</div>' +
+        '</div>';
+      }).join('');
+      wrap.querySelectorAll('button[data-upload-ds]').forEach(b => b.addEventListener('click', () => triggerFolderPick(b.dataset.uploadDs)));
+      wrap.querySelectorAll('button[data-delete-ds]').forEach(b => b.addEventListener('click', () => deleteDsVersion(b.dataset.deleteDs)));
+    }
+    async function deleteDsVersion(key) {
+      if (!confirm('确定删除 ' + DS_LABELS[key] + ' 版本快照？')) return;
+      const r = await jfetch(API + '/datasource/' + key, { method: 'DELETE' });
+      if (r.ok) loadDatasource();
+      else alert('删除失败: ' + r.message);
+    }
+    $('btnRefreshDs').addEventListener('click', loadDatasource);
+    $('btnInitMysqlBaseline').addEventListener('click', async () => {
+      if (!confirm('从当前 /dcim/admin + /dcim/python 抓一份基线快照到 mysql/snapshot.zip？')) return;
+      const btn = $('btnInitMysqlBaseline'); btn.disabled = true;
+      try {
+        const r = await jfetch(API + '/datasource/init-current', { method: 'POST', body: { version: 'mysql' } });
+        alert(r.ok ? '基线快照已生成' : '失败: ' + r.message);
+        loadDatasource();
+      } finally { btn.disabled = false; }
+    });
+
+    // ===== 目录选择 → JSZip 打包 → 分块上传 =====
+    // 隐藏的 file input（webkitdirectory 让用户能选整个目录）
+    function triggerFolderPick(versionKey) {
+      let picker = document.getElementById('dsFolderPicker');
+      if (!picker) {
+        picker = document.createElement('input');
+        picker.type = 'file';
+        picker.id = 'dsFolderPicker';
+        picker.setAttribute('webkitdirectory', '');
+        picker.setAttribute('directory', '');
+        picker.multiple = true;
+        picker.style.display = 'none';
+        document.body.appendChild(picker);
+      }
+      picker.onchange = async (e) => {
+        const files = Array.from(e.target.files || []);
+        picker.value = '';
+        if (!files.length) return;
+        await packAndUpload(versionKey, files);
+      };
+      picker.click();
+    }
+    async function packAndUpload(versionKey, files) {
+      if (typeof JSZip === 'undefined') { alert('JSZip 未加载'); return; }
+      // 期望用户选的是 "高斯数据库" 或 "达梦数据库" 这一级目录
+      // File.webkitRelativePath 里第一段是根目录名（如 "高斯数据库"），要剥掉
+      // 目标 zip 结构：admin/localhost_8080/... + admin/localhost_8086/... + python/...
+      let totalBytes = 0, kept = 0, skipped = 0;
+      files.forEach(f => {
+        const rp = f.webkitRelativePath || f.name;
+        const parts = rp.split('/');
+        if (parts.length < 2) { skipped++; return; }
+        const rest = parts.slice(1).join('/');
+        if (dsShouldExclude(rest)) { skipped++; return; }
+        // 只保留 localhost_8080 / localhost_8086 / python 三个顶层子目录
+        if (!/^(localhost_8080|localhost_8086|python)\//.test(rest)) { skipped++; return; }
+        kept++; totalBytes += f.size;
+      });
+      if (!kept) { alert('没有找到可打包的文件（需要选 数据库管理/高斯数据库 或 数据库管理/达梦数据库 目录）'); return; }
+      const conf = confirm('准备打包 ' + kept + ' 个文件（约 ' + fmtBytes(totalBytes) + '），忽略 ' + skipped + ' 个（含 .bak.* 等历史/垃圾文件）。\n目标版本：' + DS_LABELS[versionKey] + '\n开始？');
+      if (!conf) return;
+
+      const box = ensureStatusBox();
+      box.textContent = '正在读取文件...';
+
+      const zip = new JSZip();
+      let addedBytes = 0;
+      for (let i = 0; i < files.length; i++) {
+        const f = files[i];
+        const rp = f.webkitRelativePath || f.name;
+        const parts = rp.split('/');
+        if (parts.length < 2) continue;
+        const rest = parts.slice(1).join('/');
+        if (dsShouldExclude(rest)) continue;
+        if (!/^(localhost_8080|localhost_8086|python)\//.test(rest)) continue;
+        // zip 内路径改成后端预期的结构：admin/localhost_8080/xxx / admin/localhost_8086/xxx / python/xxx
+        const zipPath = rest.startsWith('python/') ? rest : 'admin/' + rest;
+        const buf = await f.arrayBuffer();
+        zip.file(zipPath, buf);
+        addedBytes += f.size;
+        if (i % 100 === 0 || i === files.length - 1) {
+          box.textContent = '读取文件... ' + (i + 1) + '/' + files.length + ' (' + fmtBytes(addedBytes) + ')';
+        }
+      }
+      box.textContent = '生成 zip 中（大目录可能 30-60 秒）...';
+      const blob = await zip.generateAsync(
+        { type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 4 } },
+        (meta) => { box.textContent = '压缩 ' + Math.floor(meta.percent) + '%'; });
+      box.textContent = '打包完成 ' + fmtBytes(blob.size) + '，开始分块上传...';
+
+      // 分块上传（每块 4MB base64，约 3MB 原始）
+      const chunkBytes = 3 * 1024 * 1024;
+      const total = Math.ceil(blob.size / chunkBytes);
+      for (let i = 0; i < total; i++) {
+        const slice = blob.slice(i * chunkBytes, (i + 1) * chunkBytes);
+        const ab = await slice.arrayBuffer();
+        const b64 = base64FromArrayBuffer(ab);
+        const r = await jfetch(API + '/datasource/upload-chunk', {
+          method: 'POST',
+          body: { version: versionKey, chunkIndex: i, totalChunks: total, dataBase64: b64 },
+        });
+        if (!r.ok) { box.textContent = '上传失败: ' + (r.message || ''); return; }
+        box.textContent = '上传中 ' + (i + 1) + '/' + total + ' 块 (' + fmtBytes((i + 1) * chunkBytes) + ' / ' + fmtBytes(blob.size) + ')';
+      }
+      box.textContent = '✓ 上传完成，共 ' + fmtBytes(blob.size) + '。刷新版本列表...';
+      loadDatasource();
+    }
+    function base64FromArrayBuffer(ab) {
+      const bytes = new Uint8Array(ab);
+      let s = '';
+      const chunk = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunk) {
+        s += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+      }
+      return btoa(s);
+    }
+    function ensureStatusBox() {
+      let box = document.getElementById('dsUploadStatus');
+      if (!box) {
+        box = document.createElement('div');
+        box.id = 'dsUploadStatus';
+        box.className = 'status-box';
+        box.style.cssText = 'margin-top:10px';
+        $('dsVersions').parentElement.appendChild(box);
+      }
+      box.style.display = '';
+      return box;
+    }
+
+    // ===== 执行切换 =====
+    $('btnDoSwitch').addEventListener('click', async () => {
+      const target = $('dsSwitchTarget').value;
+      if (!confirm('确定切换到 ' + DS_LABELS[target] + '？将会停 httpd/php-fpm/dcim，覆盖代码和 dbconfig，重启服务。业务中断约 5-15 秒。')) return;
+      const box = $('dsSwitchStatus');
+      box.style.display = ''; box.innerHTML = '切换中，请耐心等待...';
+      const btn = $('btnDoSwitch'); btn.disabled = true;
+      try {
+        const r = await jfetch(API + '/datasource/switch', { method: 'POST', body: { version: target } });
+        if (r.ok) {
+          const steps = (r.steps || []).map(s => '  ' + esc(s)).join('\n');
+          box.innerHTML = '<span style="color:#a7f3d0">✓ 切换成功 → ' + esc(DS_LABELS[target]) + '</span>\n' +
+            '<b>备份位置</b>: ' + esc(r.backup) + '\n\n' +
+            '<b>执行步骤</b>:\n' + steps;
+          setTimeout(loadDatasource, 2000);
+          setTimeout(refreshStatus, 2000);
+        } else {
+          box.innerHTML = '<span class="err">✗ 失败: ' + esc(r.message) + '</span>';
+        }
+      } catch (e) {
+        box.innerHTML = '<span class="err">✗ 异常: ' + esc(e.message) + '</span>';
+      } finally { btn.disabled = false; }
+    });
+
+
+    // ========== 初始化 ==========
+    refreshStatus();
+    // 30s 定时刷新概览状态
+    setInterval(() => {
+      if (document.querySelector('.tab-pane[data-pane="overview"]').classList.contains('active')) refreshStatus();
+    }, 30000);
+    // Datasource tab 切换已在 switchMainTab 里统一处理，此处无需重复注册
+
+  </script>
+</body>
+</html>
