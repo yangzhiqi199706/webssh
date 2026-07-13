@@ -204,6 +204,7 @@ try {
     const stubDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dcim-wvp-journal-'));
     const stubJournalctl = path.join(stubDir, 'journalctl');
     fs.writeFileSync(stubJournalctl, '#!/bin/sh\nexit 7\n', 'utf8');
+    fs.chmodSync(stubJournalctl, 0o755);
     const execution = childProcess.spawnSync('sh', [shellPath], {
       encoding: 'utf8',
       env: Object.assign({}, process.env, { PATH: stubDir + path.delimiter + process.env.PATH }),
