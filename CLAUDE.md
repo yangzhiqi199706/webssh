@@ -184,7 +184,7 @@ module4 的预览弹窗）。
 | Host | 192.168.0.22 |
 | OS | Kylin Linux V10 (Halberd), glibc 2.28, x86_64 |
 | SSH | 22 |
-| 账号 | root / `REDACTED_DEPLOY_PASS` |
+| 账号 | root / `<部署密码>` |
 | 安装目录 | /opt/webssh |
 | HTTP 端口 | 3010（对外）|
 | 服务 | systemd 双服务 `webssh` + `webssh-protocol`（开机自启） |
@@ -200,11 +200,11 @@ module4 的预览弹窗）。
 WEBSSH_HOST=192.168.0.22 \
 WEBSSH_PORT=22 \
 WEBSSH_USER=root \
-WEBSSH_DEPLOY_PASS='REDACTED_DEPLOY_PASS' \
+WEBSSH_DEPLOY_PASS='<部署密码>' \
 node scripts/deploy-upgrade.js
 ```
 脚本做的事：
-1. 本地把 `server.js / index.html / package*.json / serial/ / sms/ / node_modules` 打 tar
+1. 本地把 `server.js`、`lib/`、`index.html`、`login.html`、`package*.json`、`serial/`、`sms/`、`ha/`、`proto-conv/`、`video/`、`db/`、`snmp-bundle/` 和完整 `node_modules/` 打 tar
 2. scp 到 `/root/`，校验 sha256
 3. `cp -a /opt/webssh/app /opt/webssh/app.bak-<时间戳>` 备份
 4. 解压覆盖到 `/opt/webssh/app/`
@@ -218,11 +218,11 @@ node scripts/deploy-upgrade.js
 ### 3.3 协议助手：一键部署（推荐）
 ```powershell
 # PowerShell
-$env:WEBSSH_DEPLOY_PASS = 'REDACTED_DEPLOY_PASS'
+$env:WEBSSH_DEPLOY_PASS = '<部署密码>'
 node scripts/deploy-protocol.js
 
 # Bash
-WEBSSH_DEPLOY_PASS='REDACTED_DEPLOY_PASS' node scripts/deploy-protocol.js
+WEBSSH_DEPLOY_PASS='<部署密码>' node scripts/deploy-protocol.js
 ```
 脚本做的事（`scripts/deploy-protocol.js`）：
 1. 本地打 `webssh-protocol-<stamp>.tar.gz`：
@@ -231,7 +231,7 @@ WEBSSH_DEPLOY_PASS='REDACTED_DEPLOY_PASS' node scripts/deploy-protocol.js
    - `protocol_app/` 全量（剔除 uploads/outputs/downloads/__pycache__）
    - `systemd/webssh-protocol.service.template` → `systemd/`
    - `scripts/install-protocol.sh` → 包根
-   - `server.js` `index.html` `package.json` `package-lock.json` +
+   - `server.js`、`index.html`、`login.html`、`package.json`、`package-lock.json`、`lib/`、`video/` +
      `node_modules/{http-proxy,follow-redirects,requires-port,eventemitter3}` → `main-sync/`
 2. SSH 上传 tar 到 `/root/`，sha256 校验
 3. 解压到 `/root/webssh-protocol-<stamp>/`
@@ -241,7 +241,7 @@ WEBSSH_DEPLOY_PASS='REDACTED_DEPLOY_PASS' node scripts/deploy-protocol.js
    - 离线 pip 安装 wheels 到 `/opt/webssh/protocol/runtime/site-packages/`
    - import 自检 8 个关键包（flask/pandas/numpy/xlrd/xlwt/openpyxl/docx/lxml）
    - 拷贝 Flask 代码 + 渲染 systemd unit + 启动 + 探活
-5. 同步主壳代码（覆盖 `/opt/webssh/app/`）+ 重启 webssh
+5. 同步主壳代码：先为 `server.js`、`index.html`、`login.html`、依赖、`lib/`、`video/` 等建立完整发布备份；`lib/` 与 `video/` 分目录暂存并校验后原子切换，再重启 `webssh`。主壳同步、重启或健康检查失败时，自动恢复完整备份并再次验证服务与 `/health`。
 6. 双服务最终探活：
    - `systemctl is-active webssh / webssh-protocol`
    - `GET /health` → 200
@@ -250,11 +250,11 @@ WEBSSH_DEPLOY_PASS='REDACTED_DEPLOY_PASS' node scripts/deploy-protocol.js
 
 复用模式（不重打 Python/wheels，加快速度）：
 ```bash
-SKIP_BUILD=1 WEBSSH_DEPLOY_PASS='REDACTED_DEPLOY_PASS' node scripts/deploy-protocol.js
+SKIP_BUILD=1 WEBSSH_DEPLOY_PASS='<部署密码>' node scripts/deploy-protocol.js
 ```
 仅推协议助手，不动主壳：
 ```bash
-SKIP_MAIN_SYNC=1 WEBSSH_DEPLOY_PASS='REDACTED_DEPLOY_PASS' node scripts/deploy-protocol.js
+SKIP_MAIN_SYNC=1 WEBSSH_DEPLOY_PASS='<部署密码>' node scripts/deploy-protocol.js
 ```
 
 ### 3.4 部署后验证
@@ -432,13 +432,13 @@ webssh 主壳用的旧版 Node（系统遗留），不要升。`http-proxy@1.18.
 
 ### 6.1 改了 webssh 主壳（server.js / index.html / serial / sms）
 ```bash
-WEBSSH_HOST=192.168.0.22 WEBSSH_DEPLOY_PASS='REDACTED_DEPLOY_PASS' \
+WEBSSH_HOST=192.168.0.22 WEBSSH_DEPLOY_PASS='<部署密码>' \
   node scripts/deploy-upgrade.js
 ```
 
 ### 6.2 改了协议助手（protocol_app/）
 ```powershell
-$env:WEBSSH_DEPLOY_PASS = 'REDACTED_DEPLOY_PASS'
+$env:WEBSSH_DEPLOY_PASS = '<部署密码>'
 node scripts/deploy-protocol.js
 ```
 
@@ -448,7 +448,7 @@ node scripts/deploy-protocol.js
 ### 6.4 同时改了主壳 + 协议助手
 直接走 `deploy-protocol.js`（默认会同步主壳代码 + 重启主服务）：
 ```powershell
-$env:WEBSSH_DEPLOY_PASS = 'REDACTED_DEPLOY_PASS'
+$env:WEBSSH_DEPLOY_PASS = '<部署密码>'
 node scripts/deploy-protocol.js
 ```
 
@@ -561,7 +561,7 @@ INSTALL.md
 
 打包流程（一行命令）：
 ```powershell
-$env:WEBSSH_DEPLOY_PASS = 'REDACTED_DEPLOY_PASS'
+$env:WEBSSH_DEPLOY_PASS = '<部署密码>'
 node scripts/build-fullstack-on-server.js
 ```
 脚本做的事：在 192.168.0.22 服务器上 stage `/opt/webssh/{app,protocol,runtime}/`
@@ -1043,7 +1043,7 @@ UI 操作后用上面 3 条 firewall-cmd 复核，规则应已生效且 `--perma
 ### 10.5 部署
 属于主壳改动，走 `deploy-upgrade.js`：
 ```bash
-WEBSSH_HOST=192.168.0.22 WEBSSH_DEPLOY_PASS='REDACTED_DEPLOY_PASS' \
+WEBSSH_HOST=192.168.0.22 WEBSSH_DEPLOY_PASS='<部署密码>' \
   node scripts/deploy-upgrade.js
 ```
 或者用 `deploy-protocol.js`（会顺带同步主壳代码）。
@@ -1095,7 +1095,7 @@ WEBSSH_HOST=192.168.0.22 WEBSSH_DEPLOY_PASS='REDACTED_DEPLOY_PASS' \
 ### 11.4 部署
 属于 webssh 主壳改动，走 `deploy-upgrade.js`：
 ```bash
-WEBSSH_HOST=192.168.0.22 WEBSSH_DEPLOY_PASS='REDACTED_DEPLOY_PASS' \
+WEBSSH_HOST=192.168.0.22 WEBSSH_DEPLOY_PASS='<部署密码>' \
   node scripts/deploy-upgrade.js
 ```
 或者用 `deploy-protocol.js`（会顺带同步主壳代码）。
@@ -1143,11 +1143,17 @@ WEBSSH_HOST=192.168.0.22 WEBSSH_DEPLOY_PASS='REDACTED_DEPLOY_PASS' \
 ## 十一、视频监控板块（GB/T 28181，2026-06-09 新增）
 
 ### 11.1 是什么
-左侧菜单第 7 项「视频监控」。GB/T 28181 接入实际**走 wvp-pro + ZLMediaKit + Redis** 的标准栈，
-webssh 主壳只负责 UI 入口（iframe 嵌入 wvp 原生 UI）。下级 NVR/IPC 主动注册到 wvp，
-浏览器走 wvp 自带的「分屏监控」做实时预览 + 历史回放。
+左侧菜单第 7 项「视频监控」是 webssh 自研的分屏预览与历史回放页面。它可选择两套独立的数据源：
+dcim 容器内已迁移到 openGauss 的 WVP，或既有 webssh WVP 栈。
+
+**DCIM 迁移边界（以此为准）**：数据库管理仅通过既有 SSH 连接诊断和重启 dcim 容器内的
+`wvp-opengauss.service`；该服务使用 SIP `5060` 和 HTTPS API `18080`。不修改 WVP JAR、YAML、
+环境文件、数据或旧服务配置。webssh 自身的 SIP `5070` 栈保持独立且不作改动。
 
 ### 11.2 架构（实际部署）
+本小节描述的是既有 **webssh 5070** 栈，供与 dcim 的 5060 栈并存时排障参考；DCIM 迁移后的
+运行态检查、连接配置和验收流程见 11.6、11.9.1 与第十二章。
+
 ```
 浏览器  http://<host>:3010/  →  webssh 主壳菜单「视频监控」
   └─ iframe → http://<host>:18082/  (wvp-pro 原生 UI，跨端口同主机)
@@ -1205,7 +1211,7 @@ spring:
   datasource:
     url: jdbc:mysql://127.0.0.1:3333/wvp_webssh?...    # 复用 dcim MySQL，独立库
     username: root
-    password: e1145c17c66ca8ac
+    password: <数据库密码>
 server:
   port: 18082              # wvp HTTP / UI
   ssl:
@@ -1251,11 +1257,10 @@ INSERT INTO wvp_user_role (id, name, authority, create_time, update_time)
 VALUES (1, 'admin', '0', NOW(), NOW());
 
 INSERT INTO wvp_user (id, username, password, role_id, create_time, update_time, push_key)
-VALUES (1, 'admin', '551c76780e34e1c1fab9ff85dfc79947', 1, NOW(), NOW(), 'webssh_admin_key');
+VALUES (1, '<用户名>', '<WVP 登录哈希>', 1, NOW(), NOW(), '<推送标识>');
 ```
 
-wvp 登录：浏览器输入 `admin / admin`，前端会自动 md5 转 hash 提交。
-后端 API 直接调用时 `password` 字段填 `551c76780e34e1c1fab9ff85dfc79947`（dcim 库里的 hash）。
+账号初始化和值班账号按现场安全规范单独维护；本说明不记录真实账号、密码、哈希或推送标识。
 
 ### 11.6 webssh 主壳「视频监控」入口（自研 UI · 实时预览 · dcim/webssh 双栈）
 
@@ -1281,10 +1286,11 @@ webssh 视频监控菜单是**真接通了实时预览的自研 UI**，同时反
 **双栈反代（两套对称）**：
 | 套 | apiBase | 协议 | ZLM | 摄像头 SIP 端口 |
 |---|---|---|---|---|
-| `dcim`   | `https://127.0.0.1:18080` (dcim wvp，自签证书) | HTTPS | dcim ZLM `127.0.0.1:80`     | **5060** |
+| `dcim`   | `https://127.0.0.1:18080` (dcim WVP，自签证书) | HTTPS | dcim ZLM `127.0.0.1:80`     | **5060** |
 | `webssh` | `http://127.0.0.1:18082`  (webssh-wvp)         | HTTP  | webssh ZLM `127.0.0.1:18180` | **5070** |
 
-两边都自动用 `admin / 551c76780e34e1c1fab9ff85dfc79947` 登录拿 token，401 自动续登。
+dcim 的登录信息由「DCIM WVP 连接」弹窗单独保存；服务端按配置登录并维护短期会话，浏览器不会收到
+WVP 登录哈希或访问令牌。webssh 数据源沿用其自身配置，二者不共用账号或会话。
 
 **路由清单**（两套对称，把 `<src>` 替换为 `dcim` 或 `webssh`）：
 | Method | Path | 用途 |
@@ -1312,22 +1318,64 @@ webssh 视频监控菜单是**真接通了实时预览的自研 UI**，同时反
 - `stop()` destroy player + 调 wvp stop + 还原占位
 - `_destroyPlayer()` pause/unload/detach/destroy 完整清理
 
-**保留代码**：[server.js](server.js) 的 `setupVideo28181` IIFE（API 路由 + `/media/*` 反代，
-最早的设想里 webssh 直接当 SIP 服务器用 ZLM 28181）+ [video/assets/js/](video/assets/js/)
-下 7 个 JS 模块仍在仓库里，当前 `video/index.html` 不引用（用 inline 简化版），预留备用。
+**回放规则**：先选择数据源，再选择设备、通道和时间范围。结束时间必须晚于开始时间，单次范围最长
+24 小时。暂停、继续和倍速只作用于当前选中的“回放”分屏；实时分屏不接受回放控制。切换数据源、
+布局或关闭分屏时，Tile 会按自身模式调用相应的实时/回放 stop 路由，避免遗留上游流。
+
+**离线播放依赖与兼容性**：`video/vendor/flv.min.js` 固定为 `flv.js 1.6.2`，许可证为
+Apache-2.0；来源、许可证副本和 SHA-256 见 `video/vendor/README.md`，不得替换为 CDN 或未校验版本。
+HTTP-FLV 依赖浏览器 MSE 与 `flvjs.isSupported()`；桌面端应使用支持 MSE 的现代浏览器。移动端，
+尤其不支持 MSE/HTTP-FLV 的浏览器，不保证能播放，页面会停止该流并提示“不支持 MSE / flv.js”。
+GB/T 28181 实时预览和历史回放不依赖 record-assist `18081`；该服务仍只在录像下载等独立功能需要时
+才是前置条件。
+
+**保留代码**：[server.js](server.js) 的 `setupVideo28181` IIFE（API 路由 + `/media/*` 反代）
+以及 [video/assets/js/](video/assets/js/) 的工具模块均为当前页面的配套实现；不要绕过按数据源和
+Tile 模式选择 stop 路由的逻辑。
+
+### 11.6.1 DCIM WVP 连接与运行态运维（2026-07-14）
+
+**连接配置路由与边界**：
+- `GET /api/dcim-video/connection-config`、`PUT /api/dcim-video/connection-config` 与
+  `POST /api/dcim-video/test-login` 均要求 WebSSH 登录；未登录返回 `401`。
+- `connection-config` 是 webssh 本地保存的 dcim WVP 登录连接信息，公开读取仅返回
+  `apiBase`、`username`、`timeoutMs`、`hasPasswordHash`。既有
+  `GET /api/dcim-video/config` 仍是经过 WVP 会话代理的“服务端系统配置”读取接口，不读取也不修改
+  本地登录配置，不能混用。
+- 浏览器只在用户保存且密码框非空时提交一次明文密码；服务端立即计算 MD5，仅把哈希写入
+  `config/dcim-video.json`（权限 `0600`）。密码为空或掩码值时保留旧哈希。任何响应、日志或前端状态
+  都不得返回哈希、明文密码或 WVP token；保存成功会清除缓存的 WVP 会话，后续请求重新登录。
+- 测试登录使用已保存的哈希调用 WVP，响应只提供通用成功/失败诊断和 HTTP 状态，不透传上游响应体或
+  访问令牌。
+
+**数据库管理运行态路由**：操作前应先登录 WebSSH 并从“数据库管理”进入。运行态检查只返回脱敏后的
+服务、旧服务、监听器、数据源、openGauss 数据库和最近日志汇总，不返回命令、原始日志、JDBC、环境变量
+或任何凭据。
+
+| Method | Path | 语义 |
+|---|---|---|
+| GET | `/api/db-manager/opengauss/wvp/runtime-status` | 返回 `wvp-opengauss.service`、旧 `wvp-pro.service`、Java/`18080`/`5060`、PostgreSQL 数据源、WVP 表和最近数据库错误的脱敏检查；SSH 不可用为 `503`，检查截止超时为 `504`。 |
+| POST | `/api/db-manager/opengauss/wvp/restart` | 需要 WebSSH 登录；仅执行 `systemctl restart wvp-opengauss.service`，随后轮询核心服务和监听器。旧 `wvp-pro.service` 未同时处于 inactive/disabled 时拒绝为 `409`，绝不尝试重启旧服务。 |
+
+`POST` 的其他结果：`503` 表示 SSH/运行态不可用，`504` 表示受控探测或重启总时限耗尽，`502` 表示
+重启命令失败或轮询后核心服务/监听器仍未就绪，`200` 才表示重启完成。所有这些响应只含脱敏状态对象；
+不要把它当作配置导出接口。
 
 ### 11.7 端口分配（最终）
 
 | 端口 | 协议 | 用途 | 暴露范围 |
 |---|---|---|---|
 | 3010 | TCP | webssh 主壳 | LAN |
+| 5060 | UDP+TCP | dcim 容器 `wvp-opengauss.service` SIP 信令 | dcim 容器 |
+| 18080 | TCP/HTTPS | dcim 容器 WVP API | dcim 容器 |
 | 5070 | UDP+TCP | wvp SIP 信令 | LAN（NVR/IPC 注册）|
 | 6380 | TCP | webssh-redis | 仅本机 |
 | 18082 | TCP | wvp HTTP+UI | LAN（浏览器 iframe）|
 | 18180 | TCP | ZLM HTTP API + HTTP-FLV | 仅本机 |
 | 30600-30700 | UDP | ZLM RTP 收流 | LAN（NVR 推流）|
 
-dcim 容器原有的 5060 SIP / 18080 ZLM / 30000-30500 RTP **不动**，两套环境完全并存。
+dcim 容器的 `5060` SIP 与 `18080` HTTPS WVP API 已随 WVP 迁移纳入 `wvp-opengauss.service`
+管理；webssh 的 `5070` 与其相关栈保持不变，两套环境并存但不共享服务所有权。
 
 ### 11.8 NVR/IPC 接入步骤
 
@@ -1350,13 +1398,32 @@ dcim 容器原有的 5060 SIP / 18080 ZLM / 30000-30500 RTP **不动**，两套�
 
 ### 11.9 验证
 
+#### 11.9.1 DCIM WVP 迁移后目标机验收
+
+完成本地检查和部署后，在目标机按下面顺序验收；不要把账号、密码、哈希或令牌写入命令历史、截图或
+本文件。
+
+1. 确认 webssh 及协议助手服务为 `active`，再在 dcim 容器内确认
+   `wvp-opengauss.service` 为 `active`；使用 `ss` 确认 SIP `5060` 与 HTTPS `18080` 正在监听。
+2. 登录 WebSSH，打开“数据库管理”中的 WVP 运行态弹窗。服务、旧服务、监听器、数据源、数据库和日志
+   检查均应为健康；旧 `wvp-pro.service` 必须 inactive/disabled。仅在确有恢复需要时测试“重启 WVP”。
+3. 打开“视频监控”中的“DCIM WVP 连接”，填写现场 HTTPS 地址与账号，保存后执行“测试登录”。保存后
+   再打开弹窗时只能看到“已配置密码”提示，不能看到哈希或 token。
+4. 选择 `dcim（5060）` 数据源，确认设备和通道可以加载；选择一个在线通道，在当前分屏启动实时预览。
+5. 对已知有录像的同一通道选择一个十分钟时间段，启动历史回放；在当前回放 Tile 上依次验证暂停、继续、
+   `2x` 倍速和停止。切换布局或停止 Tile 后，确认不再保留该路流。
+6. 若所选时间段没有录像，预期在回放提示区显示 WVP 返回的“未找到该时间段的录像”或等价的通用失败
+   提示；这不是服务异常，也不应伪造成功流。
+
+#### 11.9.2 既有 webssh 5070 栈验证
+
 通路探活：
 ```bash
 # 4 个服务
 systemctl is-active webssh-redis webssh-mediaserver webssh-wvp webssh
 
-# wvp 登录测试
-curl "http://127.0.0.1:18082/api/user/login?username=admin&password=551c76780e34e1c1fab9ff85dfc79947"
+# WVP 登录测试：通过受保护的 WebSSH“DCIM WVP 连接 → 测试登录”执行。
+# 不要在 curl 命令、shell 历史或文档中传递账号、密码、哈希或 token。
 
 # ZLM API 自检
 SECRET=$(grep '^secret=' /opt/webssh/mediaserver/config.ini | head -1 | cut -d= -f2)
@@ -1375,12 +1442,16 @@ journalctl -u webssh-wvp -f       # wvp 日志，grep "注册请求" 看 401/403
 ```
 
 端到端：
-1. 浏览器开 `http://192.168.0.22:3010/` → 左栏「视频监控」 → iframe 加载 wvp UI
-2. wvp 登录页输 `admin / admin` → 进顶部菜单「分屏监控」
+1. 浏览器开 `http://192.168.0.22:3010/` → 左栏「视频监控」 → 选择已配置的数据源
+2. 使用现场单独管理的账号完成登录，进入「分屏监控」
 3. 左侧设备树选通道拖到右边格子 → 1-3s 出图（HTTP-FLV via ZLM）
 4. 切换 1/4/9 分屏布局 / 试回放（菜单 → 云端录像）
 
 ### 11.10 已知坑
+
+> 本小节中标注为 2026-06-09 的 8086/CORS 记录属于历史排障资料。DCIM 迁移后的日常
+> 运维以 11.6.1 和 11.9.1 为准：只管理 `wvp-opengauss.service`，不要根据历史记录重启
+> `wvp-pro.service`。
 
 1. **wvp 启动慢**：Spring Boot 冷启动 30-40s，systemd 探活时要给足时间
 2. **ZLM 端口冲突**：dcim 容器默认 ZLM 在 18080/30000-30500，webssh 这套必须用 18180/30600-30700
@@ -1430,10 +1501,10 @@ journalctl -u webssh-wvp -f       # wvp 日志，grep "注册请求" 看 401/403
 
 ### 11.11 不做 / 暂搁置（明确收口）
 
-- ⚠️ webssh 风格自研视频 UI **架子已搭**（[video/index.html](video/index.html) 占位 +
-  分屏切换演示 + dcim 反代修复面板），实际播放/分屏拖动/回放等功能待对接
-- ⚠️ webssh 主壳 `/api/video/*` 路由 + `/media/*` 反代代码已就绪
-  （[server.js](server.js) `setupVideo28181` IIFE），但前端当前不调用
+- 实时预览、数据源切换、Tile 生命周期管理和 GB/T 28181 历史回放已经接通，不再属于待对接功能。
+- 不在本板块导出或显示 WVP 配置密码、MD5 哈希、访问令牌、原始日志、环境文件或 JDBC 内容。
+- 不在本板块修改 dcim WVP JAR、数据源 YAML、openGauss 数据、WVP 用户角色或旧服务；故障恢复只按
+  运行态检查的结论处理。
 - ❌ ZLM 自带 SIP 服务器（v8 master 分支已拆掉，必须 wvp+ZLM 双进程）
 - ❌ webssh 本地录像（用 NVR 自带）
 - ❌ WebRTC / HLS（wvp 默认 FLV 已够用）
@@ -1472,7 +1543,7 @@ journalctl -u webssh-wvp -f       # wvp 日志，grep "注册请求" 看 401/403
   "databases": {
     "mysql":     { "host": "...", "port": 3333, "username": "root",   "password": "...", "systemdUnit": "mysqld.service",             "dockerCli": "/www/server/mysql/bin/mysql",              "dockerDump": "/www/server/mysql/bin/mysqldump" },
     "opengauss": { "host": "...", "port": 5432, "username": "omm",    "password": "...", "database": "postgres", "systemdUnit": "opengauss.service", "dockerCli": "sudo -u omm /opt/software/openGauss/app/bin/gsql", "dockerDump": "sudo -u omm /opt/software/openGauss/app/bin/gs_dump" },
-    "dm":        { "host": "...", "port": 5236, "username": "SYSDBA", "password": "SYSDBA", "systemdUnit": "DmServiceDMSERVER.service", "dockerCli": "/home/dmdba/dmdbms/bin/disql",        "dockerDump": "/home/dmdba/dmdbms/bin/dexp" }
+    "dm":        { "host": "...", "port": 5236, "username": "SYSDBA", "password": "...", "systemdUnit": "DmServiceDMSERVER.service", "dockerCli": "/home/dmdba/dmdbms/bin/disql",        "dockerDump": "/home/dmdba/dmdbms/bin/dexp" }
   }
 }
 ```
@@ -1503,11 +1574,13 @@ journalctl -u webssh-wvp -f       # wvp 日志，grep "注册请求" 看 401/403
 | POST | `/api/db-manager/upload-backup` | body `{name, content}` (base64/dataURL)，上限 2GB |
 | POST | `/api/db-manager/restore` | body `{db, database, file}`；SFTP 推 → 容器内 restore 命令 |
 | POST | `/api/db-manager/opengauss/init` | 一键启用 openGauss + 建 dcim 应用账号 + 局域网白名单（2026-07-10 新增）|
+| GET | `/api/db-manager/opengauss/wvp/runtime-status` | dcim 迁移后 WVP 的脱敏运行态：服务、旧服务、`5060`/`18080`、数据源、数据库与日志检查；SSH 不可用 `503`，探测超时 `504`。 |
+| POST | `/api/db-manager/opengauss/wvp/restart` | 需要 WebSSH 登录；仅重启 `wvp-opengauss.service`。旧 `wvp-pro.service` 不为 inactive/disabled 时以 `409` 拒绝，`502` 表示重启后仍未就绪。 |
 
 **日志**：`logs/db-manager.log`。
 
-**openGauss 一键启用**（前端概览页 openGauss 卡片的「🚀 启用 & 建 dcim 用户」按钮）：
-- body：`{ password: 'Gauss@2026', cidr: '192.168.0.0/24' }`（都有默认值）
+**openGauss 一键启用**（前端概览页 openGauss 卡片的「启用并建 dcim 用户」按钮）：
+- body：`{ password: '<符合强度策略的密码>', cidr: '192.168.0.0/24' }`；部署时由运维人员显式提供，不在文档记录默认或现场密码
 - 流程：路径自适应探测（`find gaussdb` 定位 `$GAUSSHOME`）→ `systemctl enable+start opengauss` → 等 5432 就绪 → 容器内 omm 用户跑 gsql 建 `dcim` 用户 + `GRANT CONNECT ON DATABASE postgres` + `search_path=public` → 改 `postgresql.conf` `listen_addresses='*'` → `pg_hba.conf` 加白名单 → `systemctl restart opengauss` → 用 dcim 密码登录验证
 - **密码强度校验**（openGauss 硬要求）：≥ 8 位，包含大小写/数字/特殊字符至少 3 类
 - **成功后**自动把 db-manager 配置里的 opengauss.username/password 同步为 dcim/新密码
@@ -1523,6 +1596,9 @@ journalctl -u webssh-wvp -f       # wvp 日志，grep "注册请求" 看 401/403
 5. **达梦 DM 备份用 `dexp` 逻辑导出**（USERID + SCHEMAS + FILE）；还原用 `dimp`
 6. **数据库参数一律走 npm 驱动**（不走容器内 CLI），性能好且不依赖容器内客户端工具（容器内 gsql 缺 `libcjson.so.1` 用不了）
 7. **连接池模式**：每库一个 pool（MySQL/PG max=3，DM poolMax=3），配置 PUT 后 `destroyPools()` 销毁重建
+8. **DCIM WVP 运维边界**：只诊断和重启 `wvp-opengauss.service`；先读取脱敏运行态，确认旧
+   `wvp-pro.service` 为 inactive/disabled 后才允许重启。不得借由数据库管理接口读取或修改 WVP 凭据、
+   JAR、YAML、环境文件或数据。
 
 ### 12.7 已知坑（Phase A 阶段）
 1. **⚠ 0.22 → 0.60 网络不通（部署时发现）**：webssh 主机 192.168.0.22 到目标机 192.168.0.60 是**同一 /24 子网**（都在 192.168.0.0/24），但 0.22 上 `ping 192.168.0.60` 100% 丢包，任何 TCP 端口都 `EHOSTUNREACH / 没有到主机的路由`。**从其他机（如开发本机）却能正常 SSH 到 0.60**。判断是 0.60 端 firewalld/iptables 做了 IP 白名单，或者交换机做了端口/MAC 隔离。**必须先解决网络可达性，Phase A 才能真正跑起来**。可能的处理：
@@ -1534,7 +1610,7 @@ journalctl -u webssh-wvp -f       # wvp 日志，grep "注册请求" 看 401/403
    host all omm 192.168.0.0/24 md5
    ```
    然后 `SELECT pg_reload_conf();`。**openGauss 的 `pg_hba.conf` 位置在 `/opt/software/openGauss/data/`，改前必须 sudo 到 omm**。
-3. **达梦默认未启动**：概览页面「一键启动 DM」按钮实际执行 `docker exec dcim systemctl start DmServiceDMSERVER.service`。SYSDBA 默认密码就是 `SYSDBA`（不同装机可能改过）。
+3. **达梦默认未启动**：概览页面「一键启动 DM」按钮实际执行 `docker exec dcim systemctl start DmServiceDMSERVER.service`。账号密码由现场配置维护，不要假定或记录默认密码。
 4. **服务启停会影响 dcim 业务**：MySQL 停了 dcim 完全瘫，openGauss 停了对应业务瘫，DM 目前没被 dcim 使用（预备用）。停止操作有 confirm 二次确认，但生产库要小心。
 5. **备份文件路径穿越防护**：文件名严格 `^[A-Za-z0-9._-]+$`，其他一律拒绝。
 6. **npm 驱动连接首次慢**：mysql2/pg/dmdb 冷启动可能 3-5 秒，`test-connection` 第一次可能 ETIMEDOUT，重试即可（pool 建好之后正常快）。
@@ -1552,7 +1628,7 @@ journalctl -u webssh-wvp -f       # wvp 日志，grep "注册请求" 看 401/403
 ```bash
 PORT=3010 node server.js
 # 浏览器 http://127.0.0.1:3010/  → 左菜单「数据库管理」
-# 1. 「连接信息」录 SSH（0.60/root/REDACTED_DEPLOY_PASS）+ 三库凭据 → 保存
+# 1. 「连接信息」录目标 SSH 地址、现场账号和三库凭据 → 保存
 # 2. 概览 tab → MySQL/openGauss 绿灯，DM 灰灯 + 显示「一键启动 DM」按钮
 # 3. SQL 控制台切 MySQL → SHOW DATABASES → 出 6 库（含 dcim/wvp）
 # 4. 库表浏览切 MySQL → 点 dcim → 148 张表列出 → 点任一表 → 结构 + 100 行预览
@@ -1568,7 +1644,7 @@ curl -s http://127.0.0.1:3010/api/db-manager/status | jq
 ### 12.10 部署
 属于主壳改动，走 `deploy-upgrade.js`：
 ```bash
-WEBSSH_HOST=192.168.0.22 WEBSSH_DEPLOY_PASS='REDACTED_DEPLOY_PASS' \
+WEBSSH_HOST=192.168.0.22 WEBSSH_DEPLOY_PASS='<部署密码>' \
   node scripts/deploy-upgrade.js
 ```
 **注意**：新装了 `pg` + `dmdb` 两个 npm 包，`deploy-upgrade.js` 会把整个 `node_modules` 同步过去。若目标机磁盘紧张可以先本地 `npm prune --production` 再打包。
