@@ -22,11 +22,12 @@
   }
 
   function stopPath(source, mode, deviceId, channelId, streamKey) {
+    var encodedSource = encodeURIComponent(source);
     if (mode === 'live') {
-      return '/api/' + source + '-video/play/stop/' + encodeURIComponent(deviceId) + '/' + encodeURIComponent(channelId);
+      return '/api/' + encodedSource + '-video/play/stop/' + encodeURIComponent(deviceId) + '/' + encodeURIComponent(channelId);
     }
     if (mode === 'playback') {
-      return '/api/' + source + '-video/playback/stop/' + encodeURIComponent(streamKey);
+      return '/api/' + encodedSource + '-video/playback/stop/' + encodeURIComponent(streamKey);
     }
     throw new Error('Unsupported video stop mode');
   }

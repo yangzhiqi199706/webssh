@@ -15,8 +15,9 @@ const validProbeText = [
   'service.enabled=enabled',
   'legacyService.active=inactive',
   'legacyService.enabled=disabled',
-  'listeners.tcp5060=1',
-  'listeners.http18080=1',
+  'listeners.java_wvp=1',
+  'listeners.http_18080=1',
+  'listeners.sip_5060=1',
   'datasource.postgresDriver=1',
   'datasource.postgresUrl=1',
   'datasource.postgresDialect=1',
@@ -77,11 +78,15 @@ assert.strictEqual(
   parseWvpRuntimeProbe(validProbeText.replace('legacyService.enabled=disabled', 'legacyService.enabled=enabled')).restartAllowed,
   false
 );
+assert.strictEqual(
+  parseWvpRuntimeProbe(validProbeText.replace('listeners.java_wvp=1', 'listeners.java_wvp=0')).checks.listeners.healthy,
+  false
+);
 
 [
   ['service', ['service.active', 'service.enabled']],
   ['legacyService', ['legacyService.active', 'legacyService.enabled']],
-  ['listeners', ['listeners.tcp5060', 'listeners.http18080']],
+  ['listeners', ['listeners.java_wvp', 'listeners.http_18080', 'listeners.sip_5060']],
   ['datasource', ['datasource.postgresDriver', 'datasource.postgresUrl', 'datasource.postgresDialect', 'datasource.mysqlUrl']],
   ['database', ['database.wvp_app_connections', 'database.wvp_device_rows', 'database.wvp_channel_rows', 'database.wvp_log_rows']],
   ['logs', ['logs.db_error_lines']],
@@ -100,16 +105,16 @@ assert.deepStrictEqual(
 );
 
 assert.strictEqual(
-  runtime.stopPath('dcim', 'live', 'device 1', 'channel/1', ''),
-  '/api/dcim-video/play/stop/device%201/channel%2F1'
+  runtime.stopPath('dcim source/1', 'live', 'device 1', 'channel/1', ''),
+  '/api/dcim%20source%2F1-video/play/stop/device%201/channel%2F1'
 );
 assert.strictEqual(
   runtime.stopPath('webssh', 'live', 'device 1', 'channel/1', ''),
   '/api/webssh-video/play/stop/device%201/channel%2F1'
 );
 assert.strictEqual(
-  runtime.stopPath('dcim', 'playback', '', '', 'device 1/channel 1'),
-  '/api/dcim-video/playback/stop/device%201%2Fchannel%201'
+  runtime.stopPath('dcim source/1', 'playback', '', '', 'device 1/channel 1'),
+  '/api/dcim%20source%2F1-video/playback/stop/device%201%2Fchannel%201'
 );
 assert.strictEqual(
   runtime.stopPath('webssh', 'playback', '', '', 'device 1/channel 1'),
@@ -123,7 +128,9 @@ assert.strictEqual(typeof browser.window.DcimVideoRuntime.stopPath, 'function');
 
 const command = wvpRuntimeProbeCommand();
 assert.match(command, /service\.active=/);
-assert.match(command, /listeners\.tcp5060=/);
+assert.match(command, /listeners\.java_wvp=/);
+assert.match(command, /listeners\.http_18080=/);
+assert.match(command, /listeners\.sip_5060=/);
 assert.match(command, /datasource\.postgresDriver=/);
 assert.match(command, /database\.wvp_app_connections=/);
 assert.match(command, /logs\.db_error_lines=/);
@@ -132,6 +139,11 @@ assert.match(command, /grep -c/);
 assert.match(command, /case/);
 assert.match(command, /journalctl -u wvp-opengauss\.service --since '10 min ago'/);
 assert.match(command, /omm|gsql/);
+assert.match(command, /export GAUSSHOME=/);
+assert.match(command, /export PATH=\$GAUSSHOME\/bin:\$PATH/);
+assert.match(command, /export LD_LIBRARY_PATH=\$GAUSSHOME\/lib:\$LD_LIBRARY_PATH/);
+assert.match(command, /gsql -d dcim/);
+assert.doesNotMatch(command, /gsql -d wvp/);
 assert.doesNotMatch(command, /printf '[^']*%s[^']*' \"\$\([^)]*(head|cat|sed)[^)]*\)/);
 assert.doesNotMatch(command, /WVP_DB_PASSWORD/);
 assert.ok((command.match(/\|\| true/g) || []).length >= 12);
