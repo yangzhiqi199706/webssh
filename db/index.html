@@ -1074,7 +1074,7 @@ SHOW DATABASES;"></textarea>
       try {
         const r = await jfetch(API + '/opengauss/wvp/restart', { method: 'POST' });
         renderWvpRuntimeStatus(r.status || lastWvpRuntimeStatus);
-        if (r.restartCode === null) {
+        if (r.restartCode === null || r.restartCode === 75) {
           box.innerHTML = '<span class="err">旧服务冲突，未执行重启。</span>';
         } else if (r.ok) {
           box.innerHTML = '<span style="color:#a7f3d0">✓ WVP 已重启，核心服务和监听已恢复。</span>';

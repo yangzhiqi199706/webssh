@@ -358,6 +358,7 @@ assert.strictEqual(typeof browser.window.DcimVideoRuntime.stopPath, 'function');
 const dbPage = fs.readFileSync(path.join(__dirname, '..', 'db', 'index.html'), 'utf8');
 assert.ok(/function openWvpRuntimeModal\(\)\s*\{[\s\S]*?renderWvpRuntimeStatus\(null\);/.test(dbPage));
 assert.ok(/renderWvpRuntimeStatus\(r\.ok \? r\.status : null\);/.test(dbPage));
+assert.ok(/if \(r\.restartCode === null \|\| r\.restartCode === 75\)/.test(dbPage));
 
 const command = wvpRuntimeProbeCommand();
 assert.ok(/service\.active=/.test(command));
