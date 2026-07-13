@@ -4,7 +4,7 @@
   } else {
     root.DcimVideoRuntime = factory();
   }
-}(typeof self !== 'undefined' ? self : this, function () {
+}(typeof window !== 'undefined' ? window : (typeof self !== 'undefined' ? self : this), function () {
   'use strict';
 
   function toTime(value) {
@@ -15,20 +15,20 @@
   function validatePlaybackRange(start, end) {
     var from = toTime(start);
     var to = toTime(end);
-    return isFinite(from) && isFinite(to) && to > from && (to - from) <= 24 * 60 * 60 * 1000;
+    if (!isFinite(from) || !isFinite(to) || to <= from || (to - from) > 24 * 60 * 60 * 1000) {
+      return { ok: false, message: '播放时间范围必须有效、顺序正确且不超过24小时' };
+    }
+    return { ok: true, startTime: start, endTime: end };
   }
 
-  function stopPath(options) {
-    var value = options || {};
-    if (typeof options === 'string') {
-      value = { provider: arguments[0], kind: arguments[1], deviceId: arguments[2], channelId: arguments[3], streamKey: arguments[3] };
+  function stopPath(source, mode, deviceId, channelId, streamKey) {
+    if (mode === 'live') {
+      return '/api/' + source + '-video/play/stop/' + encodeURIComponent(deviceId) + '/' + encodeURIComponent(channelId);
     }
-    var provider = value.provider || 'dcim';
-    var kind = value.kind || 'live';
-    if (kind === 'live') {
-      return '/api/' + provider + '-video/play/stop/' + encodeURIComponent(value.deviceId) + '/' + encodeURIComponent(value.channelId);
+    if (mode === 'playback') {
+      return '/api/' + source + '-video/playback/stop/' + encodeURIComponent(streamKey);
     }
-    return '/api/' + (provider === 'dcim' ? 'dcim-video' : provider) + '/playback/stop/' + encodeURIComponent(value.streamKey);
+    throw new Error('Unsupported video stop mode');
   }
 
   return {
