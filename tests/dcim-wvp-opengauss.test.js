@@ -139,12 +139,14 @@ assert.match(command, /grep -c/);
 assert.match(command, /case/);
 assert.match(command, /journalctl -u wvp-opengauss\.service --since '10 min ago'/);
 assert.match(command, /omm|gsql/);
+assert.match(command, /\/www\/media\/wvp-GB28181-pro\/target\/classes\/application-dev\.yml/);
+assert.doesNotMatch(command, /\/opt\/wvp\/config/);
 assert.match(command, /export GAUSSHOME=/);
 assert.match(command, /export PATH=\$GAUSSHOME\/bin:\$PATH/);
 assert.match(command, /export LD_LIBRARY_PATH=\$GAUSSHOME\/lib:\$LD_LIBRARY_PATH/);
 assert.match(command, /gsql -d dcim/);
 assert.doesNotMatch(command, /gsql -d wvp/);
-assert.doesNotMatch(command, /printf '[^']*%s[^']*' \"\$\([^)]*(head|cat|sed)[^)]*\)/);
+assert.doesNotMatch(command, /(?:^|[;&| ])(?:head|cat|sed)(?:\s|$)/);
 assert.doesNotMatch(command, /WVP_DB_PASSWORD/);
 assert.ok((command.match(/\|\| true/g) || []).length >= 12);
 
