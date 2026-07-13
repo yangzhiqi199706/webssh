@@ -78,6 +78,29 @@ function protocolMainSyncEntries() {
 
 const MAIN_SYNC_ENTRIES = protocolMainSyncEntries();
 
+function createMainSyncDirectorySwap(mainSync, appDir, entry, stamp) {
+  const requiredFiles = entry === 'lib'
+    ? ['dcim-wvp.js', 'dcim-wvp-runtime.js']
+    : entry === 'video'
+      ? ['index.html', 'assets/js/video-runtime.js', 'assets/css/style.css']
+      : null;
+  if (!requiredFiles) throw new Error('不支持的主壳目录切换: ' + entry);
+  const source = `${mainSync}/${entry}`;
+  const target = `${appDir}/${entry}`;
+  const staged = `${appDir}/.${entry}.stage-${stamp}`;
+  const backup = `${appDir}/.${entry}.backup-${stamp}`;
+  const checks = requiredFiles.map((file) => `test -f ${staged}/${file}`).join(' && ');
+  return {
+    entry: entry,
+    staged: staged,
+    backup: backup,
+    stage: `rm -rf ${staged}; if ! test -d ${source} || ! cp -a ${source} ${staged} || ! (${checks}); then rm -rf ${staged}; exit 1; fi`,
+    switch: `if [ -e ${backup} ]; then rm -rf ${backup}; fi; if [ -e ${target} ]; then mv ${target} ${backup}; fi; if mv ${staged} ${target} && test -d ${target}; then true; else if [ -e ${backup} ]; then rm -rf ${target}; mv ${backup} ${target}; else rm -rf ${target}; fi; rm -rf ${staged}; exit 1; fi`,
+    rollback: `if [ -e ${backup} ]; then rm -rf ${target} && mv ${backup} ${target}; else rm -rf ${target}; fi; rm -rf ${staged}`,
+    cleanup: `rm -rf ${backup} ${staged}`,
+  };
+}
+
 function sha256File(p) {
   const h = crypto.createHash('sha256');
   h.update(fs.readFileSync(p));
@@ -350,6 +373,8 @@ async function main() {
   // 2. 连接
   log(`连接 ${USER}@${HOST}:${PORT}...`);
   const conn = await connect();
+  const directorySwaps = [];
+  let mainRestartAttempted = false;
   try {
     // 前置检查
     await exec(conn, `test -d ${INSTALL_DIR} && test -d ${INSTALL_DIR}/app && test -x ${INSTALL_DIR}/runtime/node/bin/node && echo webssh 主服务已就位`);
@@ -381,14 +406,17 @@ async function main() {
       const stamp = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14);
       await exec(conn, `cp -a ${INSTALL_DIR}/app/server.js ${INSTALL_DIR}/app/server.js.bak-${stamp}`);
       await exec(conn, `cp -a ${INSTALL_DIR}/app/index.html ${INSTALL_DIR}/app/index.html.bak-${stamp}`);
+
+      for (const entry of ['lib', 'video']) {
+        const swap = createMainSyncDirectorySwap(mainSync, `${INSTALL_DIR}/app`, entry, stamp);
+        await exec(conn, swap.stage);
+        await exec(conn, swap.switch);
+        directorySwaps.push(swap);
+      }
       for (const entry of MAIN_SYNC_ENTRIES) {
         const source = `${mainSync}/${entry}`;
         const target = `${INSTALL_DIR}/app/${entry}`;
-        if (entry === 'lib' || entry === 'video') {
-          await exec(conn, `rm -rf ${target} && cp -a ${source} ${target}`);
-        } else {
-          await exec(conn, `cp -f ${source} ${target}`);
-        }
+        if (entry !== 'lib' && entry !== 'video') await exec(conn, `cp -f ${source} ${target}`);
       }
       // 拷 http-proxy + 它的依赖到 app/node_modules
       await exec(conn, `cp -a ${mainSync}/node_modules/. ${INSTALL_DIR}/app/node_modules/`);
@@ -405,6 +433,7 @@ async function main() {
 
       // 重启主服务
       log(`重启 ${SERVICE} ...`);
+      mainRestartAttempted = true;
       await exec(conn, `systemctl restart ${SERVICE}`);
     }
 
@@ -442,6 +471,12 @@ async function main() {
     const h4 = await exec(conn, `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${HTTP_PORT}${PROTOCOL_PREFIX}/static/common.css`, { allowNonZero: true });
     log(`GET http://127.0.0.1:${HTTP_PORT}${PROTOCOL_PREFIX}/static/common.css -> ${h4.stdout.trim()}`);
 
+    // 主服务和探活都已成功，才删除保留的旧 lib/video 目录。
+    for (const swap of directorySwaps) {
+      await exec(conn, swap.cleanup, { allowNonZero: true });
+    }
+    directorySwaps.length = 0;
+
     // 8. 清理
     await exec(conn, `rm -f ${remoteTar}`);
     await exec(conn, `rm -rf ${remoteWork}`);
@@ -449,6 +484,17 @@ async function main() {
     log('');
     log('✅ 部署完成');
     log(`浏览器访问: http://${HOST}:${HTTP_PORT}/ -> 左栏「协议助手」`);
+  } catch (error) {
+    if (directorySwaps.length) {
+      log('主壳目录同步失败，恢复保留的 lib/video ...');
+      for (let index = directorySwaps.length - 1; index >= 0; index--) {
+        await exec(conn, directorySwaps[index].rollback, { allowNonZero: true });
+      }
+      if (mainRestartAttempted) {
+        await exec(conn, `systemctl restart ${SERVICE}`, { allowNonZero: true });
+      }
+    }
+    throw error;
   } finally {
     conn.end();
   }
