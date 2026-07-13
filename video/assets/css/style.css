@@ -27,6 +27,7 @@ body {
   padding: 0 14px;
   background: #0f172a;
   border-bottom: 1px solid var(--border);
+  overflow-x: auto;
 }
 .top-bar .title { font-weight: 700; color: var(--cyan); letter-spacing: .06em; }
 .top-bar .subtitle { color: var(--muted); font-size: 12px; }
@@ -224,13 +225,20 @@ body {
   border-radius: 10px;
   padding: 10px 12px;
 }
+.playback-bar[hidden] { display: none; }
 .pb-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .pb-field { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--muted); }
-.pb-field input {
+.pb-field input, .pb-field select {
+  width: min(210px, 100%);
   font: inherit; font-size: 12px;
   background: #020617; color: var(--text);
   border: 1px solid #334155; border-radius: 6px;
   padding: 5px 8px; outline: none;
+}
+.pb-field select { min-width: 150px; }
+.pb-field input:focus, .pb-field select:focus, .pb-speed select:focus {
+  border-color: rgba(251,191,36,.7);
+  box-shadow: 0 0 0 2px rgba(251,191,36,.12);
 }
 .pb-speed { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); }
 .pb-speed select {
@@ -239,6 +247,10 @@ body {
   border: 1px solid #334155; border-radius: 6px;
   padding: 4px 6px; outline: none;
 }
+.pb-hint { color: var(--muted); font-size: 11px; min-width: 140px; overflow-wrap: anywhere; }
+.pb-hint.ok { color: #a7f3d0; }
+.pb-hint.err { color: #fca5a5; }
+#btnPlaybackMode.active { border-color: rgba(251,191,36,.65); color: #fcd34d; background: rgba(251,191,36,.1); }
 
 /* 弹窗 */
 .modal-mask {
@@ -445,3 +457,13 @@ code.k { color: #67e8f9; background: rgba(34,211,238,.08); padding: 1px 5px; bor
   pointer-events: none;
 }
 .tile .tile-empty .dim { color: #475569; font-size: 11px; }
+
+@media (max-width: 760px) {
+  .top-bar { min-height: 44px; height: auto; padding: 6px 10px; align-items: flex-start; }
+  .top-bar .subtitle, .role-tag { display: none; }
+  .playback-bar { padding: 8px; }
+  .pb-row { gap: 8px; align-items: flex-end; }
+  .pb-field { flex: 1 1 145px; min-width: 0; }
+  .pb-field input, .pb-field select { width: 100%; min-width: 0; }
+  .pb-hint { flex: 1 1 100%; min-width: 0; }
+}

@@ -20,6 +20,7 @@
         <button class="lb" data-layout="9" type="button" title="3×3">9</button>
         <button class="lb" data-layout="16" type="button" title="4×4">16</button>
       </div>
+      <button class="btn" id="btnPlaybackMode" type="button" aria-pressed="false" title="显示或隐藏历史回放控制">历史回放</button>
 
       <button class="btn" id="btnStopAll" type="button" disabled title="待对接">关闭全部</button>
       <button class="btn" id="btnFullscreen" type="button" disabled title="待对接">全屏</button>
@@ -89,6 +90,40 @@ sdp-ip:    192.168.0.22</pre>
           <div class="muted" id="gridHint">UI 占位 - 功能待对接</div>
         </div>
         <div class="column-body grid-body">
+          <div class="playback-bar" id="playbackBar" hidden>
+            <div class="pb-row">
+              <label class="pb-field">
+                <span>回放设备</span>
+                <select id="pbDevice" aria-label="回放设备"><option value="">请先加载数据源</option></select>
+              </label>
+              <label class="pb-field">
+                <span>回放通道</span>
+                <select id="pbChannel" aria-label="回放通道"><option value="">请先选择设备</option></select>
+              </label>
+              <label class="pb-field">
+                <span>开始时间</span>
+                <input id="pbStart" type="datetime-local" aria-label="回放开始时间" />
+              </label>
+              <label class="pb-field">
+                <span>结束时间</span>
+                <input id="pbEnd" type="datetime-local" aria-label="回放结束时间" />
+              </label>
+              <button class="btn primary" id="btnPbStart" type="button">开始回放</button>
+              <button class="btn" id="btnPbPause" type="button" disabled>暂停</button>
+              <button class="btn" id="btnPbResume" type="button" disabled>继续</button>
+              <label class="pb-speed">
+                <span>倍速</span>
+                <select id="pbSpeed" aria-label="回放倍速">
+                  <option value="0.5">0.5x</option>
+                  <option value="1" selected>1x</option>
+                  <option value="2">2x</option>
+                  <option value="4">4x</option>
+                </select>
+              </label>
+              <button class="btn" id="btnPbScale" type="button" disabled>设置倍速</button>
+              <span class="pb-hint" id="pbHint" aria-live="polite">请选择设备、通道和录像时间</span>
+            </div>
+          </div>
           <div id="videoGrid" class="video-grid layout-1"></div>
 
           <div class="dcim-panels" id="dcimPanels" hidden>
@@ -156,6 +191,7 @@ sdp-ip:    192.168.0.22</pre>
     </div>
   </div>
 
+  <script src="./assets/js/video-runtime.js"></script>
   <script>
   (function () {
     'use strict';
@@ -294,11 +330,264 @@ sdp-ip:    192.168.0.22</pre>
     }
     setupDcimVideoConnection();
 
+    function buildTilePlayerConfig(params) {
+      return {
+        type: 'flv',
+        url: params.flvUrl,
+        isLive: params.mode !== 'playback',
+        hasAudio: false,
+      };
+    }
+
+    function tileStopPathForState(state, runtime) {
+      if (!state || !runtime || !state.source) return '';
+      if (state.mode === 'playback') {
+        if (!state.streamKey) return '';
+        return runtime.stopPath(state.source, 'playback', '', '', state.streamKey);
+      }
+      if (!state.deviceId || !state.channelId) return '';
+      return runtime.stopPath(state.source, 'live', state.deviceId, state.channelId, '');
+    }
+
+    function replaceTileStream(tile, params) {
+      if (!tile) return false;
+      if (tile.streamKey || tile.deviceId || tile.channelId || tile.player) tile.stop();
+      tile.play(params);
+      return true;
+    }
+
+    function stopEndedPlayback(tile) {
+      if (!tile || tile.mode !== 'playback') return false;
+      tile.stop();
+      return true;
+    }
+
+    function createVideoPlaybackController(options) {
+      var elements = options.elements;
+      var state = { devices: [], source: '' };
+
+      function setHint(message, stateClass) {
+        elements.hint.textContent = message;
+        elements.hint.className = 'pb-hint' + (stateClass ? ' ' + stateClass : '');
+      }
+
+      function resetSelect(select, label) {
+        select.replaceChildren();
+        select.appendChild(options.createOption('', label));
+        select.value = '';
+      }
+
+      function selectedDevice() {
+        var deviceId = elements.device.value;
+        return state.devices.find(function (device) {
+          return String(device.deviceId == null ? '' : device.deviceId) === deviceId;
+        }) || null;
+      }
+
+      function selectedChannelName() {
+        var value = elements.channel.value;
+        var optionsList = elements.channel.options || [];
+        for (var i = 0; i < optionsList.length; i++) {
+          if (optionsList[i].value === value) return optionsList[i].textContent || value;
+        }
+        return value;
+      }
+
+      function sourceIsCurrent(source, epoch) {
+        return options.getSource() === source && options.getSourceEpoch() === epoch;
+      }
+
+      function stopStalePlayback(source, result) {
+        if (!result || !result.ok || !result.streamKey) return;
+        var path = options.runtime.stopPath(source, 'playback', '', '', result.streamKey);
+        options.fetch(path, { method: 'POST' }).catch(function () {});
+      }
+
+      function setDevices(devices, source) {
+        state.source = source;
+        state.devices = Array.isArray(devices) ? devices.slice() : [];
+        resetSelect(elements.device, '请选择回放设备');
+        state.devices.forEach(function (device) {
+          var deviceId = String(device.deviceId == null ? '' : device.deviceId);
+          if (!deviceId) return;
+          var name = String(device.name == null || device.name === '' ? deviceId : device.name);
+          elements.device.appendChild(options.createOption(deviceId, name + ' (' + deviceId + ')'));
+        });
+        resetSelect(elements.channel, '请选择回放通道');
+      }
+
+      function loadChannels() {
+        var device = selectedDevice();
+        if (!device) {
+          resetSelect(elements.channel, '请选择回放通道');
+          setHint('请选择回放设备', 'err');
+          return Promise.resolve(false);
+        }
+        var source = options.getSource();
+        var epoch = options.getSourceEpoch();
+        var deviceId = String(device.deviceId);
+        resetSelect(elements.channel, '通道加载中…');
+        setHint('正在加载回放通道…');
+        return options.fetch('/api/' + source + '-video/channels?deviceId=' + encodeURIComponent(deviceId) + '&page=1&count=200')
+          .then(function (response) { return response.json(); })
+          .then(function (result) {
+            if (!sourceIsCurrent(source, epoch) || elements.device.value !== deviceId || state.source !== source) return false;
+            if (!result || !result.ok) {
+              resetSelect(elements.channel, '暂无可用通道');
+              setHint((result && result.message) || '通道加载失败', 'err');
+              return false;
+            }
+            var channels = Array.isArray(result.list) ? result.list.slice() : [];
+            channels.sort(function (left, right) {
+              var leftOnline = String(left.status || '').toLowerCase() === 'on' ? 0 : 1;
+              var rightOnline = String(right.status || '').toLowerCase() === 'on' ? 0 : 1;
+              return leftOnline - rightOnline;
+            });
+            resetSelect(elements.channel, channels.length ? '请选择回放通道' : '暂无可用通道');
+            channels.forEach(function (channel) {
+              var channelId = String(channel.channelId == null ? (channel.deviceId == null ? '' : channel.deviceId) : channel.channelId);
+              if (!channelId) return;
+              var channelName = String(channel.name == null || channel.name === '' ? channelId : channel.name);
+              var statusText = String(channel.status || '').toLowerCase() === 'on' ? '在线' : '离线';
+              elements.channel.appendChild(options.createOption(channelId, channelName + ' (' + statusText + ')'));
+            });
+            setHint(channels.length ? '请选择回放通道' : '该设备暂无可用通道', channels.length ? '' : 'err');
+            return true;
+          }).catch(function () {
+            if (!sourceIsCurrent(source, epoch)) return false;
+            resetSelect(elements.channel, '通道加载失败');
+            setHint('通道加载失败', 'err');
+            return false;
+          });
+      }
+
+      function start() {
+        var device = selectedDevice();
+        if (!device) {
+          setHint('请选择回放设备', 'err');
+          return Promise.resolve(false);
+        }
+        var channelId = elements.channel.value;
+        if (!channelId) {
+          setHint('请选择回放通道', 'err');
+          return Promise.resolve(false);
+        }
+        var range = options.runtime.validatePlaybackRange(elements.start.value, elements.end.value);
+        if (!range.ok) {
+          setHint(range.message, 'err');
+          return Promise.resolve(false);
+        }
+        var source = options.getSource();
+        var epoch = options.getSourceEpoch();
+        var tile = options.getActiveTile();
+        if (!tile) {
+          setHint('请先选择可用分屏', 'err');
+          return Promise.resolve(false);
+        }
+        var revision = options.getTileRevision(tile);
+        var deviceId = String(device.deviceId);
+        setHint('正在请求录像回放…');
+        return options.fetch('/api/' + source + '-video/playback/start/' + encodeURIComponent(deviceId) + '/' + encodeURIComponent(channelId), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ startTime: range.startTime, endTime: range.endTime }),
+        }).then(function (response) { return response.json(); })
+          .then(function (result) {
+            if (!sourceIsCurrent(source, epoch) || options.getTiles().indexOf(tile) === -1 || options.getTileRevision(tile) !== revision) {
+              stopStalePlayback(source, result);
+              return false;
+            }
+            if (!result || !result.ok || !result.flvUrl || !result.streamKey) {
+              setHint((result && (result.message || result.msg)) || '未找到该时间段的录像', 'err');
+              return false;
+            }
+            options.replaceTile(tile, {
+              flvUrl: result.flvUrl,
+              streamKey: result.streamKey,
+              deviceId: deviceId,
+              channelId: channelId,
+              channelName: selectedChannelName(),
+              deviceName: String(device.name == null || device.name === '' ? deviceId : device.name),
+              source: source,
+              mode: 'playback',
+            });
+            syncControls();
+            setHint('正在回放：' + (device.name || deviceId) + ' / ' + selectedChannelName(), 'ok');
+            return true;
+          }).catch(function () {
+            if (!sourceIsCurrent(source, epoch)) return false;
+            setHint('回放请求失败', 'err');
+            return false;
+          });
+      }
+
+      function control(command) {
+        var tile = options.getActiveTile();
+        if (!tile || tile.mode !== 'playback' || !tile.source || !tile.streamKey) {
+          setHint('请先选择正在回放的分屏', 'err');
+          syncControls();
+          return Promise.resolve(false);
+        }
+        var payload = command === 'scale' ? { value: elements.speed.value } : null;
+        return options.fetch('/api/' + tile.source + '-video/playback/control/' + encodeURIComponent(tile.streamKey) + '/' + command, {
+          method: 'POST',
+          headers: payload ? { 'Content-Type': 'application/json' } : {},
+          body: payload ? JSON.stringify(payload) : undefined,
+        }).then(function (response) { return response.json(); })
+          .then(function (result) {
+            if (!result || !result.ok) {
+              setHint((result && (result.message || result.msg)) || '回放控制失败', 'err');
+              return false;
+            }
+            setHint(command === 'pause' ? '回放已暂停' : (command === 'play' ? '回放已继续' : '已设置为 ' + elements.speed.value + 'x'), 'ok');
+            return true;
+          }).catch(function () {
+            setHint('回放控制失败', 'err');
+            return false;
+          }).then(function (ok) {
+            syncControls();
+            return ok;
+          });
+      }
+
+      function syncControls() {
+        var tile = options.getActiveTile();
+        var enabled = Boolean(tile && tile.mode === 'playback' && tile.streamKey);
+        if (elements.pause) elements.pause.disabled = !enabled;
+        if (elements.resume) elements.resume.disabled = !enabled;
+        if (elements.scale) elements.scale.disabled = !enabled;
+        return enabled;
+      }
+
+      return {
+        setDevices: setDevices,
+        loadChannels: loadChannels,
+        start: start,
+        control: control,
+        syncControls: syncControls,
+      };
+    }
+
     // ==================== 分屏 + Tile 类（flv.js 实时播放）====================
     var LAYOUT_CAPS = { 1: 1, 4: 4, 9: 9, 16: 16 };
     var tiles = [];        // Tile 实例数组
     var activeIdx = 0;
     var currentSource = 'webssh';  // 默认走 webssh-wvp（5070），切到 dcim 时改 'dcim'
+    var sourceEpoch = 0;
+    var playbackController = null;
+
+    function localDateTimeValue(date) {
+      function part(value) { return String(value).padStart(2, '0'); }
+      return date.getFullYear() + '-' + part(date.getMonth() + 1) + '-' + part(date.getDate())
+        + 'T' + part(date.getHours()) + ':' + part(date.getMinutes());
+    }
+    function resetPlaybackRange() {
+      var end = new Date();
+      var start = new Date(end.getTime() - 10 * 60 * 1000);
+      $('pbStart').value = localDateTimeValue(start);
+      $('pbEnd').value = localDateTimeValue(end);
+    }
+    resetPlaybackRange();
 
     function Tile(idx, el) {
       this.idx = idx;
@@ -314,15 +603,24 @@ sdp-ip:    192.168.0.22</pre>
       this.deviceId = null;
       this.channelId = null;
       this.source = null;
+      this.mode = 'live';
+      this.revision = 0;
+      this.elBadge = el.querySelector('.tile-overlay .badge');
       var self = this;
       el.addEventListener('click', function () { setActiveTile(self.idx); });
+      this.video.addEventListener('ended', function () { stopEndedPlayback(self); });
       el.querySelector('.btn-stop').addEventListener('click', function (e) { e.stopPropagation(); self.stop(); });
     }
     Tile.prototype.play = function (params) {
       var self = this;
+      if (this.streamKey || this.deviceId || this.channelId || this.player) this.stop();
+      this.revision++;
       this.deviceId = params.deviceId; this.channelId = params.channelId;
       this.streamKey = params.streamKey; this.source = params.source;
+      this.mode = params.mode === 'playback' ? 'playback' : 'live';
       this.elTitle.textContent = (params.channelName || params.channelId) + (params.deviceName ? '  ◎ ' + params.deviceName : '');
+      this.elBadge.textContent = this.mode === 'playback' ? '回放' : 'LIVE';
+      this.elBadge.classList.toggle('pb', this.mode === 'playback');
       this._destroyPlayer();
       this.elEmpty.style.display = 'none';
       this.video.style.display = '';
@@ -334,10 +632,11 @@ sdp-ip:    192.168.0.22</pre>
         this.elEmpty.style.display = '';
         this.video.style.display = 'none';
         this.elEmpty.innerHTML = '当前浏览器不支持 MSE / flv.js';
+        if (playbackController) playbackController.syncControls();
         return;
       }
       var p = window.flvjs.createPlayer(
-        { type: 'flv', url: params.flvUrl, isLive: true, hasAudio: false },
+        buildTilePlayerConfig(params),
         { enableStashBuffer: false, stashInitialSize: 128, lazyLoad: false, autoCleanupSourceBuffer: true }
       );
       p.attachMediaElement(this.video);
@@ -349,6 +648,7 @@ sdp-ip:    192.168.0.22</pre>
       try { p.load(); } catch (_e) {}
       try { var pr = this.video.play(); if (pr && pr.catch) pr.catch(function () {}); } catch (_e) {}
       this.player = p;
+      if (playbackController) playbackController.syncControls();
     };
     Tile.prototype._destroyPlayer = function () {
       if (this.player) {
@@ -361,19 +661,26 @@ sdp-ip:    192.168.0.22</pre>
       try { this.video.removeAttribute('src'); this.video.load(); } catch (_e) {}
     };
     Tile.prototype.stop = function () {
-      var self = this;
-      var dev = this.deviceId, ch = this.channelId, src = this.source;
+      var state = {
+        source: this.source,
+        mode: this.mode,
+        deviceId: this.deviceId,
+        channelId: this.channelId,
+        streamKey: this.streamKey,
+      };
+      this.revision++;
       this._destroyPlayer();
-      this.streamKey = null; this.deviceId = null; this.channelId = null; this.source = null;
+      this.streamKey = null; this.deviceId = null; this.channelId = null; this.source = null; this.mode = 'live';
       this.elEmpty.style.display = '';
       this.video.style.display = 'none';
       this.elOverlay.hidden = true;
       this.elActions.hidden = true;
       this.elLoader.hidden = true;
-      if (dev && ch && src) {
-        fetch('/api/' + src + '-video/play/stop/' + encodeURIComponent(dev) + '/' + encodeURIComponent(ch),
-          { method: 'POST' }).catch(function () {});
-      }
+      this.elBadge.textContent = 'LIVE';
+      this.elBadge.classList.remove('pb');
+      var path = tileStopPathForState(state, window.DcimVideoRuntime);
+      if (path) fetch(path, { method: 'POST' }).catch(function () {});
+      if (playbackController) playbackController.syncControls();
     };
 
     function tileHTML(idx) {
@@ -405,8 +712,46 @@ sdp-ip:    192.168.0.22</pre>
     function setActiveTile(idx) {
       activeIdx = (idx >= 0 && idx < tiles.length) ? idx : 0;
       tiles.forEach(function (t, i) { t.el.classList.toggle('active', i === activeIdx); });
+      if (playbackController) playbackController.syncControls();
     }
     renderTiles(1);
+
+    playbackController = createVideoPlaybackController({
+      elements: {
+        device: $('pbDevice'), channel: $('pbChannel'), start: $('pbStart'), end: $('pbEnd'), speed: $('pbSpeed'),
+        pause: $('btnPbPause'), resume: $('btnPbResume'), scale: $('btnPbScale'), hint: $('pbHint'),
+      },
+      runtime: window.DcimVideoRuntime,
+      fetch: fetch,
+      createOption: function (value, text) {
+        var option = document.createElement('option');
+        option.value = value;
+        option.textContent = text;
+        return option;
+      },
+      getSource: function () { return currentSource; },
+      getSourceEpoch: function () { return sourceEpoch; },
+      getActiveTile: function () { return tiles[activeIdx] || null; },
+      getTiles: function () { return tiles; },
+      getTileRevision: function (tile) { return tile.revision; },
+      replaceTile: replaceTileStream,
+    });
+    $('pbDevice').addEventListener('change', function () { playbackController.loadChannels(); });
+    $('btnPbStart').addEventListener('click', function () { playbackController.start(); });
+    $('btnPbPause').addEventListener('click', function () { playbackController.control('pause'); });
+    $('btnPbResume').addEventListener('click', function () { playbackController.control('play'); });
+    $('btnPbScale').addEventListener('click', function () { playbackController.control('scale'); });
+    $('btnPlaybackMode').addEventListener('click', function () {
+      var bar = $('playbackBar');
+      var isOpen = bar.hidden;
+      bar.hidden = !isOpen;
+      this.classList.toggle('active', isOpen);
+      this.setAttribute('aria-pressed', isOpen ? 'true' : 'false');
+      if (isOpen) {
+        if (!$('pbStart').value || !$('pbEnd').value) resetPlaybackRange();
+        playbackController.syncControls();
+      }
+    });
     document.querySelectorAll('.layout-switcher .lb').forEach(function (b) {
       b.addEventListener('click', function () {
         var n = Number(b.dataset.layout);
@@ -541,6 +886,10 @@ sdp-ip:    192.168.0.22</pre>
     // ==================== 加载 dcim/webssh 配置和设备 ====================
     function loadSource(source, btnId) {
       var btn = $(btnId);
+      var requestEpoch = ++sourceEpoch;
+      if (currentSource !== source) tiles.forEach(function (tile) { tile.stop(); });
+      currentSource = source;
+      playbackController.setDevices([], source);
       btn.disabled = true;
       var oldText = btn.textContent;
       btn.textContent = "加载中…";
@@ -552,16 +901,22 @@ sdp-ip:    192.168.0.22</pre>
         fetch(apiPrefix + "/config").then(function (r) { return r.json(); }),
         fetch(apiPrefix + "/devices?page=1&count=200").then(function (r) { return r.json(); }),
       ]).then(function (results) {
+        if (requestEpoch !== sourceEpoch || currentSource !== source) return;
         var cfgResp = results[0], devResp = results[1];
         if (cfgResp.ok && cfgResp.data) renderConfig(cfgResp.data, source);
         else $("dcimCfgHint").textContent = "加载失败：" + (cfgResp.message || "未知");
-        if (devResp.ok) renderDevices(devResp.list, devResp.total, source);
-        else $("dcimDevHint").textContent = "加载失败：" + (devResp.message || "未知");
-        currentSource = source;
+        if (devResp.ok) {
+          renderDevices(devResp.list, devResp.total, source);
+          playbackController.setDevices(devResp.list, source);
+        } else {
+          $("dcimDevHint").textContent = "加载失败：" + (devResp.message || "未知");
+        }
         if (source === "dcim") refreshDcimStatus(); else refreshWebsshStatus();
         hint.textContent = "当前数据源：" + (source === "dcim" ? "dcim（5060）" : "webssh（5070）")
           + " · 双击左侧设备名播放到当前激活分屏";
-      }).catch(function (e) { $("dcimCfgHint").textContent = "请求失败：" + e.message; })
+      }).catch(function (e) {
+        if (requestEpoch === sourceEpoch && currentSource === source) $("dcimCfgHint").textContent = "请求失败：" + e.message;
+      })
       .then(function () { btn.disabled = false; btn.textContent = oldText; });
     }
 
@@ -574,11 +929,16 @@ sdp-ip:    192.168.0.22</pre>
     // ==================== 双击设备名 → 起播到 active tile ====================
     function playFromDevice(deviceId, deviceName) {
       var src = currentSource;
+      var requestEpoch = sourceEpoch;
+      var targetTile = tiles[activeIdx];
+      var targetRevision = targetTile ? targetTile.revision : -1;
       if (!src) { hint.textContent = "请先点「📡 加载 webssh/dcim 视频监控」"; return; }
+      if (!targetTile) { hint.textContent = "请先选择可用分屏"; return; }
       hint.textContent = "查询通道中… " + deviceName;
       fetch("/api/" + src + "-video/channels?deviceId=" + encodeURIComponent(deviceId) + "&page=1&count=10")
         .then(function (r) { return r.json(); })
         .then(function (resp) {
+          if (requestEpoch !== sourceEpoch || currentSource !== src || tiles.indexOf(targetTile) === -1 || targetTile.revision !== targetRevision) return null;
           if (!resp.ok || !resp.list || !resp.list.length) {
             hint.textContent = "设备 " + deviceName + " 暂无通道（catalog 可能未同步）"; return null;
           }
@@ -592,11 +952,17 @@ sdp-ip:    192.168.0.22</pre>
         })
         .then(function (out) {
           if (!out) return;
+          if (requestEpoch !== sourceEpoch || currentSource !== src || tiles.indexOf(targetTile) === -1 || targetTile.revision !== targetRevision) {
+            if (out.pr && out.pr.ok) {
+              var stalePath = tileStopPathForState({ source: src, mode: 'live', deviceId: deviceId, channelId: out.chId }, window.DcimVideoRuntime);
+              if (stalePath) fetch(stalePath, { method: 'POST' }).catch(function () {});
+            }
+            return;
+          }
           if (!out.pr || !out.pr.ok) { hint.textContent = "点播失败：" + ((out.pr && out.pr.message) || "未知"); return; }
-          var tile = tiles[activeIdx]; if (!tile) return;
-          tile.play({ flvUrl: out.pr.flvUrl, streamKey: out.pr.streamKey, deviceId: deviceId,
-            channelId: out.chId, channelName: out.chName, deviceName: deviceName, source: src });
-          hint.textContent = "已起播：" + deviceName + " / " + out.chName + "（" + src + "，分屏 " + (activeIdx + 1) + "）";
+          replaceTileStream(targetTile, { flvUrl: out.pr.flvUrl, streamKey: out.pr.streamKey, deviceId: deviceId,
+            channelId: out.chId, channelName: out.chName, deviceName: deviceName, source: src, mode: 'live' });
+          hint.textContent = "已起播：" + deviceName + " / " + out.chName + "（" + src + "，分屏 " + (targetTile.idx + 1) + "）";
         })
         .catch(function (e) { hint.textContent = "请求失败：" + e.message; });
     }

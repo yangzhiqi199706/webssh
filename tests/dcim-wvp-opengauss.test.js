@@ -1260,6 +1260,244 @@ vm.runInNewContext(require('fs').readFileSync(require.resolve('../video/assets/j
 assert.strictEqual(typeof browser.window.DcimVideoRuntime.validatePlaybackRange, 'function');
 assert.strictEqual(typeof browser.window.DcimVideoRuntime.stopPath, 'function');
 
+const createVideoPlaybackController = vm.runInNewContext(
+  '(' + extractVideoFunction('createVideoPlaybackController') + ')',
+  { Promise: Promise, encodeURIComponent: encodeURIComponent }
+);
+const buildTilePlayerConfig = vm.runInNewContext(
+  '(' + extractVideoFunction('buildTilePlayerConfig') + ')',
+  {}
+);
+const tileStopPathForState = vm.runInNewContext(
+  '(' + extractVideoFunction('tileStopPathForState') + ')',
+  { encodeURIComponent: encodeURIComponent }
+);
+const replaceTileStream = vm.runInNewContext(
+  '(' + extractVideoFunction('replaceTileStream') + ')',
+  {}
+);
+const stopEndedPlayback = vm.runInNewContext(
+  '(' + extractVideoFunction('stopEndedPlayback') + ')',
+  {}
+);
+
+function createPlaybackSelect(value) {
+  return {
+    value: value || '',
+    disabled: false,
+    options: [],
+    replaceChildren: function () { this.options = []; },
+    appendChild: function (option) { this.options.push(option); },
+  };
+}
+
+function createPlaybackElements() {
+  return {
+    device: createPlaybackSelect(),
+    channel: createPlaybackSelect(),
+    start: { value: '2026-07-13T10:00' },
+    end: { value: '2026-07-13T10:10' },
+    speed: { value: '2' },
+    hint: { textContent: '', className: '' },
+  };
+}
+
+function createPlaybackControllerHarness(overrides) {
+  const options = overrides || {};
+  const elements = options.elements || createPlaybackElements();
+  let source = options.source || 'dcim';
+  let sourceEpoch = options.sourceEpoch || 1;
+  let activeTile = options.activeTile || null;
+  const tiles = options.tiles || (activeTile ? [activeTile] : []);
+  const controller = createVideoPlaybackController({
+    elements: elements,
+    runtime: runtime,
+    fetch: options.fetch || function () { throw new Error('unexpected fetch'); },
+    createOption: function (value, text) { return { value: value, textContent: text }; },
+    getSource: function () { return source; },
+    getSourceEpoch: function () { return sourceEpoch; },
+    getActiveTile: function () { return activeTile; },
+    getTiles: function () { return tiles; },
+    getTileRevision: function (tile) { return tile.revision || 0; },
+    replaceTile: options.replaceTile || function (tile, params) { tile.play(params); },
+  });
+  return {
+    controller: controller,
+    elements: elements,
+    setSource: function (value) { source = value; },
+    setSourceEpoch: function (value) { sourceEpoch = value; },
+    setActiveTile: function (tile) { activeTile = tile; },
+  };
+}
+
+async function runVideoPlaybackUiTests() {
+  const playbackPlayerConfig = buildTilePlayerConfig({ flvUrl: '/media/record.flv', mode: 'playback' });
+  assert.strictEqual(playbackPlayerConfig.type, 'flv');
+  assert.strictEqual(playbackPlayerConfig.url, '/media/record.flv');
+  assert.strictEqual(playbackPlayerConfig.isLive, false);
+  assert.strictEqual(playbackPlayerConfig.hasAudio, false);
+  assert.strictEqual(buildTilePlayerConfig({ flvUrl: '/media/live.flv', mode: 'live' }).isLive, true);
+  assert.strictEqual(
+    tileStopPathForState({ source: 'dcim', mode: 'playback', streamKey: 'rtp/record-1' }, runtime),
+    '/api/dcim-video/playback/stop/rtp%2Frecord-1'
+  );
+  assert.strictEqual(
+    tileStopPathForState({ source: 'webssh', mode: 'live', deviceId: 'device 1', channelId: 'channel/1' }, runtime),
+    '/api/webssh-video/play/stop/device%201/channel%2F1'
+  );
+  const replacementCalls = [];
+  replaceTileStream({
+    streamKey: 'old-stream',
+    stop: function () { replacementCalls.push('stop'); },
+    play: function () { replacementCalls.push('play'); },
+  }, { streamKey: 'new-stream' });
+  assert.deepStrictEqual(replacementCalls, ['stop', 'play']);
+  const endedCalls = [];
+  assert.strictEqual(stopEndedPlayback({ mode: 'playback', stop: function () { endedCalls.push('stop'); } }), true);
+  assert.strictEqual(stopEndedPlayback({ mode: 'live', stop: function () { endedCalls.push('live-stop'); } }), false);
+  assert.deepStrictEqual(endedCalls, ['stop']);
+
+  const validationHarness = createPlaybackControllerHarness();
+  validationHarness.controller.setDevices([{ deviceId: 'd1', name: '设备一' }], 'dcim');
+  assert.strictEqual(await validationHarness.controller.start(), false);
+  assert.strictEqual(validationHarness.elements.hint.textContent, '请选择回放设备');
+  validationHarness.elements.device.value = 'd1';
+  assert.strictEqual(await validationHarness.controller.start(), false);
+  assert.strictEqual(validationHarness.elements.hint.textContent, '请选择回放通道');
+  validationHarness.elements.channel.value = 'c1';
+  validationHarness.elements.end.value = '2026-07-13T09:59';
+  assert.strictEqual(await validationHarness.controller.start(), false);
+  assert.strictEqual(validationHarness.elements.hint.textContent, '播放时间范围必须有效、顺序正确且不超过24小时');
+
+  const channelRequests = [];
+  const channelHarness = createPlaybackControllerHarness({
+    fetch: function (url) {
+      channelRequests.push(url);
+      return Promise.resolve({ json: function () { return Promise.resolve({
+        ok: true,
+        list: [
+          { channelId: 'offline', name: '离线通道', status: 'OFF' },
+          { channelId: 'online-2', name: '在线二', status: 'on' },
+          { channelId: 'online-1', name: '在线一', status: 'ON' },
+        ],
+      }); } });
+    },
+  });
+  channelHarness.controller.setDevices([{ deviceId: 'd1', name: '设备一' }], 'dcim');
+  channelHarness.elements.device.value = 'd1';
+  assert.strictEqual(await channelHarness.controller.loadChannels(), true);
+  assert.deepStrictEqual(channelRequests, ['/api/dcim-video/channels?deviceId=d1&page=1&count=200']);
+  assert.deepStrictEqual(channelHarness.elements.channel.options.map(function (option) { return option.value; }), ['', 'online-2', 'online-1', 'offline']);
+
+  const requests = [];
+  const targetTile = { revision: 0, mode: 'live', streamKey: 'old-live', playCalls: [] };
+  const startHarness = createPlaybackControllerHarness({
+    activeTile: targetTile,
+    fetch: function (url, options) {
+      requests.push({ url: url, options: options });
+      return Promise.resolve({ json: function () { return Promise.resolve({
+        ok: true, flvUrl: '/media-dcim/rtp/record-1.live.flv', streamKey: 'rtp/record-1',
+      }); } });
+    },
+    replaceTile: function (tile, params) { tile.playCalls.push(params); },
+  });
+  startHarness.controller.setDevices([{ deviceId: 'd1', name: '设备一' }], 'dcim');
+  startHarness.elements.device.value = 'd1';
+  startHarness.elements.channel.value = 'c1';
+  startHarness.elements.channel.options = [{ value: 'c1', textContent: '通道一' }];
+  assert.strictEqual(await startHarness.controller.start(), true);
+  assert.strictEqual(requests[0].url, '/api/dcim-video/playback/start/d1/c1');
+  assert.strictEqual(requests[0].options.method, 'POST');
+  assert.deepStrictEqual(JSON.parse(requests[0].options.body), { startTime: '2026-07-13T10:00', endTime: '2026-07-13T10:10' });
+  assert.strictEqual(targetTile.playCalls.length, 1);
+  assert.strictEqual(targetTile.playCalls[0].mode, 'playback');
+
+  const controlRequests = [];
+  const playbackTile = { mode: 'playback', source: 'webssh', streamKey: 'record/1', revision: 0 };
+  const controlHarness = createPlaybackControllerHarness({
+    activeTile: playbackTile,
+    fetch: function (url, options) {
+      controlRequests.push({ url: url, options: options });
+      return Promise.resolve({ json: function () { return Promise.resolve({ ok: true }); } });
+    },
+  });
+  assert.strictEqual(await controlHarness.controller.control('pause'), true);
+  assert.strictEqual(await controlHarness.controller.control('play'), true);
+  assert.strictEqual(await controlHarness.controller.control('scale'), true);
+  assert.deepStrictEqual(controlRequests.map(function (request) { return request.url; }), [
+    '/api/webssh-video/playback/control/record%2F1/pause',
+    '/api/webssh-video/playback/control/record%2F1/play',
+    '/api/webssh-video/playback/control/record%2F1/scale',
+  ]);
+  assert.deepStrictEqual(JSON.parse(controlRequests[2].options.body), { value: '2' });
+  controlHarness.setActiveTile({ mode: 'live', source: 'webssh', streamKey: 'live-1' });
+  assert.strictEqual(await controlHarness.controller.control('pause'), false);
+  assert.strictEqual(controlHarness.elements.hint.textContent, '请先选择正在回放的分屏');
+  assert.strictEqual(controlRequests.length, 3);
+
+  let resolveChannelRequest;
+  const channelRaceHarness = createPlaybackControllerHarness({
+    fetch: function () {
+      return new Promise(function (resolve) { resolveChannelRequest = resolve; });
+    },
+  });
+  channelRaceHarness.controller.setDevices([{ deviceId: 'd1', name: '设备一' }], 'dcim');
+  channelRaceHarness.elements.device.value = 'd1';
+  const staleChannels = channelRaceHarness.controller.loadChannels();
+  channelRaceHarness.setSource('webssh');
+  channelRaceHarness.setSourceEpoch(2);
+  resolveChannelRequest({ json: function () { return Promise.resolve({ ok: true, list: [{ channelId: 'stale', status: 'ON' }] }); } });
+  assert.strictEqual(await staleChannels, false);
+  assert.deepStrictEqual(channelRaceHarness.elements.channel.options.map(function (option) { return option.value; }), ['']);
+
+  let resolveStartRequest;
+  const staleTile = { revision: 0, playCalls: [] };
+  const otherTile = { revision: 0, playCalls: [] };
+  const staleStartHarness = createPlaybackControllerHarness({
+    activeTile: staleTile,
+    tiles: [staleTile, otherTile],
+    fetch: function () {
+      return new Promise(function (resolve) { resolveStartRequest = resolve; });
+    },
+    replaceTile: function (tile, params) { tile.playCalls.push(params); },
+  });
+  staleStartHarness.controller.setDevices([{ deviceId: 'd1', name: '设备一' }], 'dcim');
+  staleStartHarness.elements.device.value = 'd1';
+  staleStartHarness.elements.channel.value = 'c1';
+  staleStartHarness.elements.channel.options = [{ value: 'c1', textContent: '通道一' }];
+  const staleStart = staleStartHarness.controller.start();
+  staleStartHarness.setSource('webssh');
+  staleStartHarness.setSourceEpoch(2);
+  staleTile.revision++;
+  staleStartHarness.setActiveTile(otherTile);
+  resolveStartRequest({ json: function () { return Promise.resolve({ ok: true, flvUrl: '/stale.flv', streamKey: 'stale' }); } });
+  assert.strictEqual(await staleStart, false);
+  assert.strictEqual(staleTile.playCalls.length, 0);
+  assert.strictEqual(otherTile.playCalls.length, 0);
+
+  let resolveFixedTileStart;
+  const fixedTile = { revision: 0, playCalls: [] };
+  const changedActiveTile = { revision: 0, playCalls: [] };
+  const fixedTileHarness = createPlaybackControllerHarness({
+    activeTile: fixedTile,
+    tiles: [fixedTile, changedActiveTile],
+    fetch: function () {
+      return new Promise(function (resolve) { resolveFixedTileStart = resolve; });
+    },
+    replaceTile: function (tile, params) { tile.playCalls.push(params); },
+  });
+  fixedTileHarness.controller.setDevices([{ deviceId: 'd1', name: '设备一' }], 'dcim');
+  fixedTileHarness.elements.device.value = 'd1';
+  fixedTileHarness.elements.channel.value = 'c1';
+  fixedTileHarness.elements.channel.options = [{ value: 'c1', textContent: '通道一' }];
+  const fixedTileStart = fixedTileHarness.controller.start();
+  fixedTileHarness.setActiveTile(changedActiveTile);
+  resolveFixedTileStart({ json: function () { return Promise.resolve({ ok: true, flvUrl: '/record.flv', streamKey: 'record-2' }); } });
+  assert.strictEqual(await fixedTileStart, true);
+  assert.strictEqual(fixedTile.playCalls.length, 1);
+  assert.strictEqual(changedActiveTile.playCalls.length, 0);
+}
+
 const dbPage = fs.readFileSync(path.join(__dirname, '..', 'db', 'index.html'), 'utf8');
 const serverSource = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
 const runtimeSource = fs.readFileSync(path.join(__dirname, '..', 'lib', 'dcim-wvp-runtime.js'), 'utf8');
@@ -1370,7 +1608,7 @@ try {
   try { fs.unlinkSync(shellPath); } catch (error) {}
 }
 
-runWvpRuntimeOperationTests().then(runSshCommandTimeoutTests).then(runSshCommandLateEventTests).then(runWvpRuntimeRouteContractTests).then(runDcimVideoConnectionRouteContractTests).then(runDcimVideoConnectionRaceTests).then(runDcimVideoAtomicWriteTests).then(runDcimVideoConnectionUiTests).then(runProtocolMainSyncRollbackFailureTests).then(() => {
+runWvpRuntimeOperationTests().then(runSshCommandTimeoutTests).then(runSshCommandLateEventTests).then(runWvpRuntimeRouteContractTests).then(runDcimVideoConnectionRouteContractTests).then(runDcimVideoConnectionRaceTests).then(runDcimVideoAtomicWriteTests).then(runDcimVideoConnectionUiTests).then(runVideoPlaybackUiTests).then(runProtocolMainSyncRollbackFailureTests).then(() => {
   console.log('dcim wvp opengauss tests: PASS');
 }).catch((error) => {
   console.error(error);
