@@ -200,6 +200,60 @@ async function runSshCommandTimeoutTests() {
   assert.strictEqual(FakeClient.last.ended, true);
 }
 
+async function runSshCommandLateEventTests() {
+  class DelayedClient extends EventEmitter {
+    constructor() {
+      super();
+      DelayedClient.instances.push(this);
+      this.destroyCalls = 0;
+      this.endCalls = 0;
+      this.execCalls = 0;
+      this.execCallback = null;
+    }
+    connect() {}
+    exec(_command, callback) {
+      this.execCalls++;
+      this.execCallback = callback;
+    }
+    destroy() { this.destroyCalls++; }
+    end() { this.endCalls++; }
+  }
+  DelayedClient.instances = [];
+
+  const run = createSshCommandRunner(DelayedClient);
+  let readyFirstCallbackCalls = 0;
+  run({ host: 'test', port: 22, username: 'test', password: '', commandTimeoutMs: 5 }, 'probe', () => {
+    readyFirstCallbackCalls++;
+  });
+  const readyFirstClient = DelayedClient.instances[0];
+  await new Promise((resolve) => setTimeout(resolve, 15));
+  assert.strictEqual(readyFirstCallbackCalls, 1);
+  assert.strictEqual(readyFirstClient.destroyCalls, 1);
+  assert.doesNotThrow(() => readyFirstClient.emit('ready'));
+  assert.strictEqual(readyFirstClient.execCalls, 0);
+  assert.strictEqual(readyFirstCallbackCalls, 1);
+
+  let channelCallbackCalls = 0;
+  run({ host: 'test', port: 22, username: 'test', password: '', commandTimeoutMs: 5 }, 'probe', () => {
+    channelCallbackCalls++;
+  });
+  const channelClient = DelayedClient.instances[1];
+  channelClient.emit('ready');
+  assert.strictEqual(channelClient.execCalls, 1);
+  await new Promise((resolve) => setTimeout(resolve, 15));
+  const lateChannel = new EventEmitter();
+  lateChannel.stderr = new EventEmitter();
+  lateChannel.closeCalls = 0;
+  lateChannel.destroyCalls = 0;
+  lateChannel.close = () => { lateChannel.closeCalls++; };
+  lateChannel.destroy = () => { lateChannel.destroyCalls++; };
+  assert.doesNotThrow(() => channelClient.execCallback(null, lateChannel));
+  assert.strictEqual(channelCallbackCalls, 1);
+  assert.strictEqual(channelClient.destroyCalls, 1);
+  assert.strictEqual(lateChannel.closeCalls, 1);
+  assert.strictEqual(lateChannel.destroyCalls, 1);
+}
+
 function postJson(app, pathname) {
   return new Promise((resolve, reject) => {
     const server = http.createServer(app);
@@ -357,7 +411,20 @@ async function runWvpRuntimeOperationTests() {
   const failureResult = await failureOps.restart();
   assert.strictEqual(failureResult.ok, false);
   assert.strictEqual(failureResult.restartCode, 2);
+  assert.strictEqual(failureResult.statusCode, 503);
   assert.strictEqual(/stdout|stderr|command|raw|password|secret/i.test(JSON.stringify(failureResult)), false);
+
+  let genericFailureCollectCalls = 0;
+  const genericFailureOps = createWvpRuntimeOperations({
+    collect: async () => genericFailureCollectCalls++ === 0 ? runtimeOperationStatus(true, true) : runtimeOperationStatus(false, true),
+    restartService: async () => ({ code: 2 }),
+    sleep: async () => { throw new Error('普通失败不得轮询'); },
+  });
+  const genericFailureResult = await genericFailureOps.restart();
+  assert.strictEqual(genericFailureResult.ok, false);
+  assert.strictEqual(genericFailureResult.restartCode, 2);
+  assert.strictEqual(genericFailureResult.statusCode, 502);
+  assert.strictEqual(genericFailureResult.status.checks.service.healthy, false);
 
   const collectTimeoutOps = createWvpRuntimeOperations({
     timeoutMs: 5,
@@ -508,16 +575,23 @@ assert.ok(
 );
 assert.ok(/function openWvpRuntimeModal\(\)\s*\{[\s\S]*?renderWvpRuntimeStatus\(null\);/.test(dbPage));
 assert.ok(/renderWvpRuntimeStatus\(r\.ok \? r\.status : \(r\.status \|\| null\)\);/.test(dbPage));
-assert.ok(/if \(r\.restartCode === 75\)/.test(dbPage));
-assert.ok(/else if \(r\.statusCode === 504\)[\s\S]*?探测超时/.test(dbPage));
-assert.ok(/else if \(r\.statusCode === 503\)[\s\S]*?状态不可用/.test(dbPage));
-const loadWvpRuntimeStatusSource = /async function loadWvpRuntimeStatus\(\) \{([\s\S]*?)\n    \}\n\n    \$\('btnRestartWvp'\)/.exec(dbPage);
+const loadWvpRuntimeStatusSource = /async function loadWvpRuntimeStatus\(\) \{([\s\S]*?)\n    \}\n\n    function wvpRestartFeedback/.exec(dbPage);
 assert.ok(loadWvpRuntimeStatusSource);
 assert.ok(/catch \(_e\) \{\s*renderWvpRuntimeStatus\(null\);[\s\S]*?状态不可用/.test(loadWvpRuntimeStatusSource[1]));
-const restartWvpSource = /\$\('btnRestartWvp'\)\.addEventListener\('click', async \(\) => \{([\s\S]*?)\n    \}\);\n\n    \/\//.exec(dbPage);
-assert.ok(restartWvpSource);
-assert.ok(/else \{\s*box\.innerHTML = '<span class="err">状态不可用/.test(restartWvpSource[1]));
-assert.ok(/catch \(_e\) \{\s*box\.innerHTML = '<span class="err">状态不可用/.test(restartWvpSource[1]));
+const feedbackStart = dbPage.indexOf('function wvpRestartFeedback(result)');
+const feedbackEnd = dbPage.indexOf('// WVP_RESTART_FEEDBACK_END');
+assert.ok(feedbackStart !== -1 && feedbackEnd > feedbackStart);
+const feedbackContext = {};
+vm.runInNewContext(dbPage.slice(feedbackStart, feedbackEnd) + '\nthis.applyWvpRestartFeedback = applyWvpRestartFeedback;', feedbackContext);
+const feedbackBox = { innerHTML: '' };
+const expiredFeedback = feedbackContext.applyWvpRestartFeedback(feedbackBox, { ok: false, message: '请先登录' });
+assert.strictEqual(expiredFeedback.success, false);
+assert.strictEqual(expiredFeedback.message, '登录已过期，请重新登录');
+assert.ok(/登录已过期，请重新登录/.test(feedbackBox.innerHTML));
+assert.strictEqual(/旧服务冲突|状态不可用/.test(feedbackBox.innerHTML), false);
+assert.strictEqual(feedbackContext.wvpRestartFeedback({ ok: false, restartCode: 75 }).message, '旧服务冲突，未执行重启。');
+assert.strictEqual(feedbackContext.wvpRestartFeedback({ ok: false, statusCode: 504 }).message, '探测超时，未继续轮询。');
+assert.strictEqual(feedbackContext.wvpRestartFeedback({ ok: false, statusCode: 503 }).message, '状态不可用，未执行重启。');
 assert.strictEqual(/r\.restartCode === null \|\| r\.restartCode === 75/.test(dbPage), false);
 
 const command = wvpRuntimeProbeCommand();
@@ -589,7 +663,7 @@ try {
   try { fs.unlinkSync(shellPath); } catch (error) {}
 }
 
-runWvpRuntimeOperationTests().then(runSshCommandTimeoutTests).then(runWvpRuntimeRouteContractTests).then(() => {
+runWvpRuntimeOperationTests().then(runSshCommandTimeoutTests).then(runSshCommandLateEventTests).then(runWvpRuntimeRouteContractTests).then(() => {
   console.log('dcim wvp opengauss tests: PASS');
 }).catch((error) => {
   console.error(error);

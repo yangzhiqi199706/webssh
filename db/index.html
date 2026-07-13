@@ -1075,6 +1075,25 @@ SHOW DATABASES;"></textarea>
       }
     }
 
+    function wvpRestartFeedback(result) {
+      const r = result || {};
+      if (!r.ok && r.message === '请先登录') return { success: false, message: '登录已过期，请重新登录' };
+      if (r.restartCode === 75) return { success: false, message: '旧服务冲突，未执行重启。' };
+      if (r.statusCode === 504) return { success: false, message: '探测超时，未继续轮询。' };
+      if (r.statusCode === 503) return { success: false, message: '状态不可用，未执行重启。' };
+      if (r.ok) return { success: true, message: '✓ WVP 已重启，核心服务和监听已恢复。' };
+      if (r.restartCode === null) return { success: false, message: '重启前检查未通过，未执行重启。' };
+      return { success: false, message: '状态不可用或重启未达到就绪状态，请查看六项检查。' };
+    }
+    function applyWvpRestartFeedback(box, result) {
+      const feedback = wvpRestartFeedback(result);
+      box.innerHTML = feedback.success
+        ? '<span style="color:#a7f3d0">' + feedback.message + '</span>'
+        : '<span class="err">' + feedback.message + '</span>';
+      return feedback;
+    }
+    // WVP_RESTART_FEEDBACK_END
+
     $('btnRestartWvp').addEventListener('click', async () => {
       if (!confirm('确定重启 WVP？视频服务会短暂中断（约 5-15 秒）。')) return;
       wvpRuntimePending = true;
@@ -1084,19 +1103,7 @@ SHOW DATABASES;"></textarea>
       try {
         const r = await jfetch(API + '/opengauss/wvp/restart', { method: 'POST' });
         renderWvpRuntimeStatus(r.status || lastWvpRuntimeStatus);
-        if (r.restartCode === 75) {
-          box.innerHTML = '<span class="err">旧服务冲突，未执行重启。</span>';
-        } else if (r.statusCode === 504) {
-          box.innerHTML = '<span class="err">探测超时，未继续轮询。</span>';
-        } else if (r.statusCode === 503) {
-          box.innerHTML = '<span class="err">状态不可用，未执行重启。</span>';
-        } else if (r.ok) {
-          box.innerHTML = '<span style="color:#a7f3d0">✓ WVP 已重启，核心服务和监听已恢复。</span>';
-        } else if (r.restartCode === null) {
-          box.innerHTML = '<span class="err">重启前检查未通过，未执行重启。</span>';
-        } else {
-          box.innerHTML = '<span class="err">状态不可用或重启未达到就绪状态，请查看六项检查。</span>';
-        }
+        applyWvpRestartFeedback(box, r);
       } catch (_e) {
         box.innerHTML = '<span class="err">状态不可用，未执行重启。</span>';
       } finally {
