@@ -101,6 +101,35 @@ function createMainSyncDirectorySwap(mainSync, appDir, entry, stamp) {
   };
 }
 
+function createMainSyncReleasePlan(appDir, stamp, service, httpPort) {
+  const entries = [
+    'server.js', 'index.html', 'login.html', 'package.json', 'package-lock.json',
+    'node_modules', 'lib', 'video', 'snmp-bundle', 'proto-conv', 'db',
+  ];
+  const backup = `${appDir}/.main-sync-backup-${stamp}`;
+  const backupSteps = entries.map((entry) => {
+    const target = `${appDir}/${entry}`;
+    return `if [ -e ${target} ]; then cp -a ${target} ${backup}/${entry}; touch ${backup}/.${entry}.exists; fi`;
+  });
+  const restoreSteps = entries.map((entry) => {
+    const target = `${appDir}/${entry}`;
+    return `if [ -e ${backup}/.${entry}.exists ]; then rm -rf ${target}; cp -a ${backup}/${entry} ${target}; else rm -rf ${target}; fi`;
+  });
+  restoreSteps.push(`rm -rf ${appDir}/.lib.stage-${stamp} ${appDir}/.lib.backup-${stamp} ${appDir}/.video.stage-${stamp} ${appDir}/.video.backup-${stamp}`);
+  return {
+    backup: backup,
+    backupCommand: `set -e; rm -rf ${backup}; mkdir -p ${backup}; ${backupSteps.join('; ')}`,
+    restoreCommand: `set -e; ${restoreSteps.join('; ')}`,
+    cleanupCommand: `rm -rf ${backup}`,
+    recoveryCommands: [
+      `set -e; ${restoreSteps.join('; ')}`,
+      `systemctl restart ${service}`,
+      `systemctl is-active ${service}`,
+      `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${httpPort}/health`,
+    ],
+  };
+}
+
 function sha256File(p) {
   const h = crypto.createHash('sha256');
   h.update(fs.readFileSync(p));
@@ -374,7 +403,7 @@ async function main() {
   log(`连接 ${USER}@${HOST}:${PORT}...`);
   const conn = await connect();
   const directorySwaps = [];
-  let mainRestartAttempted = false;
+  let mainSyncRelease = null;
   try {
     // 前置检查
     await exec(conn, `test -d ${INSTALL_DIR} && test -d ${INSTALL_DIR}/app && test -x ${INSTALL_DIR}/runtime/node/bin/node && echo webssh 主服务已就位`);
@@ -404,6 +433,9 @@ async function main() {
       await exec(conn, `test -d ${mainSync} && echo main-sync OK`);
       // 备份原 app/server.js index.html，覆盖
       const stamp = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14);
+      const releasePlan = createMainSyncReleasePlan(`${INSTALL_DIR}/app`, stamp, SERVICE, HTTP_PORT);
+      await exec(conn, releasePlan.backupCommand);
+      mainSyncRelease = releasePlan;
       await exec(conn, `cp -a ${INSTALL_DIR}/app/server.js ${INSTALL_DIR}/app/server.js.bak-${stamp}`);
       await exec(conn, `cp -a ${INSTALL_DIR}/app/index.html ${INSTALL_DIR}/app/index.html.bak-${stamp}`);
 
@@ -433,7 +465,6 @@ async function main() {
 
       // 重启主服务
       log(`重启 ${SERVICE} ...`);
-      mainRestartAttempted = true;
       await exec(conn, `systemctl restart ${SERVICE}`);
     }
 
@@ -476,6 +507,10 @@ async function main() {
       await exec(conn, swap.cleanup, { allowNonZero: true });
     }
     directorySwaps.length = 0;
+    if (mainSyncRelease) {
+      await exec(conn, mainSyncRelease.cleanupCommand, { allowNonZero: true });
+      mainSyncRelease = null;
+    }
 
     // 8. 清理
     await exec(conn, `rm -f ${remoteTar}`);
@@ -485,13 +520,15 @@ async function main() {
     log('✅ 部署完成');
     log(`浏览器访问: http://${HOST}:${HTTP_PORT}/ -> 左栏「协议助手」`);
   } catch (error) {
-    if (directorySwaps.length) {
+    if (mainSyncRelease) {
+      log('主壳同步失败，按完整发布备份恢复 ...');
+      for (const command of mainSyncRelease.recoveryCommands) {
+        await exec(conn, command, { allowNonZero: true });
+      }
+    } else if (directorySwaps.length) {
       log('主壳目录同步失败，恢复保留的 lib/video ...');
       for (let index = directorySwaps.length - 1; index >= 0; index--) {
         await exec(conn, directorySwaps[index].rollback, { allowNonZero: true });
-      }
-      if (mainRestartAttempted) {
-        await exec(conn, `systemctl restart ${SERVICE}`, { allowNonZero: true });
       }
     }
     throw error;

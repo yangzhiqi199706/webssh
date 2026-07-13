@@ -137,6 +137,7 @@ const setupDcimVideoConnectionSource = extractVideoFunction('setupDcimVideoConne
 const upgradePayloadEntries = extractScriptFunction('scripts/deploy-upgrade.js', 'upgradePayloadEntries');
 const protocolMainSyncEntries = extractScriptFunction('scripts/deploy-protocol.js', 'protocolMainSyncEntries');
 const createMainSyncDirectorySwap = extractScriptFunction('scripts/deploy-protocol.js', 'createMainSyncDirectorySwap');
+const createMainSyncReleasePlan = extractScriptFunction('scripts/deploy-protocol.js', 'createMainSyncReleasePlan');
 assertDeploymentManifest(upgradePayloadEntries(), 'deploy-upgrade');
 assertDeploymentManifest(protocolMainSyncEntries(), 'deploy-protocol main-sync');
 ['lib', 'video'].forEach(function (entry) {
@@ -152,6 +153,26 @@ assertDeploymentManifest(protocolMainSyncEntries(), 'deploy-protocol main-sync')
   assert.ok(swap.cleanup.indexOf('rm -rf ' + swap.backup) !== -1, entry + ' 验证成功后才清理旧目录');
   assert.strictEqual(/rm -rf [^;]+ && cp -a [^;]+/.test(swap.stage + ';' + swap.switch), false, entry + ' 不得先删旧目录再复制');
 });
+const releasePlan = createMainSyncReleasePlan('/opt/webssh/app', 'test-stamp', 'webssh', 3010);
+['server.js', 'index.html', 'node_modules', 'lib', 'video'].forEach(function (entry) {
+  const target = '/opt/webssh/app/' + entry;
+  const backup = releasePlan.backup + '/' + entry;
+  assert.ok(releasePlan.backupCommand.indexOf('cp -a ' + target + ' ' + backup) !== -1, entry + ' 必须在主壳更新前备份');
+  assert.ok(releasePlan.restoreCommand.indexOf('rm -rf ' + target) !== -1, entry + ' 失败必须移除新内容');
+  assert.ok(releasePlan.restoreCommand.indexOf('cp -a ' + backup + ' ' + target) !== -1, entry + ' 失败必须恢复旧内容');
+  assert.ok(releasePlan.restoreCommand.indexOf('else rm -rf ' + target) !== -1, entry + ' 原先不存在时恢复后必须保持不存在');
+});
+assert.deepStrictEqual(Array.prototype.slice.call(releasePlan.recoveryCommands), [
+  releasePlan.restoreCommand,
+  'systemctl restart webssh',
+  'systemctl is-active webssh',
+  "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3010/health",
+]);
+const protocolDeploySource = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'deploy-protocol.js'), 'utf8');
+const releaseBackupIndex = protocolDeploySource.indexOf('await exec(conn, releasePlan.backupCommand);');
+const releaseActivationIndex = protocolDeploySource.indexOf('mainSyncRelease = releasePlan;');
+assert.ok(releaseBackupIndex !== -1, '完整备份必须先执行');
+assert.ok(releaseActivationIndex > releaseBackupIndex, '仅成功完成完整备份后才允许进入回滚路径');
 const dcimVideoDefaults = createDcimVideoDefaults();
 assert.strictEqual(dcimVideoDefaults.passwordHash, '');
 assert.strictEqual(publicDcimVideoConfig(dcimVideoDefaults).hasPasswordHash, false);
