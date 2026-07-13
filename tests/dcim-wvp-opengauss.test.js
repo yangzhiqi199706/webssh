@@ -13,6 +13,7 @@ const {
   wvpRuntimeStatusFromSshResult,
   wvpRuntimeProbeCommand,
 } = require('../lib/dcim-wvp');
+const { createWvpRuntimeOperations } = require('../lib/dcim-wvp-runtime');
 const runtime = require('../video/assets/js/video-runtime');
 
 const validProbeText = [
@@ -134,6 +135,99 @@ assert.strictEqual(JSON.stringify(runtimeSshFailure).includes('must-not-leak'), 
   assert.strictEqual(runtimeSshFailure.status.checks[name].healthy, false, name + ' should be unavailable');
 });
 
+function runtimeOperationStatus(ready, restartAllowed) {
+  const coreReady = Boolean(ready);
+  return {
+    ok: true,
+    sshCode: 0,
+    status: {
+      status: ready ? 'ready' : 'unhealthy',
+      ready: Boolean(ready),
+      restartAllowed: Boolean(restartAllowed),
+      checks: {
+        service: { healthy: coreReady, summary: 'service state' },
+        legacyService: { healthy: Boolean(restartAllowed), summary: 'legacy state' },
+        listeners: { healthy: coreReady, summary: 'listener state' },
+        datasource: { healthy: Boolean(ready), summary: 'datasource state' },
+        database: { healthy: Boolean(ready), summary: 'database state' },
+        logs: { healthy: Boolean(ready), summary: 'log state' },
+      },
+    },
+  };
+}
+
+async function runWvpRuntimeOperationTests() {
+  let legacyRestartCalls = 0;
+  const legacyActiveRuntime = runtimeOperationStatus(false, false);
+  legacyActiveRuntime.status.checks.legacyService.summary = 'legacy active';
+  const legacyOps = createWvpRuntimeOperations({
+    collect: async () => legacyActiveRuntime,
+    restartService: async () => { legacyRestartCalls++; return { code: 0 }; },
+    sleep: async () => { throw new Error('legacy conflict must not poll'); },
+  });
+  const legacyResult = await legacyOps.restart();
+  assert.strictEqual(legacyResult.statusCode, 409);
+  assert.strictEqual(legacyResult.ok, false);
+  assert.strictEqual(legacyResult.status.restartAllowed, false);
+  assert.strictEqual(legacyRestartCalls, 0);
+
+  const restartCommands = [];
+  const allowedOps = createWvpRuntimeOperations({
+    collect: async () => runtimeOperationStatus(true, true),
+    restartService: async (command) => { restartCommands.push(command); return { code: 0 }; },
+    sleep: async () => {},
+  });
+  const allowedResult = await allowedOps.restart();
+  assert.strictEqual(allowedResult.ok, true);
+  assert.deepStrictEqual(restartCommands, ['systemctl restart wvp-opengauss.service 2>&1']);
+  assert.strictEqual(restartCommands.join('\n').includes('wvp-pro.service'), false);
+
+  const pollSequence = [runtimeOperationStatus(false, true), runtimeOperationStatus(false, true), runtimeOperationStatus(true, true)];
+  let pollCollectCalls = 0;
+  let pollSleepCalls = 0;
+  const pollingOps = createWvpRuntimeOperations({
+    collect: async () => pollSequence[pollCollectCalls++] || runtimeOperationStatus(true, true),
+    restartService: async () => ({ code: 0 }),
+    sleep: async () => { pollSleepCalls++; },
+  });
+  const pollingResult = await pollingOps.restart();
+  assert.strictEqual(pollingResult.ok, true);
+  assert.strictEqual(pollCollectCalls, 3);
+  assert.strictEqual(pollSleepCalls, 2);
+  assert.ok(pollSleepCalls <= 15);
+
+  let timeoutCollectCalls = 0;
+  let timeoutSleepCalls = 0;
+  const timeoutOps = createWvpRuntimeOperations({
+    collect: async () => { timeoutCollectCalls++; return runtimeOperationStatus(false, true); },
+    restartService: async () => ({ code: 0 }),
+    sleep: async () => { timeoutSleepCalls++; },
+  });
+  const timeoutResult = await timeoutOps.restart();
+  assert.strictEqual(timeoutResult.ok, false);
+  assert.strictEqual(timeoutCollectCalls, 16);
+  assert.strictEqual(timeoutSleepCalls, 15);
+
+  const unsafeFailure = {
+    ok: false, sshCode: -1, stdout: 'secret stdout', stderr: 'password stderr',
+    command: 'wvp-pro.service', raw: 'raw', password: 'password', secret: 'secret',
+    status: Object.assign(runtimeOperationStatus(false, false).status, {
+      summary: 'secret',
+      checks: { service: { healthy: false, summary: 'password secret' } },
+    }),
+  };
+  let failureCollectCalls = 0;
+  const failureOps = createWvpRuntimeOperations({
+    collect: async () => failureCollectCalls++ === 0 ? runtimeOperationStatus(false, true) : unsafeFailure,
+    restartService: async () => ({ code: 2, stdout: 'secret', stderr: 'password', command: 'raw' }),
+    sleep: async () => { throw new Error('failed restart must not poll'); },
+  });
+  const failureResult = await failureOps.restart();
+  assert.strictEqual(failureResult.ok, false);
+  assert.strictEqual(failureResult.restartCode, 2);
+  assert.strictEqual(/stdout|stderr|command|raw|password|secret/i.test(JSON.stringify(failureResult)), false);
+}
+
 [
   ['service', ['service.active', 'service.enabled']],
   ['legacyService', ['legacyService.active', 'legacyService.enabled']],
@@ -248,4 +342,9 @@ try {
   try { fs.unlinkSync(shellPath); } catch (error) {}
 }
 
-console.log('dcim wvp opengauss tests: PASS');
+runWvpRuntimeOperationTests().then(() => {
+  console.log('dcim wvp opengauss tests: PASS');
+}).catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});
