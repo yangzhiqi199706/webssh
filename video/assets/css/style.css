@@ -472,6 +472,7 @@ code.k { color: #67e8f9; background: rgba(34,211,238,.08); padding: 1px 5px; bor
   }
   #colTree { min-height: 180px; }
   #colGrid { min-height: 360px; }
+  #colGrid .video-grid { flex: 0 0 180px; min-height: 180px; }
   .playback-bar { padding: 8px; }
   .pb-row { gap: 8px; align-items: flex-end; }
   .pb-field, .pb-speed { flex: 1 1 100%; min-width: 0; }

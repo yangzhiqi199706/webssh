@@ -1289,6 +1289,10 @@ const handleTilePlaybackFailure = vm.runInNewContext(
   '(' + extractVideoFunction('handleTilePlaybackFailure') + ')',
   {}
 );
+const stopTilesForPageHide = vm.runInNewContext(
+  '(' + extractVideoFunction('stopTilesForPageHide') + ')',
+  {}
+);
 const loadVideoSource = extractVideoFunction('loadSource');
 
 function createPlaybackSelect(value) {
@@ -1514,10 +1518,66 @@ async function runVideoPlaybackUiTests() {
   assert.strictEqual(playbackStopRequests[0].url, '/api/dcim-video/playback/stop/record%2F1');
   assert.strictEqual(playbackStopRequests[0].options.method, 'POST');
   assert.deepStrictEqual(playbackFailureHint, { message: '回放播放器不可用', state: 'err' });
-  const liveFailureTile = { mode: 'live', stop: function () { throw new Error('实时错误不得停止回放'); } };
+  const realtimeStopRequests = [];
+  const liveFailureTile = {
+    source: 'webssh', mode: 'live', deviceId: 'device-2', channelId: 'channel/2', streamKey: 'live-stream', revision: 3,
+    _destroyPlayer: function () { this.destroyed = true; },
+  };
+  liveFailureTile.stop = function () {
+    releaseTileStream(this, runtime, function (url, options) {
+      realtimeStopRequests.push({ url: url, options: options });
+      return { catch: function () {} };
+    });
+  };
+  let realtimeHintCalled = false;
   assert.strictEqual(handleTilePlaybackFailure(liveFailureTile, '实时播放器错误', function () {
-    throw new Error('实时错误不得写入回放提示');
-  }), false);
+    realtimeHintCalled = true;
+  }), true);
+  assert.strictEqual(liveFailureTile.destroyed, true);
+  assert.strictEqual(liveFailureTile.mode, 'live');
+  assert.strictEqual(liveFailureTile.deviceId, null);
+  assert.strictEqual(liveFailureTile.revision, 4);
+  assert.strictEqual(realtimeStopRequests.length, 1);
+  assert.strictEqual(realtimeStopRequests[0].url, '/api/webssh-video/play/stop/device-2/channel%2F2');
+  assert.strictEqual(realtimeStopRequests[0].options.method, 'POST');
+  assert.strictEqual(realtimeHintCalled, false);
+
+  const unloadRequests = [];
+  function makeUnloadTile(source, mode, deviceId, channelId, streamKey) {
+    const tile = {
+      source: source, mode: mode, deviceId: deviceId, channelId: channelId, streamKey: streamKey, revision: 0,
+      _destroyPlayer: function () {},
+    };
+    tile.stop = function (options) {
+      releaseTileStream(this, runtime, function (url, requestOptions) {
+        unloadRequests.push({ url: url, options: requestOptions });
+        return { catch: function () {} };
+      }, options);
+    };
+    return tile;
+  }
+  const unloadLiveTile = makeUnloadTile('dcim', 'live', 'device-3', 'channel/3', 'live-3');
+  const unloadPlaybackTile = makeUnloadTile('webssh', 'playback', 'device-4', 'channel-4', 'record/4');
+  stopTilesForPageHide([unloadLiveTile, unloadPlaybackTile]);
+  assert.strictEqual(unloadRequests.length, 2);
+  assert.strictEqual(unloadRequests[0].url, '/api/dcim-video/play/stop/device-3/channel%2F3');
+  assert.strictEqual(unloadRequests[1].url, '/api/webssh-video/playback/stop/record%2F4');
+  unloadRequests.forEach(function (request) {
+    assert.strictEqual(request.options.method, 'POST');
+    assert.strictEqual(request.options.keepalive, true);
+  });
+  const beaconCalls = [];
+  const beaconTile = makeUnloadTile('dcim', 'playback', 'device-5', 'channel-5', 'record/5');
+  releaseTileStream(beaconTile, runtime, function () {
+    throw new Error('sendBeacon 成功时不得调用 fetch');
+  }, {
+    unload: true,
+    navigator: {
+      sendBeacon: function (url, data) { beaconCalls.push({ url: url, data: data }); return true; },
+    },
+  });
+  assert.strictEqual(beaconCalls.length, 1);
+  assert.strictEqual(beaconCalls[0].url, '/api/dcim-video/playback/stop/record%2F5');
 
   const validationHarness = createPlaybackControllerHarness();
   validationHarness.controller.setDevices([{ deviceId: 'd1', name: '设备一' }], 'dcim');
@@ -1636,6 +1696,38 @@ async function runVideoPlaybackUiTests() {
   assert.strictEqual(await staleStart, false);
   assert.strictEqual(staleTile.playCalls.length, 0);
   assert.strictEqual(otherTile.playCalls.length, 0);
+
+  let resolveChangedFormStart;
+  const changedFormRequests = [];
+  const changedFormTile = { revision: 0, playCalls: [] };
+  const changedFormHarness = createPlaybackControllerHarness({
+    activeTile: changedFormTile,
+    fetch: function (url, options) {
+      changedFormRequests.push({ url: url, options: options });
+      if (url.indexOf('/playback/start/') !== -1) {
+        return new Promise(function (resolve) { resolveChangedFormStart = resolve; });
+      }
+      return Promise.resolve({ json: function () { return Promise.resolve({ ok: true }); } });
+    },
+    replaceTile: function (tile, params) { tile.playCalls.push(params); },
+  });
+  changedFormHarness.controller.setDevices([
+    { deviceId: 'device-a', name: '设备 A' },
+    { deviceId: 'device-b', name: '设备 B' },
+  ], 'dcim');
+  changedFormHarness.elements.device.value = 'device-a';
+  changedFormHarness.elements.channel.value = 'channel-a';
+  changedFormHarness.elements.channel.options = [{ value: 'channel-a', textContent: '通道 A' }];
+  const changedFormStart = changedFormHarness.controller.start();
+  changedFormHarness.elements.device.value = 'device-b';
+  changedFormHarness.elements.channel.value = 'channel-b';
+  changedFormHarness.elements.start.value = '2026-07-13T10:01';
+  changedFormHarness.elements.end.value = '2026-07-13T10:20';
+  resolveChangedFormStart({ json: function () { return Promise.resolve({ ok: true, flvUrl: '/old.flv', streamKey: 'old/record' }); } });
+  assert.strictEqual(await changedFormStart, false);
+  assert.strictEqual(changedFormTile.playCalls.length, 0);
+  assert.strictEqual(changedFormRequests[1].url, '/api/dcim-video/playback/stop/old%2Frecord');
+  assert.strictEqual(changedFormRequests[1].options.method, 'POST');
 
   let resolveFixedTileStart;
   const fixedTile = { revision: 0, playCalls: [] };

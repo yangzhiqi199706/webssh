@@ -349,7 +349,7 @@ sdp-ip:    192.168.0.22</pre>
       return runtime.stopPath(state.source, 'live', state.deviceId, state.channelId, '');
     }
 
-    function releaseTileStream(tile, runtime, request) {
+    function releaseTileStream(tile, runtime, request, options) {
       var state = {
         source: tile.source,
         mode: tile.mode,
@@ -365,14 +365,30 @@ sdp-ip:    192.168.0.22</pre>
       tile.source = null;
       tile.mode = 'live';
       var path = tileStopPathForState(state, runtime);
-      if (path) request(path, { method: 'POST' }).catch(function () {});
+      if (path) {
+        var unloaded = Boolean(options && options.unload);
+        var navigatorObject = options && options.navigator;
+        var beaconSent = false;
+        if (unloaded && navigatorObject && typeof navigatorObject.sendBeacon === 'function') {
+          try { beaconSent = navigatorObject.sendBeacon(path, ''); } catch (_error) {}
+        }
+        if (!beaconSent) {
+          var requestOptions = unloaded ? { method: 'POST', keepalive: true } : { method: 'POST' };
+          request(path, requestOptions).catch(function () {});
+        }
+      }
       return state;
     }
 
+    function stopTilesForPageHide(tileList) {
+      tileList.forEach(function (tile) { tile.stop({ unload: true }); });
+    }
+
     function handleTilePlaybackFailure(tile, message, setHint) {
-      if (!tile || tile.mode !== 'playback') return false;
+      if (!tile) return false;
+      var wasPlayback = tile.mode === 'playback';
       tile.stop();
-      setHint(message, 'err');
+      if (wasPlayback) setHint(message, 'err');
       return true;
     }
 
@@ -392,6 +408,7 @@ sdp-ip:    192.168.0.22</pre>
     function createVideoPlaybackController(options) {
       var elements = options.elements;
       var state = { devices: [], source: '' };
+      var selectionRevision = 0;
 
       function setHint(message, stateClass) {
         elements.hint.textContent = message;
@@ -424,6 +441,15 @@ sdp-ip:    192.168.0.22</pre>
         return options.getSource() === source && options.getSourceEpoch() === epoch;
       }
 
+      function selectionIsCurrent(snapshot) {
+        return selectionRevision === snapshot.revision
+          && options.getSource() === snapshot.source
+          && elements.device.value === snapshot.deviceId
+          && elements.channel.value === snapshot.channelId
+          && elements.start.value === snapshot.startTime
+          && elements.end.value === snapshot.endTime;
+      }
+
       function stopStalePlayback(source, result) {
         if (!result || !result.ok || !result.streamKey) return;
         var path = options.runtime.stopPath(source, 'playback', '', '', result.streamKey);
@@ -431,6 +457,7 @@ sdp-ip:    192.168.0.22</pre>
       }
 
       function setDevices(devices, source) {
+        selectionRevision++;
         state.source = source;
         state.devices = Array.isArray(devices) ? devices.slice() : [];
         resetSelect(elements.device, '请选择回放设备');
@@ -513,6 +540,14 @@ sdp-ip:    192.168.0.22</pre>
         }
         var revision = options.getTileRevision(tile);
         var deviceId = String(device.deviceId);
+        var selection = {
+          source: source,
+          deviceId: deviceId,
+          channelId: channelId,
+          startTime: range.startTime,
+          endTime: range.endTime,
+          revision: selectionRevision,
+        };
         setHint('正在请求录像回放…');
         return options.fetch('/api/' + source + '-video/playback/start/' + encodeURIComponent(deviceId) + '/' + encodeURIComponent(channelId), {
           method: 'POST',
@@ -520,7 +555,8 @@ sdp-ip:    192.168.0.22</pre>
           body: JSON.stringify({ startTime: range.startTime, endTime: range.endTime }),
         }).then(function (response) { return response.json(); })
           .then(function (result) {
-            if (!sourceIsCurrent(source, epoch) || options.getTiles().indexOf(tile) === -1 || options.getTileRevision(tile) !== revision) {
+            if (!sourceIsCurrent(source, epoch) || !selectionIsCurrent(selection)
+              || options.getTiles().indexOf(tile) === -1 || options.getTileRevision(tile) !== revision) {
               stopStalePlayback(source, result);
               return false;
             }
@@ -591,6 +627,7 @@ sdp-ip:    192.168.0.22</pre>
         loadChannels: loadChannels,
         start: start,
         control: control,
+        selectionChanged: function () { selectionRevision++; },
         showFailure: function (message) {
           setHint(message, 'err');
           syncControls();
@@ -660,7 +697,7 @@ sdp-ip:    192.168.0.22</pre>
       this.elActions.hidden = false;
       this.elLoader.hidden = false;
       if (!window.flvjs || !window.flvjs.isSupported()) {
-        var unsupportedMessage = '当前浏览器不支持 MSE / flv.js，已停止录像流';
+        var unsupportedMessage = '当前浏览器不支持 MSE / flv.js，已停止视频流';
         this.elLoader.hidden = true;
         this.elEmpty.style.display = '';
         this.video.style.display = 'none';
@@ -679,7 +716,7 @@ sdp-ip:    192.168.0.22</pre>
       p.on(window.flvjs.Events.MEDIA_INFO, function () { self.elLoader.hidden = true; });
       p.on(window.flvjs.Events.ERROR, function (et, ed) {
         self.elLoader.hidden = true;
-        if (handleTilePlaybackFailure(self, '回放播放器发生错误，已停止录像流', function (message) {
+        if (handleTilePlaybackFailure(self, '视频播放器发生错误，已停止视频流', function (message) {
           if (playbackController) playbackController.showFailure(message);
         })) return;
         console.warn('[tile ' + self.idx + '] flv error', et, ed);
@@ -699,8 +736,11 @@ sdp-ip:    192.168.0.22</pre>
       }
       try { this.video.removeAttribute('src'); this.video.load(); } catch (_e) {}
     };
-    Tile.prototype.stop = function () {
-      var state = releaseTileStream(this, window.DcimVideoRuntime, fetch);
+    Tile.prototype.stop = function (options) {
+      var state = releaseTileStream(this, window.DcimVideoRuntime, fetch, {
+        unload: Boolean(options && options.unload),
+        navigator: window.navigator,
+      });
       this.elEmpty.style.display = '';
       this.video.style.display = 'none';
       this.elOverlay.hidden = true;
@@ -764,7 +804,13 @@ sdp-ip:    192.168.0.22</pre>
       getTileRevision: function (tile) { return tile.revision; },
       replaceTile: replaceTileStream,
     });
-    $('pbDevice').addEventListener('change', function () { playbackController.loadChannels(); });
+    $('pbDevice').addEventListener('change', function () {
+      playbackController.selectionChanged();
+      playbackController.loadChannels();
+    });
+    $('pbChannel').addEventListener('change', function () { playbackController.selectionChanged(); });
+    $('pbStart').addEventListener('change', function () { playbackController.selectionChanged(); });
+    $('pbEnd').addEventListener('change', function () { playbackController.selectionChanged(); });
     $('btnPbStart').addEventListener('click', function () { playbackController.start(); });
     $('btnPbPause').addEventListener('click', function () { playbackController.control('pause'); });
     $('btnPbResume').addEventListener('click', function () { playbackController.control('play'); });
@@ -1006,7 +1052,7 @@ sdp-ip:    192.168.0.22</pre>
       if (did) playFromDevice(did, name);
     });
 
-    window.addEventListener("beforeunload", function () { tiles.forEach(function (t) { t.stop(); }); });
+    window.addEventListener('pagehide', function () { stopTilesForPageHide(tiles); });
 
   })();
   </script>
