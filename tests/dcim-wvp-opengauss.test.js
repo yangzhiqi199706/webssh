@@ -2,6 +2,7 @@
 
 const assert = require('assert');
 const childProcess = require('child_process');
+const EventEmitter = require('events');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -13,7 +14,7 @@ const {
   wvpRuntimeStatusFromSshResult,
   wvpRuntimeProbeCommand,
 } = require('../lib/dcim-wvp');
-const { createWvpRuntimeOperations } = require('../lib/dcim-wvp-runtime');
+const { createSshCommandRunner, createWvpRuntimeOperations } = require('../lib/dcim-wvp-runtime');
 const runtime = require('../video/assets/js/video-runtime');
 
 const validProbeText = [
@@ -170,20 +171,31 @@ function runtimeOperationStatus(ready, restartAllowed) {
   };
 }
 
-function completesWithin(promise, timeoutMs) {
-  let timer;
-  return Promise.race([
-    promise,
-    new Promise((resolve, reject) => {
-      timer = setTimeout(() => reject(new Error('operation timed out in test')), timeoutMs);
-    }),
-  ]).then((value) => {
-    clearTimeout(timer);
-    return value;
-  }, (error) => {
-    clearTimeout(timer);
-    throw error;
+async function runSshCommandTimeoutTests() {
+  class FakeClient extends EventEmitter {
+    constructor() {
+      super();
+      FakeClient.last = this;
+      this.ended = false;
+      this.stream = new EventEmitter();
+      this.stream.stderr = new EventEmitter();
+      this.stream.closed = false;
+      this.stream.close = () => { this.stream.closed = true; };
+      this.stream.destroy = () => { this.stream.destroyed = true; };
+    }
+    connect() { process.nextTick(() => this.emit('ready')); }
+    exec(_command, callback) { callback(null, this.stream); }
+    end() { this.ended = true; }
+  }
+
+  const run = createSshCommandRunner(FakeClient);
+  const timeoutError = await new Promise((resolve) => {
+    run({ host: 'test', port: 22, username: 'test', password: '', commandTimeoutMs: 5 }, 'probe', (error) => resolve(error));
   });
+  assert.strictEqual(timeoutError.code, 'SSH_COMMAND_TIMEOUT');
+  assert.strictEqual(timeoutError.message, 'SSH command timed out');
+  assert.strictEqual(FakeClient.last.stream.closed, true);
+  assert.strictEqual(FakeClient.last.ended, true);
 }
 
 async function runWvpRuntimeOperationTests() {
@@ -273,27 +285,26 @@ async function runWvpRuntimeOperationTests() {
   assert.strictEqual(failureResult.restartCode, 2);
   assert.strictEqual(/stdout|stderr|command|raw|password|secret/i.test(JSON.stringify(failureResult)), false);
 
-  const never = () => new Promise(() => {});
   const collectTimeoutOps = createWvpRuntimeOperations({
     timeoutMs: 5,
-    collect: never,
+    collect: async () => Object.assign(runtimeOperationStatus(false, true), { timedOut: true }),
     restartService: async () => ({ code: 0 }),
     sleep: async () => {},
   });
-  const collectTimeoutStatus = await completesWithin(collectTimeoutOps.readStatus(), 100);
+  const collectTimeoutStatus = await collectTimeoutOps.readStatus();
   assert.strictEqual(collectTimeoutStatus.status.status, 'unavailable');
   assert.strictEqual(collectTimeoutStatus.status.ready, false);
-  const collectTimeoutRestart = await completesWithin(collectTimeoutOps.restart(), 100);
+  const collectTimeoutRestart = await collectTimeoutOps.restart();
   assert.strictEqual(collectTimeoutRestart.statusCode, 504);
   assert.strictEqual(collectTimeoutRestart.ok, false);
 
   const restartTimeoutOps = createWvpRuntimeOperations({
     timeoutMs: 5,
     collect: async () => runtimeOperationStatus(true, true),
-    restartService: never,
+    restartService: async () => ({ code: -1, timedOut: true }),
     sleep: async () => {},
   });
-  const restartTimeoutResult = await completesWithin(restartTimeoutOps.restart(), 100);
+  const restartTimeoutResult = await restartTimeoutOps.restart();
   assert.strictEqual(restartTimeoutResult.statusCode, 504);
   assert.strictEqual(restartTimeoutResult.ok, false);
   assert.strictEqual(restartTimeoutResult.status.status, 'unavailable');
@@ -301,13 +312,59 @@ async function runWvpRuntimeOperationTests() {
   let pollTimeoutCollectCalls = 0;
   const pollTimeoutOps = createWvpRuntimeOperations({
     timeoutMs: 5,
-    collect: async () => pollTimeoutCollectCalls++ === 0 ? runtimeOperationStatus(false, true) : never(),
+    collect: async () => pollTimeoutCollectCalls++ === 0 ? runtimeOperationStatus(false, true) : Object.assign(runtimeOperationStatus(false, true), { timedOut: true }),
     restartService: async () => ({ code: 0 }),
     sleep: async () => {},
   });
-  const pollTimeoutResult = await completesWithin(pollTimeoutOps.restart(), 100);
+  const pollTimeoutResult = await pollTimeoutOps.restart();
   assert.strictEqual(pollTimeoutResult.statusCode, 504);
   assert.strictEqual(pollTimeoutResult.ok, false);
+
+  let probeTimeoutRestartCalls = 0;
+  let probeTimeoutSleepCalls = 0;
+  const probeTimeoutOps = createWvpRuntimeOperations({
+    collect: async () => Object.assign(runtimeOperationStatus(false, true), { timedOut: true }),
+    restartService: async () => { probeTimeoutRestartCalls++; return { code: 0 }; },
+    sleep: async () => { probeTimeoutSleepCalls++; },
+  });
+  const probeTimeoutResult = await probeTimeoutOps.restart();
+  assert.strictEqual(probeTimeoutResult.statusCode, 504);
+  assert.strictEqual(probeTimeoutResult.ok, false);
+  assert.strictEqual(probeTimeoutRestartCalls, 0);
+  assert.strictEqual(probeTimeoutSleepCalls, 0);
+
+  const sshUnavailable = runtimeOperationStatus(false, false);
+  sshUnavailable.ok = false;
+  sshUnavailable.sshCode = -1;
+  const sshUnavailableResult = await createWvpRuntimeOperations({
+    collect: async () => sshUnavailable,
+    restartService: async () => { throw new Error('SSH 不可用时不得重启'); },
+    sleep: async () => { throw new Error('SSH 不可用时不得轮询'); },
+  }).restart();
+  assert.strictEqual(sshUnavailableResult.statusCode, 503);
+  assert.strictEqual(sshUnavailableResult.restartCode, -1);
+
+  let clock = 0;
+  const collectTimeouts = [];
+  const deadlineSleepCalls = [];
+  const deadlineResult = await createWvpRuntimeOperations({
+    timeoutMs: 1200,
+    restartDeadlineMs: 2500,
+    now: () => clock,
+    collect: async (options) => {
+      collectTimeouts.push(options.timeoutMs);
+      return runtimeOperationStatus(false, true);
+    },
+    restartService: async (_command, options) => {
+      assert.strictEqual(options.timeoutMs, 1200);
+      return { code: 0 };
+    },
+    sleep: async (ms) => { deadlineSleepCalls.push(ms); clock += ms; },
+  }).restart();
+  assert.strictEqual(deadlineResult.statusCode, 504);
+  assert.strictEqual(deadlineResult.ok, false);
+  assert.deepStrictEqual(collectTimeouts, [1200, 1200, 500]);
+  assert.deepStrictEqual(deadlineSleepCalls, [1000, 1000, 500]);
 }
 
 [
@@ -356,9 +413,50 @@ assert.strictEqual(typeof browser.window.DcimVideoRuntime.validatePlaybackRange,
 assert.strictEqual(typeof browser.window.DcimVideoRuntime.stopPath, 'function');
 
 const dbPage = fs.readFileSync(path.join(__dirname, '..', 'db', 'index.html'), 'utf8');
+const serverSource = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+const runtimeSource = fs.readFileSync(path.join(__dirname, '..', 'lib', 'dcim-wvp-runtime.js'), 'utf8');
+assert.strictEqual(/async function withTimeout\(/.test(runtimeSource), false, 'WVP 编排不得只用 Promise.race 宣告超时');
+assert.ok(
+  /app\.post\('\/api\/db-manager\/opengauss\/wvp\/restart', async \(req, res\) => \{\s*if \(!isAuthed\(req\)\) \{\s*return res\.status\(401\)\.json\(\{ ok: false, message: '请先登录' \}\);\s*\}/.test(serverSource),
+  'WVP 重启路由必须拒绝未登录请求'
+);
+assert.ok(
+  /const runSshCommand = createSshCommandRunner\(Client\);[\s\S]*?function sshExecCommand\(cfg, cmd, callback\) \{\s*return runSshCommand\(cfg, cmd, callback\);\s*\}/.test(serverSource),
+  'SSH 命令必须委托给可取消的受控执行器'
+);
+assert.ok(
+  /function sshRun\(cmd, options\) \{[\s\S]*?const timeoutMs = Number\(options && options\.timeoutMs\);[\s\S]*?commandTimeoutMs: Number\.isFinite\(timeoutMs\)/.test(serverSource),
+  'SSH 运行器必须把调用方超时传给命令执行层'
+);
+assert.ok(
+  /async function collectWvpRuntimeStatus\(options\) \{[\s\S]*?sshRun\(runInContainerCmd\(cfg\.container, probe\), options\)/.test(serverSource),
+  'WVP 状态探测必须使用受控 SSH 超时'
+);
+assert.ok(
+  /restartService: \(command, options\) => sshRun\(runInContainerCmd\(cfg\.container,[\s\S]*?\), options\)/.test(serverSource),
+  'WVP 重启必须使用受控 SSH 超时'
+);
+assert.ok(
+  /app\.get\('\/api\/db-manager\/opengauss\/wvp\/runtime-status', async \(_req, res\) => \{[\s\S]*?const statusCode = runtime\.timedOut \? 504 : \(runtime\.ok \? 200 : 503\);[\s\S]*?res\.status\(statusCode\)\.json\(runtime\);/.test(serverSource),
+  'WVP 状态路由必须把 SSH 不可用和探测超时映射为 503/504'
+);
+assert.ok(
+  /res\.status\(result\.statusCode\)\.json\(\{ ok: result\.ok, restartCode: result\.restartCode, statusCode: result\.statusCode, status: result\.status \}\)/.test(serverSource),
+  'WVP 重启响应必须安全地返回状态码语义'
+);
 assert.ok(/function openWvpRuntimeModal\(\)\s*\{[\s\S]*?renderWvpRuntimeStatus\(null\);/.test(dbPage));
-assert.ok(/renderWvpRuntimeStatus\(r\.ok \? r\.status : null\);/.test(dbPage));
-assert.ok(/if \(r\.restartCode === null \|\| r\.restartCode === 75\)/.test(dbPage));
+assert.ok(/renderWvpRuntimeStatus\(r\.ok \? r\.status : \(r\.status \|\| null\)\);/.test(dbPage));
+assert.ok(/if \(r\.restartCode === 75\)/.test(dbPage));
+assert.ok(/else if \(r\.statusCode === 504\)[\s\S]*?探测超时/.test(dbPage));
+assert.ok(/else if \(r\.statusCode === 503\)[\s\S]*?状态不可用/.test(dbPage));
+const loadWvpRuntimeStatusSource = /async function loadWvpRuntimeStatus\(\) \{([\s\S]*?)\n    \}\n\n    \$\('btnRestartWvp'\)/.exec(dbPage);
+assert.ok(loadWvpRuntimeStatusSource);
+assert.ok(/catch \(_e\) \{\s*renderWvpRuntimeStatus\(null\);[\s\S]*?状态不可用/.test(loadWvpRuntimeStatusSource[1]));
+const restartWvpSource = /\$\('btnRestartWvp'\)\.addEventListener\('click', async \(\) => \{([\s\S]*?)\n    \}\);\n\n    \/\//.exec(dbPage);
+assert.ok(restartWvpSource);
+assert.ok(/else \{\s*box\.innerHTML = '<span class="err">状态不可用/.test(restartWvpSource[1]));
+assert.ok(/catch \(_e\) \{\s*box\.innerHTML = '<span class="err">状态不可用/.test(restartWvpSource[1]));
+assert.strictEqual(/r\.restartCode === null \|\| r\.restartCode === 75/.test(dbPage), false);
 
 const command = wvpRuntimeProbeCommand();
 assert.ok(/service\.active=/.test(command));
@@ -429,7 +527,7 @@ try {
   try { fs.unlinkSync(shellPath); } catch (error) {}
 }
 
-runWvpRuntimeOperationTests().then(() => {
+runWvpRuntimeOperationTests().then(runSshCommandTimeoutTests).then(() => {
   console.log('dcim wvp opengauss tests: PASS');
 }).catch((error) => {
   console.error(error);

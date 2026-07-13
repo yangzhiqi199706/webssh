@@ -1040,9 +1040,11 @@ SHOW DATABASES;"></textarea>
       lastWvpRuntimeStatus = status || null;
       const ready = Boolean(status && status.ready);
       const restartAllowed = Boolean(status && status.restartAllowed);
+      const unavailable = !status || status.status === 'unavailable';
+      const restartHint = unavailable ? '状态不可用' : (restartAllowed ? '可重启新服务' : '未通过重启前检查');
       $('wvpRuntimeOverall').innerHTML = [
         ['运行状态', '<span class="pill ' + (ready ? 'ok' : 'err') + '">' + (ready ? '已就绪' : '未就绪') + '</span>'],
-        ['重启许可', '<span class="pill ' + (restartAllowed ? 'ok' : 'err') + '">' + (restartAllowed ? '可重启新服务' : '旧服务冲突或状态不可用') + '</span>'],
+        ['重启许可', '<span class="pill ' + (restartAllowed ? 'ok' : 'err') + '">' + restartHint + '</span>'],
       ].map(([k, v]) => '<div class="kv-row"><span class="k">' + k + '</span><span class="v">' + v + '</span><span></span></div>').join('');
       const checks = (status && status.checks) || {};
       $('wvpRuntimeChecks').innerHTML = Object.keys(WVP_RUNTIME_LABELS).map((key) => {
@@ -1059,9 +1061,17 @@ SHOW DATABASES;"></textarea>
     async function loadWvpRuntimeStatus() {
       try {
         const r = await jfetch(API + '/opengauss/wvp/runtime-status');
-        renderWvpRuntimeStatus(r.ok ? r.status : null);
+        renderWvpRuntimeStatus(r.ok ? r.status : (r.status || null));
+        if (!r.ok) {
+          const box = $('wvpRuntimeActionStatus');
+          box.style.display = '';
+          box.innerHTML = '<span class="err">' + (r.timedOut ? '探测超时，状态不可用。' : '状态不可用，未执行重启。') + '</span>';
+        }
       } catch (_e) {
         renderWvpRuntimeStatus(null);
+        const box = $('wvpRuntimeActionStatus');
+        box.style.display = '';
+        box.innerHTML = '<span class="err">状态不可用，未执行重启。</span>';
       }
     }
 
@@ -1074,15 +1084,21 @@ SHOW DATABASES;"></textarea>
       try {
         const r = await jfetch(API + '/opengauss/wvp/restart', { method: 'POST' });
         renderWvpRuntimeStatus(r.status || lastWvpRuntimeStatus);
-        if (r.restartCode === null || r.restartCode === 75) {
+        if (r.restartCode === 75) {
           box.innerHTML = '<span class="err">旧服务冲突，未执行重启。</span>';
+        } else if (r.statusCode === 504) {
+          box.innerHTML = '<span class="err">探测超时，未继续轮询。</span>';
+        } else if (r.statusCode === 503) {
+          box.innerHTML = '<span class="err">状态不可用，未执行重启。</span>';
         } else if (r.ok) {
           box.innerHTML = '<span style="color:#a7f3d0">✓ WVP 已重启，核心服务和监听已恢复。</span>';
+        } else if (r.restartCode === null) {
+          box.innerHTML = '<span class="err">重启前检查未通过，未执行重启。</span>';
         } else {
-          box.innerHTML = '<span class="err">✗ 重启未达到就绪状态，请查看六项检查。</span>';
+          box.innerHTML = '<span class="err">状态不可用或重启未达到就绪状态，请查看六项检查。</span>';
         }
       } catch (_e) {
-        box.innerHTML = '<span class="err">✗ 状态请求失败。</span>';
+        box.innerHTML = '<span class="err">状态不可用，未执行重启。</span>';
       } finally {
         wvpRuntimePending = false;
         renderWvpRuntimeStatus(lastWvpRuntimeStatus);

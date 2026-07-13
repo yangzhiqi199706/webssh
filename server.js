@@ -4,8 +4,11 @@ const http = require('http');
 const net = require('net');
 const WebSocket = require('ws');
 const { Client } = require('ssh2');
+const { createSshCommandRunner } = require('./lib/dcim-wvp-runtime');
 const { spawn } = require('child_process');
 const httpProxy = require('http-proxy');
+
+const runSshCommand = createSshCommandRunner(Client);
 
 const app = express();
 const server = http.createServer(app);
@@ -855,38 +858,7 @@ function buildTimeInfoResponse(stdout, clientEpochMs) {
 }
 
 function sshExecCommand(cfg, cmd, callback) {
-  const client = new Client();
-  let finished = false;
-  function done(err, result) {
-    if (finished) return;
-    finished = true;
-    try { client.end(); } catch (_e) {}
-    callback(err, result);
-  }
-  client.on('ready', function () {
-    client.exec(cmd, function (err, stream) {
-      if (err) { done(err); return; }
-      let stdout = '';
-      let stderr = '';
-      stream.on('data', function (data) { stdout += data.toString('utf8'); });
-      stream.stderr.on('data', function (data) { stderr += data.toString('utf8'); });
-      stream.on('close', function (code, signal) {
-        done(null, { code: typeof code === 'number' ? code : -1, signal: signal || null, stdout: stdout.trim(), stderr: stderr.trim() });
-      });
-      stream.on('error', done);
-    });
-  });
-  client.on('error', done);
-  client.on('end', function () {
-    if (!finished) done(new Error('SSH connection ended prematurely'));
-  });
-  client.connect({
-    host: cfg.host,
-    port: cfg.port,
-    username: cfg.username,
-    password: cfg.password,
-    readyTimeout: 10000,
-  });
+  return runSshCommand(cfg, cmd, callback);
 }
 
 function remoteJoin(basePath, name) {
@@ -10323,16 +10295,21 @@ wssTcp.on('connection', function (ws) {
       ' -c ' + shellEscape(innerCmd);
   }
   // SSH -> 目标机 -> 命令
-  function sshRun(cmd) {
+  function sshRun(cmd, options) {
     return new Promise((resolve) => {
       const sshCfg = cfg.ssh || {};
+      const timeoutMs = Number(options && options.timeoutMs);
       if (!sshCfg.host || !sshCfg.username || !sshCfg.password) {
         return resolve({ code: -1, stdout: '', stderr: 'SSH 未配置（host/username/password 缺失）' });
       }
       sshExecCommand({
         host: sshCfg.host, port: Number(sshCfg.port) || 22,
         username: sshCfg.username, password: sshCfg.password,
+        commandTimeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : undefined,
       }, cmd, (err, r) => {
+        if (err && err.code === 'SSH_COMMAND_TIMEOUT') {
+          return resolve({ code: -1, stdout: '', stderr: 'SSH command timed out', timedOut: true });
+        }
         if (err) return resolve({ code: -1, stdout: '', stderr: err.message || String(err) });
         resolve(r || { code: -1, stdout: '', stderr: '空结果' });
       });
@@ -11206,19 +11183,21 @@ wssTcp.on('connection', function (ws) {
     return 'ssh=' + runtime.sshCode + ' ready=' + Boolean(status.ready) +
       ' restartAllowed=' + Boolean(status.restartAllowed);
   }
-  async function collectWvpRuntimeStatus() {
+  async function collectWvpRuntimeStatus(options) {
     try {
       const probe = 'timeout 10s sh -c ' + shellEscape(wvpUtils.wvpRuntimeProbeCommand());
-      const result = await sshRun(runInContainerCmd(cfg.container, probe));
-      return wvpUtils.wvpRuntimeStatusFromSshResult(result);
+      const result = await sshRun(runInContainerCmd(cfg.container, probe), options);
+      const runtime = wvpUtils.wvpRuntimeStatusFromSshResult(result);
+      if (result.code === 124 || result.timedOut) runtime.timedOut = true;
+      return runtime;
     } catch (_e) {
       return wvpUtils.wvpRuntimeStatusFromSshResult({ code: -1, stdout: '' });
     }
   }
   const wvpRuntimeOperations = createWvpRuntimeOperations({
     collect: collectWvpRuntimeStatus,
-    restartService: (command) => sshRun(runInContainerCmd(cfg.container,
-      'timeout 10s sh -c ' + shellEscape(command))),
+    restartService: (command, options) => sshRun(runInContainerCmd(cfg.container,
+      'timeout 10s sh -c ' + shellEscape(command)), options),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   });
 
@@ -11226,15 +11205,19 @@ wssTcp.on('connection', function (ws) {
   app.get('/api/db-manager/opengauss/wvp/runtime-status', async (_req, res) => {
     const runtime = await wvpRuntimeOperations.readStatus();
     appendLog('wvp/runtime-status ' + wvpRuntimeSummary(runtime));
-    res.json(runtime);
+    const statusCode = runtime.timedOut ? 504 : (runtime.ok ? 200 : 503);
+    res.status(statusCode).json(runtime);
   });
 
   // POST /api/db-manager/opengauss/wvp/restart - 受控重启仅限新的 openGauss WVP 服务。
-  app.post('/api/db-manager/opengauss/wvp/restart', async (_req, res) => {
+  app.post('/api/db-manager/opengauss/wvp/restart', async (req, res) => {
+    if (!isAuthed(req)) {
+      return res.status(401).json({ ok: false, message: '请先登录' });
+    }
     const result = await wvpRuntimeOperations.restart();
     appendLog('wvp/restart code=' + result.restartCode + ' coreReady=' + result.ok +
       ' ' + wvpRuntimeSummary({ sshCode: null, status: result.status }));
-    res.status(result.statusCode).json({ ok: result.ok, restartCode: result.restartCode, status: result.status });
+    res.status(result.statusCode).json({ ok: result.ok, restartCode: result.restartCode, statusCode: result.statusCode, status: result.status });
   });
 
   // POST /api/db-manager/opengauss/wvp/init - 一键建 WVP 表
