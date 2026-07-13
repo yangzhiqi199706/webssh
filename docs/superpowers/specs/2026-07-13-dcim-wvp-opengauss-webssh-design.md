@@ -37,9 +37,9 @@ The endpoint never returns environment-file values, JDBC passwords, Redis passwo
 
 ## WVP API Login
 
-`GET /api/dcim-video/config` returns `apiBase`, `username`, `timeoutMs`, and `hasPasswordHash`. It never returns the stored hash.
+`GET /api/dcim-video/connection-config` returns `apiBase`, `username`, `timeoutMs`, and `hasPasswordHash`. It never returns the stored hash. The existing `/api/dcim-video/config` route remains the WVP server configuration proxy.
 
-`PUT /api/dcim-video/config` accepts `apiBase`, `username`, `password`, and `timeoutMs`. A non-empty plaintext password is MD5-hashed on the server; only the hash is persisted. Empty or masked password input preserves the previous hash. Validation limits `apiBase` to HTTPS and limits timeout to a practical range. Saving clears the cached WVP token.
+`PUT /api/dcim-video/connection-config` accepts `apiBase`, `username`, `password`, and `timeoutMs`. A non-empty plaintext password is MD5-hashed on the server; only the hash is persisted. Empty or masked password input preserves the previous hash. Validation limits `apiBase` to HTTPS and limits timeout to a practical range. Saving clears the cached WVP token.
 
 `POST /api/dcim-video/test-login` performs the WVP `/api/user/login` request with the configured hash and returns only reachability, HTTP status, and a generic diagnostic. It never forwards an access token to the browser.
 
