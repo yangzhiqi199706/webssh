@@ -30,6 +30,9 @@
       <button class="btn primary big" id="btnLoadDcim" type="button" title="拉取 dcim wvp（5060 SIP）的配置和设备">
         📡 加载 dcim 视频监控
       </button>
+      <button class="btn" id="btnDcimConnection" type="button" title="配置 dcim WVP HTTPS 连接">
+        DCIM WVP 连接
+      </button>
 
       <span class="role-tag" id="webTag" title="webssh 视频监控状态">
         <span class="dot off" id="webDot"></span>webssh 视频监控
@@ -117,6 +120,40 @@ sdp-ip:    192.168.0.22</pre>
         </div>
       </div>
     </section>
+
+    <div class="modal-mask" id="dcimConnectionModal" aria-hidden="true">
+      <section class="modal" style="width:min(460px,100%)" role="dialog" aria-modal="true" aria-labelledby="dcimConnectionTitle">
+        <header class="modal-head">
+          <h3 id="dcimConnectionTitle">DCIM WVP 连接</h3>
+          <button class="btn small" id="btnDcimConnectionClose" type="button" title="关闭">关闭</button>
+        </header>
+        <div class="modal-body">
+          <div class="form-grid">
+            <label class="field span-2">
+              <span>API 地址</span>
+              <input id="dcimConnectionApiBase" type="url" inputmode="url" autocomplete="url" />
+            </label>
+            <label class="field">
+              <span>用户名</span>
+              <input id="dcimConnectionUsername" type="text" autocomplete="username" />
+            </label>
+            <label class="field">
+              <span>超时（毫秒）</span>
+              <input id="dcimConnectionTimeout" type="number" min="1000" max="30000" step="1000" inputmode="numeric" />
+            </label>
+            <label class="field span-2">
+              <span>密码 <span class="note">留空保持已保存的密码</span></span>
+              <input id="dcimConnectionPassword" type="password" autocomplete="new-password" />
+            </label>
+          </div>
+          <div class="hint" id="dcimConnectionHint" aria-live="polite"></div>
+          <div class="actions">
+            <button class="btn" id="btnDcimConnectionTest" type="button">测试登录</button>
+            <button class="btn primary" id="btnDcimConnectionSave" type="button">保存</button>
+          </div>
+        </div>
+      </section>
+    </div>
   </div>
 
   <script>
@@ -129,6 +166,133 @@ sdp-ip:    192.168.0.22</pre>
     var dcimTagEl = $('dcimTag');
     var webDot = $('webDot');
     var webTagEl = $('webTag');
+
+    function setupDcimVideoConnection() {
+      var openButton = $('btnDcimConnection');
+      var modal = $('dcimConnectionModal');
+      var closeButton = $('btnDcimConnectionClose');
+      var apiBaseInput = $('dcimConnectionApiBase');
+      var usernameInput = $('dcimConnectionUsername');
+      var passwordInput = $('dcimConnectionPassword');
+      var timeoutInput = $('dcimConnectionTimeout');
+      var testButton = $('btnDcimConnectionTest');
+      var saveButton = $('btnDcimConnectionSave');
+      var hintBox = $('dcimConnectionHint');
+
+      function setHint(message, state) {
+        hintBox.textContent = message;
+        hintBox.className = 'hint' + (state ? ' ' + state : '');
+      }
+      function setBusy(busy) {
+        testButton.disabled = busy;
+        saveButton.disabled = busy;
+      }
+      function applyConfig(config) {
+        var value = config || {};
+        apiBaseInput.value = value.apiBase == null ? '' : String(value.apiBase);
+        usernameInput.value = value.username == null ? '' : String(value.username);
+        timeoutInput.value = value.timeoutMs == null ? '' : String(value.timeoutMs);
+        passwordInput.value = '';
+        passwordInput.placeholder = value.hasPasswordHash ? '已配置，留空则保持不变' : '未配置';
+      }
+      function closeModal() {
+        modal.classList.remove('open');
+        modal.setAttribute('aria-hidden', 'true');
+      }
+      function openModal() {
+        modal.classList.add('open');
+        modal.setAttribute('aria-hidden', 'false');
+        loadConfig();
+      }
+      async function loadConfig() {
+        setBusy(true);
+        setHint('读取连接配置中…');
+        try {
+          var response = await fetch('/api/dcim-video/connection-config', { method: 'GET' });
+          var result = await response.json();
+          if (response.status === 401) {
+            setHint('登录已过期，请重新登录', 'err');
+            return;
+          }
+          if (!result || !result.ok || !result.config) {
+            setHint('无法读取连接配置', 'err');
+            return;
+          }
+          applyConfig(result.config);
+          setHint('密码不会显示，留空将保持当前配置');
+        } catch (_e) {
+          setHint('无法读取连接配置', 'err');
+        } finally {
+          setBusy(false);
+        }
+      }
+      async function saveConfig() {
+        var payload = {
+          apiBase: apiBaseInput.value,
+          username: usernameInput.value,
+          timeoutMs: timeoutInput.value,
+        };
+        if (passwordInput.value !== '') payload.password = passwordInput.value;
+        setBusy(true);
+        setHint('保存连接配置中…');
+        try {
+          var response = await fetch('/api/dcim-video/connection-config', {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          var result = await response.json();
+          if (response.status === 401) {
+            setHint('登录已过期，请重新登录', 'err');
+            return;
+          }
+          if (!result || !result.ok) {
+            setHint('无法保存连接配置', 'err');
+            return;
+          }
+          if (result.config) applyConfig(result.config);
+          setHint('连接配置已保存', 'ok');
+        } catch (_e) {
+          setHint('无法保存连接配置', 'err');
+        } finally {
+          setBusy(false);
+        }
+      }
+      async function testLogin() {
+        if (passwordInput.value !== '') {
+          setHint('请先保存新的密码后再测试', 'err');
+          return;
+        }
+        setBusy(true);
+        setHint('正在测试登录…');
+        try {
+          var response = await fetch('/api/dcim-video/test-login', { method: 'POST' });
+          var result = await response.json();
+          if (response.status === 401) {
+            setHint('登录已过期，请重新登录', 'err');
+            return;
+          }
+          setHint(result && result.ok ? 'WVP 登录成功' : 'WVP 登录失败，请检查账号或密码',
+            result && result.ok ? 'ok' : 'err');
+        } catch (_e) {
+          setHint('WVP 登录失败，请检查账号或密码', 'err');
+        } finally {
+          setBusy(false);
+        }
+      }
+
+      openButton.addEventListener('click', openModal);
+      closeButton.addEventListener('click', closeModal);
+      modal.addEventListener('click', function (event) {
+        if (event.target === modal) closeModal();
+      });
+      document.addEventListener('keydown', function (event) {
+        if (event.key === 'Escape') closeModal();
+      });
+      saveButton.addEventListener('click', saveConfig);
+      testButton.addEventListener('click', testLogin);
+    }
+    setupDcimVideoConnection();
 
     // ==================== 分屏 + Tile 类（flv.js 实时播放）====================
     var LAYOUT_CAPS = { 1: 1, 4: 4, 9: 9, 16: 16 };

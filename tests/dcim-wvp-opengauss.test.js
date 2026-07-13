@@ -19,6 +19,83 @@ const {
 const { createSshCommandRunner, createWvpRuntimeOperations, registerWvpRuntimeRoutes } = require('../lib/dcim-wvp-runtime');
 const runtime = require('../video/assets/js/video-runtime');
 
+function extractServerFunction(name) {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  const marker = 'function ' + name + '(';
+  const start = source.indexOf(marker);
+  if (start === -1) throw new Error('server.js 未导出可测函数: ' + name);
+  const bodyStart = source.indexOf('{', start);
+  let depth = 0;
+  let quote = '';
+  let escaped = false;
+  for (let index = bodyStart; index < source.length; index++) {
+    const char = source[index];
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === quote) quote = '';
+      continue;
+    }
+    if (char === '"' || char === "'" || char === '`') {
+      quote = char;
+      continue;
+    }
+    if (char === '{') depth++;
+    if (char === '}') {
+      depth--;
+      if (depth === 0) {
+        return vm.runInNewContext('(' + source.slice(start, index + 1) + ')');
+      }
+    }
+  }
+  throw new Error('server.js 函数不完整: ' + name);
+}
+
+function extractVideoFunction(name) {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'video', 'index.html'), 'utf8');
+  const marker = 'function ' + name + '(';
+  const start = source.indexOf(marker);
+  if (start === -1) throw new Error('video/index.html 未导出可测函数: ' + name);
+  const bodyStart = source.indexOf('{', start);
+  let depth = 0;
+  let quote = '';
+  let escaped = false;
+  for (let index = bodyStart; index < source.length; index++) {
+    const char = source[index];
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === quote) quote = '';
+      continue;
+    }
+    if (char === '"' || char === "'" || char === '`') {
+      quote = char;
+      continue;
+    }
+    if (char === '{') depth++;
+    if (char === '}') {
+      depth--;
+      if (depth === 0) {
+        return source.slice(start, index + 1);
+      }
+    }
+  }
+  throw new Error('video/index.html 函数不完整: ' + name);
+}
+
+const createDcimVideoDefaults = extractServerFunction('createDcimVideoDefaults');
+const writeDcimVideoConfig = extractServerFunction('writeDcimVideoConfig');
+const dcimVideoRequestLabel = extractServerFunction('dcimVideoRequestLabel');
+const setupDcimVideoConnectionSource = extractVideoFunction('setupDcimVideoConnection');
+const dcimVideoDefaults = createDcimVideoDefaults();
+assert.strictEqual(dcimVideoDefaults.passwordHash, '');
+assert.strictEqual(publicDcimVideoConfig(dcimVideoDefaults).hasPasswordHash, false);
+assert.strictEqual(Object.prototype.hasOwnProperty.call(publicDcimVideoConfig(dcimVideoDefaults), 'passwordHash'), false);
+assert.strictEqual(
+  dcimVideoRequestLabel('GET', '/api/user/login?username=test-operator&password=test-only-hash'),
+  'GET /api/user/login'
+);
+
 const validProbeText = [
   'service.active=active',
   'service.enabled=enabled',
@@ -254,7 +331,7 @@ async function runSshCommandLateEventTests() {
   assert.strictEqual(lateChannel.destroyCalls, 1);
 }
 
-function postJson(app, pathname) {
+function requestJson(app, pathname, method, payload) {
   return new Promise((resolve, reject) => {
     const server = http.createServer(app);
     function closeAnd(callback) {
@@ -267,7 +344,8 @@ function postJson(app, pathname) {
         hostname: '127.0.0.1',
         port: address.port,
         path: pathname,
-        method: 'POST',
+        method: method || 'GET',
+        headers: payload === undefined ? {} : { 'content-type': 'application/json' },
       }, function (response) {
         let text = '';
         response.setEncoding('utf8');
@@ -281,9 +359,301 @@ function postJson(app, pathname) {
         });
       });
       request.on('error', function (error) { closeAnd(function () { reject(error); }); });
-      request.end();
+      request.end(payload === undefined ? undefined : JSON.stringify(payload));
     });
   });
+}
+
+function postJson(app, pathname) {
+  return requestJson(app, pathname, 'POST');
+}
+
+const registerDcimVideoConnectionRoutes = extractServerFunction('registerDcimVideoConnectionRoutes');
+
+async function runDcimVideoConnectionRouteContractTests() {
+  const storedConfig = Object.assign(createDcimVideoDefaults(), { passwordHash: 'stored-hash' });
+  const routeApp = express();
+  routeApp.use(express.json());
+  routeApp.get('/api/dcim-video/config', function (_req, res) {
+    res.json({ ok: true, data: { preservedProxy: true } });
+  });
+  registerDcimVideoConnectionRoutes(routeApp, {
+    getConfig: function () { return storedConfig; },
+    setConfig: function () {},
+    writeConfig: function () {},
+    resetSession: function () {},
+    isAuthed: function () { return true; },
+    loginDcim: async function () { return true; },
+    wvpUtils: { mergeDcimVideoConfig: mergeDcimVideoConfig, publicDcimVideoConfig: publicDcimVideoConfig },
+  });
+
+  const connectionResponse = await requestJson(routeApp, '/api/dcim-video/connection-config', 'GET');
+  assert.strictEqual(connectionResponse.statusCode, 200);
+  assert.deepStrictEqual(connectionResponse.body, {
+    ok: true,
+    config: {
+      apiBase: 'https://127.0.0.1:18080',
+      username: 'admin',
+      timeoutMs: 6000,
+      hasPasswordHash: true,
+    },
+  });
+  assert.strictEqual(JSON.stringify(connectionResponse.body).includes('stored-hash'), false);
+
+  const legacyConfigResponse = await requestJson(routeApp, '/api/dcim-video/config', 'GET');
+  assert.strictEqual(legacyConfigResponse.statusCode, 200);
+  assert.deepStrictEqual(legacyConfigResponse.body, { ok: true, data: { preservedProxy: true } });
+
+  let anonymousWrites = 0;
+  let anonymousLoginCalls = 0;
+  const anonymousApp = express();
+  anonymousApp.use(express.json());
+  registerDcimVideoConnectionRoutes(anonymousApp, {
+    getConfig: function () { return storedConfig; },
+    setConfig: function () {},
+    writeConfig: function () { anonymousWrites++; },
+    resetSession: function () {},
+    isAuthed: function () { return false; },
+    loginDcim: async function () { anonymousLoginCalls++; return true; },
+    wvpUtils: { mergeDcimVideoConfig: mergeDcimVideoConfig, publicDcimVideoConfig: publicDcimVideoConfig },
+  });
+  const anonymousSave = await requestJson(anonymousApp, '/api/dcim-video/connection-config', 'PUT', {
+    password: 'must-not-be-written',
+  });
+  assert.strictEqual(anonymousSave.statusCode, 401);
+  assert.deepStrictEqual(anonymousSave.body, { ok: false, message: '请先登录' });
+  const anonymousTest = await requestJson(anonymousApp, '/api/dcim-video/test-login', 'POST');
+  assert.strictEqual(anonymousTest.statusCode, 401);
+  assert.deepStrictEqual(anonymousTest.body, { ok: false, message: '请先登录' });
+  assert.strictEqual(anonymousWrites, 0);
+  assert.strictEqual(anonymousLoginCalls, 0);
+
+  const tempConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dcim-video-config-'));
+  const tempConfigPath = path.join(tempConfigDir, 'dcim-video.json');
+  const chmodModes = [];
+  const fsSpy = {
+    mkdirSync: fs.mkdirSync.bind(fs),
+    writeFileSync: fs.writeFileSync.bind(fs),
+    chmodSync: function (target, mode) {
+      chmodModes.push(mode);
+      return fs.chmodSync(target, mode);
+    },
+  };
+  let savedConfig = Object.assign(createDcimVideoDefaults(), { passwordHash: 'previous-hash' });
+  const session = { cachedToken: 'cached-token', lastLoginAt: 123, lastError: 'previous-error' };
+  const saveApp = express();
+  saveApp.use(express.json());
+  registerDcimVideoConnectionRoutes(saveApp, {
+    getConfig: function () { return savedConfig; },
+    setConfig: function (nextConfig) { savedConfig = nextConfig; },
+    writeConfig: function () { writeDcimVideoConfig(tempConfigPath, savedConfig, fsSpy, path); },
+    resetSession: function () {
+      session.cachedToken = '';
+      session.lastLoginAt = 0;
+      session.lastError = '';
+    },
+    isAuthed: function () { return true; },
+    loginDcim: async function () { return true; },
+    wvpUtils: { mergeDcimVideoConfig: mergeDcimVideoConfig, publicDcimVideoConfig: publicDcimVideoConfig },
+  });
+  const saved = await requestJson(saveApp, '/api/dcim-video/connection-config', 'PUT', {
+    apiBase: 'https://wvp.example.test:18443/path',
+    username: 'test-operator',
+    password: 'test-only-password',
+    timeoutMs: 7000,
+  });
+  const expectedSavedConfig = mergeDcimVideoConfig({
+    apiBase: 'https://wvp.example.test:18443/path',
+    username: 'test-operator',
+    password: 'test-only-password',
+    timeoutMs: 7000,
+  }, { passwordHash: 'previous-hash' });
+  try {
+    assert.strictEqual(saved.statusCode, 200);
+    assert.deepStrictEqual(saved.body, { ok: true, config: publicDcimVideoConfig(expectedSavedConfig) });
+    assert.strictEqual(JSON.stringify(saved.body).includes(expectedSavedConfig.passwordHash), false);
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(tempConfigPath, 'utf8')), expectedSavedConfig);
+    assert.strictEqual(JSON.parse(fs.readFileSync(tempConfigPath, 'utf8')).password, undefined);
+    assert.deepStrictEqual(chmodModes, [0o600]);
+    assert.deepStrictEqual(session, { cachedToken: '', lastLoginAt: 0, lastError: '' });
+  } finally {
+    try { fs.unlinkSync(tempConfigPath); } catch (_e) {}
+    try { fs.rmdirSync(tempConfigDir); } catch (_e) {}
+  }
+
+  const writeFailurePrevious = Object.assign(createDcimVideoDefaults(), { passwordHash: 'previous-hash' });
+  let writeFailureConfig = writeFailurePrevious;
+  let writeFailureResets = 0;
+  const writeFailureApp = express();
+  writeFailureApp.use(express.json());
+  registerDcimVideoConnectionRoutes(writeFailureApp, {
+    getConfig: function () { return writeFailureConfig; },
+    setConfig: function (nextConfig) { writeFailureConfig = nextConfig; },
+    writeConfig: function () { throw new Error('test-only-write-error'); },
+    resetSession: function () { writeFailureResets++; },
+    isAuthed: function () { return true; },
+    loginDcim: async function () { return true; },
+    wvpUtils: { mergeDcimVideoConfig: mergeDcimVideoConfig, publicDcimVideoConfig: publicDcimVideoConfig },
+  });
+  const writeFailure = await requestJson(writeFailureApp, '/api/dcim-video/connection-config', 'PUT', {
+    password: 'test-only-password',
+  });
+  assert.strictEqual(writeFailure.statusCode, 500);
+  assert.deepStrictEqual(writeFailure.body, { ok: false, message: '无法保存连接配置' });
+  assert.deepStrictEqual(writeFailureConfig, writeFailurePrevious);
+  assert.strictEqual(writeFailureResets, 0);
+  assert.strictEqual(/test-only-write-error|test-only-password/.test(JSON.stringify(writeFailure.body)), false);
+
+  let failedLoginCalls = 0;
+  const failedLoginApp = express();
+  failedLoginApp.use(express.json());
+  registerDcimVideoConnectionRoutes(failedLoginApp, {
+    getConfig: function () { return storedConfig; },
+    setConfig: function () {},
+    writeConfig: function () {},
+    resetSession: function () {},
+    isAuthed: function () { return true; },
+    loginDcim: async function () {
+      failedLoginCalls++;
+      throw new Error('upstream-body accessToken=test-only-token');
+    },
+    wvpUtils: { mergeDcimVideoConfig: mergeDcimVideoConfig, publicDcimVideoConfig: publicDcimVideoConfig },
+  });
+  const failedLogin = await requestJson(failedLoginApp, '/api/dcim-video/test-login', 'POST');
+  assert.strictEqual(failedLoginCalls, 1);
+  assert.strictEqual(failedLogin.statusCode, 502);
+  assert.deepStrictEqual(failedLogin.body, {
+    ok: false,
+    status: 502,
+    message: 'WVP 登录失败，请检查账号或密码',
+  });
+  assert.strictEqual(/accessToken|test-only-token|upstream-body/.test(JSON.stringify(failedLogin.body)), false);
+}
+
+function createFakeElement() {
+  const listeners = {};
+  const classes = {};
+  return {
+    value: '',
+    textContent: '',
+    placeholder: '',
+    disabled: false,
+    hidden: false,
+    attributes: {},
+    classList: {
+      add: function (name) { classes[name] = true; },
+      remove: function (name) { delete classes[name]; },
+      contains: function (name) { return Boolean(classes[name]); },
+    },
+    addEventListener: function (name, handler) { listeners[name] = handler; },
+    setAttribute: function (name, value) { this.attributes[name] = String(value); },
+    focus: function () {},
+    trigger: function (name, event) {
+      return listeners[name](Object.assign({ target: this, preventDefault: function () {} }, event || {}));
+    },
+  };
+}
+
+async function runDcimVideoConnectionUiTests() {
+  const elementIds = [
+    'btnDcimConnection', 'dcimConnectionModal', 'btnDcimConnectionClose',
+    'dcimConnectionApiBase', 'dcimConnectionUsername', 'dcimConnectionPassword',
+    'dcimConnectionTimeout', 'btnDcimConnectionTest', 'btnDcimConnectionSave',
+    'dcimConnectionHint',
+  ];
+  const elements = {};
+  elementIds.forEach(function (id) { elements[id] = createFakeElement(); });
+  const calls = [];
+  let configStatus = 200;
+  const context = {
+    $: function (id) { return elements[id]; },
+    document: { addEventListener: function () {} },
+    fetch: function (url, options) {
+      const request = { url: url, options: options || {} };
+      calls.push(request);
+      const method = request.options.method;
+      if (url === '/api/dcim-video/connection-config' && method === 'GET') {
+        if (configStatus === 401) {
+          return Promise.resolve({ status: 401, json: async function () { return { ok: false }; } });
+        }
+        return Promise.resolve({
+          status: 200,
+          json: async function () {
+            return {
+              ok: true,
+              config: {
+                apiBase: 'https://wvp.example.test:18443',
+                username: 'test-operator',
+                timeoutMs: 7000,
+                hasPasswordHash: true,
+                passwordHash: 'test-only-hash-must-not-render',
+              },
+            };
+          },
+        });
+      }
+      if (url === '/api/dcim-video/connection-config' && method === 'PUT') {
+        return Promise.resolve({ status: 200, json: async function () { return { ok: true, config: {} }; } });
+      }
+      if (url === '/api/dcim-video/test-login' && method === 'POST') {
+        return Promise.resolve({
+          status: 502,
+          json: async function () {
+            return { ok: false, message: 'upstream-body accessToken=test-only-token', data: { accessToken: 'test-only-token' } };
+          },
+        });
+      }
+      throw new Error('意外请求: ' + method + ' ' + url);
+    },
+  };
+  vm.runInNewContext('(' + setupDcimVideoConnectionSource + ')()', context);
+  const flush = function () { return new Promise(function (resolve) { setImmediate(resolve); }); };
+
+  elements.btnDcimConnection.trigger('click');
+  await flush();
+  await flush();
+  assert.strictEqual(elements.dcimConnectionModal.classList.contains('open'), true);
+  assert.strictEqual(elements.dcimConnectionModal.attributes['aria-hidden'], 'false');
+  assert.strictEqual(calls[0].url, '/api/dcim-video/connection-config');
+  assert.strictEqual(calls[0].options.method, 'GET');
+  assert.strictEqual(elements.dcimConnectionApiBase.value, 'https://wvp.example.test:18443');
+  assert.strictEqual(elements.dcimConnectionUsername.value, 'test-operator');
+  assert.strictEqual(elements.dcimConnectionTimeout.value, '7000');
+  assert.strictEqual(elements.dcimConnectionPassword.value, '');
+  assert.ok(elements.dcimConnectionPassword.placeholder.indexOf('已配置') !== -1);
+  assert.strictEqual(JSON.stringify(elements).includes('test-only-hash-must-not-render'), false);
+
+  elements.dcimConnectionPassword.value = '';
+  elements.btnDcimConnectionSave.trigger('click');
+  await flush();
+  await flush();
+  const saveCall = calls.find(function (call) { return call.options.method === 'PUT'; });
+  assert.ok(saveCall);
+  assert.strictEqual(saveCall.url, '/api/dcim-video/connection-config');
+  const savedBody = JSON.parse(saveCall.options.body);
+  assert.deepStrictEqual(Object.keys(savedBody).sort(), ['apiBase', 'timeoutMs', 'username']);
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(savedBody, 'password'), false);
+
+  elements.btnDcimConnectionTest.trigger('click');
+  await flush();
+  await flush();
+  const testLoginCall = calls.find(function (call) { return call.url === '/api/dcim-video/test-login'; });
+  assert.ok(testLoginCall);
+  assert.strictEqual(testLoginCall.options.method, 'POST');
+  assert.strictEqual(elements.dcimConnectionHint.textContent, 'WVP 登录失败，请检查账号或密码');
+  assert.strictEqual(/accessToken|test-only-token|upstream-body/.test(JSON.stringify(elements)), false);
+
+  configStatus = 401;
+  elements.btnDcimConnection.trigger('click');
+  await flush();
+  await flush();
+  assert.strictEqual(elements.dcimConnectionHint.textContent, '登录已过期，请重新登录');
+  assert.strictEqual(elements.btnDcimConnectionTest.disabled, false);
+  assert.strictEqual(elements.btnDcimConnectionSave.disabled, false);
+
+  elements.btnDcimConnectionClose.trigger('click');
+  assert.strictEqual(elements.dcimConnectionModal.classList.contains('open'), false);
+  assert.strictEqual(elements.dcimConnectionModal.attributes['aria-hidden'], 'true');
 }
 
 async function runWvpRuntimeRouteContractTests() {
@@ -663,7 +1033,7 @@ try {
   try { fs.unlinkSync(shellPath); } catch (error) {}
 }
 
-runWvpRuntimeOperationTests().then(runSshCommandTimeoutTests).then(runSshCommandLateEventTests).then(runWvpRuntimeRouteContractTests).then(() => {
+runWvpRuntimeOperationTests().then(runSshCommandTimeoutTests).then(runSshCommandLateEventTests).then(runWvpRuntimeRouteContractTests).then(runDcimVideoConnectionRouteContractTests).then(runDcimVideoConnectionUiTests).then(() => {
   console.log('dcim wvp opengauss tests: PASS');
 }).catch((error) => {
   console.error(error);

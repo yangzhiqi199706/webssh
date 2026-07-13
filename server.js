@@ -5,10 +5,88 @@ const net = require('net');
 const WebSocket = require('ws');
 const { Client } = require('ssh2');
 const { createSshCommandRunner, registerWvpRuntimeRoutes } = require('./lib/dcim-wvp-runtime');
+const wvpUtils = require('./lib/dcim-wvp');
 const { spawn } = require('child_process');
 const httpProxy = require('http-proxy');
 
 const runSshCommand = createSshCommandRunner(Client);
+
+function createDcimVideoDefaults() {
+  return {
+    apiBase: 'https://127.0.0.1:18080',
+    username: 'admin',
+    passwordHash: '',
+    timeoutMs: 6000,
+  };
+}
+
+function writeDcimVideoConfig(configPath, config, fileSystem, pathModule) {
+  const fileOps = fileSystem || fs;
+  const pathOps = pathModule || require('path');
+  fileOps.mkdirSync(pathOps.dirname(configPath), { recursive: true });
+  fileOps.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n', 'utf8');
+  fileOps.chmodSync(configPath, 0o600);
+}
+
+function dcimVideoRequestLabel(method, urlPath) {
+  const pathname = String(urlPath || '').split('?')[0] || '/';
+  return String(method || 'GET').toUpperCase() + ' ' + pathname;
+}
+
+function registerDcimVideoConnectionRoutes(app, deps) {
+  const options = deps || {};
+  if (!app || typeof app.get !== 'function' || typeof app.put !== 'function' || typeof app.post !== 'function') {
+    throw new Error('Express app is required');
+  }
+  if (typeof options.getConfig !== 'function') throw new Error('getConfig is required');
+  if (typeof options.setConfig !== 'function') throw new Error('setConfig is required');
+  if (typeof options.writeConfig !== 'function') throw new Error('writeConfig is required');
+  if (typeof options.resetSession !== 'function') throw new Error('resetSession is required');
+  if (typeof options.isAuthed !== 'function') throw new Error('isAuthed is required');
+  if (typeof options.loginDcim !== 'function') throw new Error('loginDcim is required');
+  if (!options.wvpUtils || typeof options.wvpUtils.publicDcimVideoConfig !== 'function' ||
+    typeof options.wvpUtils.mergeDcimVideoConfig !== 'function') {
+    throw new Error('dcim WVP config utilities are required');
+  }
+
+  app.get('/api/dcim-video/connection-config', function (req, res) {
+    if (!options.isAuthed(req)) return res.status(401).json({ ok: false, message: '请先登录' });
+    res.json({ ok: true, config: options.wvpUtils.publicDcimVideoConfig(options.getConfig()) });
+  });
+
+  app.put('/api/dcim-video/connection-config', function (req, res) {
+    if (!options.isAuthed(req)) return res.status(401).json({ ok: false, message: '请先登录' });
+    const previousConfig = options.getConfig();
+    let nextConfig;
+    try {
+      nextConfig = options.wvpUtils.mergeDcimVideoConfig(req.body || {}, previousConfig);
+    } catch (_e) {
+      return res.status(400).json({ ok: false, message: '连接配置无效' });
+    }
+    try {
+      options.setConfig(nextConfig);
+      options.writeConfig();
+    } catch (_e) {
+      options.setConfig(previousConfig);
+      return res.status(500).json({ ok: false, message: '无法保存连接配置' });
+    }
+    options.resetSession();
+    res.json({ ok: true, config: options.wvpUtils.publicDcimVideoConfig(nextConfig) });
+  });
+
+  app.post('/api/dcim-video/test-login', async function (req, res) {
+    if (!options.isAuthed(req)) return res.status(401).json({ ok: false, message: '请先登录' });
+    let ok = false;
+    try {
+      ok = await options.loginDcim();
+    } catch (_e) {}
+    res.status(ok ? 200 : 502).json({
+      ok: ok,
+      status: ok ? 200 : 502,
+      message: ok ? 'WVP 登录成功' : 'WVP 登录失败，请检查账号或密码',
+    });
+  });
+}
 
 const app = express();
 const server = http.createServer(app);
@@ -8792,14 +8870,7 @@ wssTcp.on('connection', function (ws) {
   const CONFIG_PATH = process.env.DCIM_VIDEO_CONFIG || path.join(__dirname, 'config', 'dcim-video.json');
   const LOG_PATH = process.env.DCIM_VIDEO_LOG || path.join(__dirname, 'logs', 'dcim-video.log');
 
-  const defaults = {
-    apiBase: 'https://127.0.0.1:18080',
-    username: 'admin',
-    // dcim 库里 wvp_user.password 字段是已经做了一层 hash 的值，登录时直接用它当
-    // password 提交即可（wvp 前端是 md5(明文) 然后等于这个 hash）
-    passwordHash: '551c76780e34e1c1fab9ff85dfc79947',
-    timeoutMs: 6000,
-  };
+  const defaults = createDcimVideoDefaults();
 
   let cfg = JSON.parse(JSON.stringify(defaults));
   function readCfg() {
@@ -8810,10 +8881,11 @@ wssTcp.on('connection', function (ws) {
   }
   function writeCfg() {
     try {
-      fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
-      fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
-      try { fs.chmodSync(CONFIG_PATH, 0o600); } catch (_e) {}
-    } catch (e) { console.error('[dcim-video] 写配置失败:', e.message); }
+      writeDcimVideoConfig(CONFIG_PATH, cfg, fs, path);
+    } catch (e) {
+      console.error('[dcim-video] 写配置失败:', e.message);
+      throw e;
+    }
   }
   readCfg();
 
@@ -8870,7 +8942,7 @@ wssTcp.on('connection', function (ws) {
         try { req.destroy(new Error('timeout ' + (cfg.timeoutMs || 6000) + 'ms')); } catch (_e) {}
       });
       req.on('error', function (err) {
-        lastError = method + ' ' + urlPath + ': ' + err.message;
+        lastError = dcimVideoRequestLabel(method, urlPath) + ': ' + err.message;
         resolve({ ok: false, status: 0, message: err.message });
       });
       if (buf.length) req.write(buf);
@@ -8893,6 +8965,20 @@ wssTcp.on('connection', function (ws) {
     cachedToken = '';
     return false;
   }
+
+  registerDcimVideoConnectionRoutes(app, {
+    getConfig: function () { return cfg; },
+    setConfig: function (nextConfig) { cfg = nextConfig; },
+    writeConfig: writeCfg,
+    resetSession: function () {
+      cachedToken = '';
+      lastLoginAt = 0;
+      lastError = '';
+    },
+    isAuthed: isAuthed,
+    loginDcim: loginDcim,
+    wvpUtils: wvpUtils,
+  });
 
   async function callWithAuth(method, urlPath, body) {
     if (!cachedToken) { await loginDcim(); }
