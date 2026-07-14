@@ -139,12 +139,46 @@ const registerVideoSystemConfigRoute = extractServerFunction('registerVideoSyste
 const setupDcimVideoConnectionSource = extractVideoFunction('setupDcimVideoConnection');
 const renderDcimVideoConfigSource = extractVideoFunction('renderConfig');
 const upgradePayloadEntries = extractScriptFunction('scripts/deploy-upgrade.js', 'upgradePayloadEntries');
+const buildTarArguments = extractScriptFunction('scripts/deploy-upgrade.js', 'buildTarArguments');
+const shouldRetryWithoutForceLocal = extractScriptFunction('scripts/deploy-upgrade.js', 'shouldRetryWithoutForceLocal');
 const protocolMainSyncEntries = extractScriptFunction('scripts/deploy-protocol.js', 'protocolMainSyncEntries');
+const protocolBuildTarArguments = extractScriptFunction('scripts/deploy-protocol.js', 'buildTarArguments');
+const protocolShouldRetryWithoutForceLocal = extractScriptFunction('scripts/deploy-protocol.js', 'shouldRetryWithoutForceLocal');
 const createMainSyncDirectorySwap = extractScriptFunction('scripts/deploy-protocol.js', 'createMainSyncDirectorySwap');
 const createMainSyncReleasePlan = extractScriptFunction('scripts/deploy-protocol.js', 'createMainSyncReleasePlan');
 const recoverMainSyncRelease = extractScriptFunction('scripts/deploy-protocol.js', 'recoverMainSyncRelease');
 assertDeploymentManifest(upgradePayloadEntries(), 'deploy-upgrade');
 assertDeploymentManifest(protocolMainSyncEntries(), 'deploy-protocol main-sync');
+[
+  { label: 'deploy-upgrade', build: buildTarArguments, shouldRetry: shouldRetryWithoutForceLocal },
+  { label: 'deploy-protocol', build: protocolBuildTarArguments, shouldRetry: protocolShouldRetryWithoutForceLocal },
+].forEach(function (tarCompat) {
+  assert.deepStrictEqual(
+    Array.prototype.slice.call(tarCompat.build('C:\\Users\\tester\\AppData\\Local\\Temp\\release.tar.gz', 'C:\\repo', ['server.js'], true)),
+    ['--force-local', '-czf', 'C:\\Users\\tester\\AppData\\Local\\Temp\\release.tar.gz', '-C', 'C:\\repo', 'server.js'],
+    tarCompat.label + ' 在支持时必须保留 --force-local'
+  );
+  assert.deepStrictEqual(
+    Array.prototype.slice.call(tarCompat.build('C:\\Users\\tester\\AppData\\Local\\Temp\\release.tar.gz', 'C:\\repo', ['server.js'], false)),
+    ['-czf', 'C:\\Users\\tester\\AppData\\Local\\Temp\\release.tar.gz', '-C', 'C:\\repo', 'server.js'],
+    tarCompat.label + ' 在不支持时必须生成不含 --force-local 的 Windows 路径命令'
+  );
+  assert.strictEqual(
+    tarCompat.shouldRetry({ stderr: 'tar: Option --force-local is not supported' }),
+    true,
+    tarCompat.label + ' 必须只对明确不支持 --force-local 的 tar 错误重试'
+  );
+  assert.strictEqual(
+    tarCompat.shouldRetry({ stderr: 'tar: server.js: Cannot stat: No such file or directory' }),
+    false,
+    tarCompat.label + ' 遇到缺失文件时不得重试'
+  );
+  assert.strictEqual(
+    tarCompat.shouldRetry({ stderr: 'tar: release.tar.gz: Cannot open: Permission denied' }),
+    false,
+    tarCompat.label + ' 遇到权限错误时不得重试'
+  );
+});
 ['lib', 'video'].forEach(function (entry) {
   const swap = createMainSyncDirectorySwap('/root/release/main-sync', '/opt/webssh/app', entry, 'test-stamp');
   const source = '/root/release/main-sync/' + entry;

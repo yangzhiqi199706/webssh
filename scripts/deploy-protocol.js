@@ -64,6 +64,37 @@ if (!PASSWORD) {
 function log(m) { console.log(`[${new Date().toISOString().slice(11, 19)}] ${m}`); }
 function die(m) { console.error('[失败] ' + m); process.exit(1); }
 
+function buildTarArguments(tarPath, workingDirectory, entries, useForceLocal) {
+  return (useForceLocal ? ['--force-local'] : []).concat([
+    '-czf', tarPath, '-C', workingDirectory,
+  ], entries);
+}
+
+function shouldRetryWithoutForceLocal(error) {
+  const output = [error && error.stderr, error && error.stdout, error && error.message]
+    .filter(Boolean)
+    .map(String)
+    .join('\n');
+  return /option\s+--force-local\s+is\s+not\s+supported/i.test(output);
+}
+
+function createTarArchive(tarPath, workingDirectory, entries) {
+  const useForceLocal = process.platform === 'win32';
+  const tarArgs = buildTarArguments(tarPath, workingDirectory, entries, useForceLocal);
+  try {
+    // 仅在 Windows 首次调用时捕获 stderr，用于精确识别不支持 --force-local 的 tar。
+    execFileSync('tar', tarArgs, { stdio: useForceLocal ? ['ignore', 'inherit', 'pipe'] : 'inherit' });
+  } catch (error) {
+    if (useForceLocal && shouldRetryWithoutForceLocal(error)) {
+      log('当前 tar 不支持 --force-local，省略该参数后重试');
+      execFileSync('tar', buildTarArguments(tarPath, workingDirectory, entries, false), { stdio: 'inherit' });
+      return;
+    }
+    if (useForceLocal && error && error.stderr) process.stderr.write(String(error.stderr));
+    throw error;
+  }
+}
+
 function protocolMainSyncEntries() {
   return [
     'server.js',
@@ -323,10 +354,7 @@ function buildPackage() {
   // 7) 打 tar.gz
   const tarPath = path.join(distDir, `${releaseName}.tar.gz`);
   log(`打 tar.gz: ${tarPath}`);
-  const tarArgs = process.platform === 'win32'
-    ? ['--force-local', '-czf', tarPath, '-C', stageRoot, releaseName]
-    : ['-czf', tarPath, '-C', stageRoot, releaseName];
-  execFileSync('tar', tarArgs, { stdio: 'inherit' });
+  createTarArchive(tarPath, stageRoot, [releaseName]);
   log(`tar 大小: ${(fs.statSync(tarPath).size / 1024 / 1024).toFixed(1)} MB`);
   // 顺手清理 stage
   fs.rmSync(releaseDir, { recursive: true, force: true });

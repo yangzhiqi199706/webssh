@@ -60,6 +60,37 @@ function log(msg) {
   console.log(`[${new Date().toISOString().slice(11, 19)}] ${msg}`);
 }
 
+function buildTarArguments(tarPath, workingDirectory, entries, useForceLocal) {
+  return (useForceLocal ? ['--force-local'] : []).concat([
+    '-czf', tarPath, '-C', workingDirectory,
+  ], entries);
+}
+
+function shouldRetryWithoutForceLocal(error) {
+  const output = [error && error.stderr, error && error.stdout, error && error.message]
+    .filter(Boolean)
+    .map(String)
+    .join('\n');
+  return /option\s+--force-local\s+is\s+not\s+supported/i.test(output);
+}
+
+function createTarArchive(tarPath, workingDirectory, entries) {
+  const useForceLocal = process.platform === 'win32';
+  const tarArgs = buildTarArguments(tarPath, workingDirectory, entries, useForceLocal);
+  try {
+    // 仅在 Windows 首次调用时捕获 stderr，用于精确识别不支持 --force-local 的 tar。
+    execFileSync('tar', tarArgs, { stdio: useForceLocal ? ['ignore', 'inherit', 'pipe'] : 'inherit' });
+  } catch (error) {
+    if (useForceLocal && shouldRetryWithoutForceLocal(error)) {
+      log('当前 tar 不支持 --force-local，省略该参数后重试');
+      execFileSync('tar', buildTarArguments(tarPath, workingDirectory, entries, false), { stdio: 'inherit' });
+      return;
+    }
+    if (useForceLocal && error && error.stderr) process.stderr.write(String(error.stderr));
+    throw error;
+  }
+}
+
 function buildTar() {
   const stamp = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14);
   const tarName = `webssh-upgrade-${stamp}.tar.gz`;
@@ -70,12 +101,8 @@ function buildTar() {
       throw new Error(`缺少待上传内容：${entry}`);
     }
   }
-  // 用系统自带的 tar（Git for Windows 自带 GNU tar）
-  // Windows 下要 --force-local，否则 "C:\..." 会被当成远端主机
-  const tarArgs = process.platform === 'win32'
-    ? ['--force-local', '-czf', tarPath, '-C', ROOT, ...PAYLOAD_ENTRIES]
-    : ['-czf', tarPath, '-C', ROOT, ...PAYLOAD_ENTRIES];
-  execFileSync('tar', tarArgs, { stdio: 'inherit' });
+  // 优先使用 --force-local；部分 Windows tar 不支持时会自动去除此参数重试。
+  createTarArchive(tarPath, ROOT, PAYLOAD_ENTRIES);
   const sha = crypto.createHash('sha256').update(fs.readFileSync(tarPath)).digest('hex');
   log(`tar 大小：${(fs.statSync(tarPath).size / 1024).toFixed(1)} KB  sha256=${sha.slice(0, 16)}...`);
   return { tarPath, tarName, sha };
