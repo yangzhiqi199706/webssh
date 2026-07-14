@@ -84,7 +84,7 @@ function extractVideoFunction(name) {
   throw new Error('video/index.html 函数不完整: ' + name);
 }
 
-function extractScriptFunction(relativePath, name) {
+function extractScriptFunction(relativePath, name, context) {
   const source = fs.readFileSync(path.join(__dirname, '..', relativePath), 'utf8');
   const marker = 'function ' + name + '(';
   const start = source.indexOf(marker);
@@ -108,10 +108,37 @@ function extractScriptFunction(relativePath, name) {
     if (char === '{') depth++;
     if (char === '}') {
       depth--;
-      if (depth === 0) return vm.runInNewContext('(' + source.slice(start, index + 1) + ')');
+      if (depth === 0) return vm.runInNewContext('(' + source.slice(start, index + 1) + ')', context);
     }
   }
   throw new Error(relativePath + ' 函数不完整: ' + name);
+}
+
+function createTarArchiveHarness(relativePath, firstError) {
+  const calls = [];
+  const context = {
+    process: {
+      platform: 'win32',
+      stderr: {
+        write: function () {},
+      },
+    },
+    execFileSync: function (command, args, options) {
+      calls.push({
+        command: command,
+        args: Array.prototype.slice.call(args),
+        options: options,
+      });
+      if (calls.length === 1) throw firstError;
+    },
+    log: function () {},
+  };
+  context.buildTarArguments = extractScriptFunction(relativePath, 'buildTarArguments');
+  context.shouldRetryWithoutForceLocal = extractScriptFunction(relativePath, 'shouldRetryWithoutForceLocal');
+  return {
+    calls: calls,
+    createTarArchive: extractScriptFunction(relativePath, 'createTarArchive', context),
+  };
 }
 
 function assertDeploymentManifest(entries, label) {
@@ -150,8 +177,18 @@ const recoverMainSyncRelease = extractScriptFunction('scripts/deploy-protocol.js
 assertDeploymentManifest(upgradePayloadEntries(), 'deploy-upgrade');
 assertDeploymentManifest(protocolMainSyncEntries(), 'deploy-protocol main-sync');
 [
-  { label: 'deploy-upgrade', build: buildTarArguments, shouldRetry: shouldRetryWithoutForceLocal },
-  { label: 'deploy-protocol', build: protocolBuildTarArguments, shouldRetry: protocolShouldRetryWithoutForceLocal },
+  {
+    label: 'deploy-upgrade',
+    path: 'scripts/deploy-upgrade.js',
+    build: buildTarArguments,
+    shouldRetry: shouldRetryWithoutForceLocal,
+  },
+  {
+    label: 'deploy-protocol',
+    path: 'scripts/deploy-protocol.js',
+    build: protocolBuildTarArguments,
+    shouldRetry: protocolShouldRetryWithoutForceLocal,
+  },
 ].forEach(function (tarCompat) {
   assert.deepStrictEqual(
     Array.prototype.slice.call(tarCompat.build('C:\\Users\\tester\\AppData\\Local\\Temp\\release.tar.gz', 'C:\\repo', ['server.js'], true)),
@@ -177,6 +214,52 @@ assertDeploymentManifest(protocolMainSyncEntries(), 'deploy-protocol main-sync')
     tarCompat.shouldRetry({ stderr: 'tar: release.tar.gz: Cannot open: Permission denied' }),
     false,
     tarCompat.label + ' 遇到权限错误时不得重试'
+  );
+  const permissionDeniedWithMisleadingMessage = new Error('tar: option --force-local is not supported');
+  permissionDeniedWithMisleadingMessage.stderr = 'tar: release.tar.gz: Cannot open: Permission denied';
+  permissionDeniedWithMisleadingMessage.command = 'tar --force-local -czf release.tar.gz';
+  assert.strictEqual(
+    tarCompat.shouldRetry(permissionDeniedWithMisleadingMessage),
+    false,
+    tarCompat.label + ' 不得因 message 或 command 中的 --force-local 文本误重试'
+  );
+  assert.strictEqual(
+    tarCompat.shouldRetry({
+      stderr: '',
+      message: 'tar: option --force-local is not supported',
+      command: 'tar --force-local -czf release.tar.gz',
+    }),
+    false,
+    tarCompat.label + ' stderr 为空时不得重试'
+  );
+
+  const noRetryHarness = createTarArchiveHarness(tarCompat.path, permissionDeniedWithMisleadingMessage);
+  assert.throws(function () {
+    noRetryHarness.createTarArchive('C:\\release.tar.gz', 'C:\\repo', ['server.js']);
+  }, function (error) {
+    return error === permissionDeniedWithMisleadingMessage;
+  }, tarCompat.label + ' 权限错误必须抛出原始异常');
+  assert.strictEqual(noRetryHarness.calls.length, 1, tarCompat.label + ' 权限错误不得执行第二次 tar');
+  assert.deepStrictEqual(
+    noRetryHarness.calls[0].args,
+    ['--force-local', '-czf', 'C:\\release.tar.gz', '-C', 'C:\\repo', 'server.js'],
+    tarCompat.label + ' 权限错误的首次 tar 必须保留 --force-local'
+  );
+
+  const unsupportedError = new Error('tar failed');
+  unsupportedError.stderr = 'tar: option --force-local is not supported';
+  assert.strictEqual(
+    tarCompat.shouldRetry(unsupportedError),
+    true,
+    tarCompat.label + ' stderr 明确表示不支持 --force-local 时必须重试'
+  );
+  const retryHarness = createTarArchiveHarness(tarCompat.path, unsupportedError);
+  retryHarness.createTarArchive('C:\\release.tar.gz', 'C:\\repo', ['server.js']);
+  assert.strictEqual(retryHarness.calls.length, 2, tarCompat.label + ' 明确不支持时必须执行第二次 tar');
+  assert.deepStrictEqual(
+    retryHarness.calls[1].args,
+    ['-czf', 'C:\\release.tar.gz', '-C', 'C:\\repo', 'server.js'],
+    tarCompat.label + ' 重试 tar 必须移除 --force-local'
   );
 });
 ['lib', 'video'].forEach(function (entry) {

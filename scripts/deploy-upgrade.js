@@ -67,11 +67,7 @@ function buildTarArguments(tarPath, workingDirectory, entries, useForceLocal) {
 }
 
 function shouldRetryWithoutForceLocal(error) {
-  const output = [error && error.stderr, error && error.stdout, error && error.message]
-    .filter(Boolean)
-    .map(String)
-    .join('\n');
-  return /option\s+--force-local\s+is\s+not\s+supported/i.test(output);
+  return /option\s+--force-local\s+is\s+not\s+supported/i.test(String(error.stderr || ''));
 }
 
 function createTarArchive(tarPath, workingDirectory, entries) {
