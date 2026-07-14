@@ -466,6 +466,36 @@ async function runLiveStreamGenerationRouteTests() {
   const createLiveStreamGenerationRegistry = extractServerFunction('createLiveStreamGenerationRegistry');
   const registerLivePlaybackRoutes = extractServerFunction('registerLivePlaybackRoutes');
 
+  function deferred() {
+    let resolve;
+    let reject;
+    const promise = new Promise(function (onResolve, onReject) {
+      resolve = onResolve;
+      reject = onReject;
+    });
+    return { promise: promise, resolve: resolve, reject: reject };
+  }
+
+  function upstreamStart(source) {
+    return {
+      ok: true,
+      status: 200,
+      data: { code: 0, data: { app: 'rtp', stream: source + '-live', flv: '/live.flv', hls: '/live.m3u8' } },
+    };
+  }
+
+  function upstreamStop() {
+    return { ok: true, status: 200, data: { code: 0, msg: 'stopped' } };
+  }
+
+  async function waitFor(check, message) {
+    for (let turn = 0; turn < 20; turn++) {
+      if (check()) return;
+      await new Promise(function (resolve) { setImmediate(resolve); });
+    }
+    throw new Error(message);
+  }
+
   let registryNow = 0;
   const boundedRegistry = createLiveStreamGenerationRegistry({
     instanceId: 'bounded-test',
@@ -475,10 +505,38 @@ async function runLiveStreamGenerationRouteTests() {
   });
   assert.strictEqual(boundedRegistry.issue('dcim', 'device-1', 'channel-1'), 'bounded-test:1');
   assert.strictEqual(boundedRegistry.issue('dcim', 'device-2', 'channel-2'), 'bounded-test:2');
-  assert.strictEqual(boundedRegistry.issue('webssh', 'device-1', 'channel-1'), 'bounded-test:3');
+  registryNow = 30 * 60 * 1000;
+  assert.strictEqual(
+    boundedRegistry.issue('webssh', 'device-1', 'channel-1'),
+    null,
+    '活跃 generation 达到容量上限后必须拒绝新起播，而不是淘汰仍可能活跃的键'
+  );
   assert.strictEqual(boundedRegistry.size(), 2, '实时点播代次存储必须受最大条目数限制');
-  registryNow = 1000;
-  assert.strictEqual(boundedRegistry.size(), 0, '实时点播代次必须按 TTL 清理');
+  assert.strictEqual(
+    boundedRegistry.matches('dcim', 'device-1', 'channel-1', 'bounded-test:1'),
+    true,
+    '当前活跃 generation 即使超过旧的 30 分钟 TTL 也不得静默消失'
+  );
+  assert.strictEqual(boundedRegistry.clearIfCurrent('dcim', 'device-1', 'channel-1', 'bounded-test:1'), true);
+  assert.strictEqual(
+    boundedRegistry.issue('webssh', 'device-1', 'channel-1'),
+    'bounded-test:3',
+    '匹配停流清理后必须释放容量给新的起播'
+  );
+
+  const queueRegistry = createLiveStreamGenerationRegistry({ instanceId: 'queue-test', maxEntries: 2 });
+  await queueRegistry.enqueue('dcim', 'device-1', 'channel-1', function () {
+    return Promise.reject(new Error('queue test rejection'));
+  }).then(function () {
+    throw new Error('队列拒绝必须向调用方传递');
+  }, function () {});
+  let laterQueueOperationRan = false;
+  await queueRegistry.enqueue('dcim', 'device-1', 'channel-1', function () {
+    laterQueueOperationRan = true;
+    return Promise.resolve();
+  });
+  assert.strictEqual(laterQueueOperationRan, true, '同 key 前一项拒绝后，后续队列项仍必须执行');
+  assert.strictEqual(queueRegistry.queueSize(), 0, '队列完成后必须移除自身，不能保留 Promise 尾链');
 
   for (const source of ['dcim', 'webssh']) {
     const routeApp = express();
@@ -496,13 +554,9 @@ async function runLiveStreamGenerationRouteTests() {
       callWithAuth: async function (method, urlPath) {
         upstreamCalls.push({ method: method, urlPath: urlPath });
         if (urlPath.indexOf('/api/play/start/') === 0) {
-          return {
-            ok: true,
-            status: 200,
-            data: { code: 0, data: { app: 'rtp', stream: source + '-live', flv: '/live.flv', hls: '/live.m3u8' } },
-          };
+          return upstreamStart(source);
         }
-        return { ok: true, status: 200, data: { code: 0, msg: 'stopped' } };
+        return upstreamStop();
       },
     });
 
@@ -557,6 +611,193 @@ async function runLiveStreamGenerationRouteTests() {
       2,
       source + ' 不带代次的旧客户端 stop 必须调用 WVP stop'
     );
+    assert.strictEqual(registry.queueSize(), 0, source + ' 所有实时请求完成后不得残留队列项');
+
+    const capacityApp = express();
+    const capacityRegistry = createLiveStreamGenerationRegistry({
+      instanceId: source + '-capacity-test',
+      maxEntries: 1,
+    });
+    const capacityCalls = [];
+    registerLivePlaybackRoutes(capacityApp, {
+      source: source,
+      pathPrefix: '/api/' + source + '-capacity-video',
+      liveGenerations: capacityRegistry,
+      rewriteToProxy: function (url) { return url; },
+      callWithAuth: async function (method, urlPath) {
+        capacityCalls.push({ method: method, urlPath: urlPath });
+        return upstreamStart(source);
+      },
+    });
+    const capacityFirst = await requestJson(capacityApp, '/api/' + source + '-capacity-video/play/device-1/channel-1', 'POST');
+    const capacityRejected = await requestJson(capacityApp, '/api/' + source + '-capacity-video/play/device-2/channel-2', 'POST');
+    assert.strictEqual(capacityFirst.body.ok, true, source + ' 容量测试的第一个起播必须成功');
+    assert.strictEqual(capacityRejected.statusCode, 503, source + ' 活跃键已满时新起播必须返回 503');
+    assert.strictEqual(capacityRejected.body.ok, false, source + ' 容量已满必须明确拒绝');
+    assert.strictEqual(capacityCalls.length, 1, source + ' 容量拒绝不得调用上游起播');
+
+    const failedStartApp = express();
+    const failedStartRegistry = createLiveStreamGenerationRegistry({
+      instanceId: source + '-failed-start-test',
+      maxEntries: 1,
+    });
+    registerLivePlaybackRoutes(failedStartApp, {
+      source: source,
+      pathPrefix: '/api/' + source + '-failed-start-video',
+      liveGenerations: failedStartRegistry,
+      rewriteToProxy: function (url) { return url; },
+      callWithAuth: async function () {
+        return { ok: false, status: 502, message: 'upstream start failed', data: { code: -1, msg: 'upstream start failed' } };
+      },
+    });
+    const failedStart = await requestJson(failedStartApp, '/api/' + source + '-failed-start-video/play/device-1/channel-1', 'POST');
+    assert.strictEqual(failedStart.body.ok, false, source + ' 上游起播失败必须向客户端报告失败');
+    assert.strictEqual(failedStartRegistry.size(), 0, source + ' 上游起播失败必须清除预留的 generation');
+
+    const restartCleanupApp = express();
+    const restartCleanupRegistry = createLiveStreamGenerationRegistry({
+      instanceId: source + '-restart-test',
+      maxEntries: 2,
+    });
+    const restartCleanupCalls = [];
+    registerLivePlaybackRoutes(restartCleanupApp, {
+      source: source,
+      pathPrefix: '/api/' + source + '-restart-video',
+      liveGenerations: restartCleanupRegistry,
+      rewriteToProxy: function (url) { return url; },
+      callWithAuth: async function (method, urlPath) {
+        restartCleanupCalls.push({ method: method, urlPath: urlPath });
+        return upstreamStop();
+      },
+    });
+    const restartCleanup = await requestJson(
+      restartCleanupApp,
+      '/api/' + source + '-restart-video/play/stop/device-1/channel-1?liveGeneration=before-restart:1',
+      'POST'
+    );
+    assert.strictEqual(restartCleanup.body.ok, true, source + ' 服务重启后带 generation 的 stop 必须兼容清理');
+    assert.strictEqual(restartCleanup.body.stale, undefined, source + ' 未知 generation 不能被误判为 stale');
+    assert.strictEqual(restartCleanupCalls.length, 1, source + ' 服务重启后带 generation 的 stop 必须调用上游');
+
+    const stopThenStartApp = express();
+    const stopThenStartRegistry = createLiveStreamGenerationRegistry({
+      instanceId: source + '-stop-then-start-test',
+      maxEntries: 4,
+    });
+    const stopThenStartCalls = [];
+    const delayedStop = deferred();
+    registerLivePlaybackRoutes(stopThenStartApp, {
+      source: source,
+      pathPrefix: '/api/' + source + '-stop-then-start-video',
+      liveGenerations: stopThenStartRegistry,
+      rewriteToProxy: function (url) { return url; },
+      callWithAuth: async function (method, urlPath) {
+        stopThenStartCalls.push({ method: method, urlPath: urlPath });
+        if (urlPath.indexOf('/api/play/stop/') === 0) return delayedStop.promise;
+        return upstreamStart(source);
+      },
+    });
+    const orderedBasePath = '/api/' + source + '-stop-then-start-video/play/device-1/channel-1';
+    const orderedStopPath = '/api/' + source + '-stop-then-start-video/play/stop/device-1/channel-1';
+    const orderedFirstStart = await requestJson(stopThenStartApp, orderedBasePath, 'POST');
+    const orderedStop = requestJson(
+      stopThenStartApp,
+      orderedStopPath + '?liveGeneration=' + encodeURIComponent(orderedFirstStart.body.liveGeneration),
+      'POST'
+    );
+    await waitFor(function () {
+      return stopThenStartCalls.filter(function (call) { return call.urlPath.indexOf('/api/play/stop/') === 0; }).length === 1;
+    }, source + ' G1 stop 未进入上游');
+    const orderedSecondStart = requestJson(stopThenStartApp, orderedBasePath, 'POST');
+    await new Promise(function (resolve) { setImmediate(resolve); });
+    assert.strictEqual(
+      stopThenStartCalls.filter(function (call) { return call.urlPath.indexOf('/api/play/start/') === 0; }).length,
+      1,
+      source + ' G1 stop 已通过比对并等待上游时，G2 start 不得并发调用上游'
+    );
+    delayedStop.resolve(upstreamStop());
+    assert.strictEqual((await orderedStop).body.ok, true, source + ' G1 stop 必须完成');
+    assert.strictEqual((await orderedSecondStart).body.ok, true, source + ' G2 start 必须在 G1 stop 后成功');
+    assert.deepStrictEqual(
+      stopThenStartCalls.map(function (call) { return call.urlPath.replace('/api/play/', ''); }),
+      [
+        'start/device-1/channel-1',
+        'stop/device-1/channel-1',
+        'start/device-1/channel-1',
+      ],
+      source + ' 同 key 的 G1 stop 与 G2 start 必须按上游调用顺序串行'
+    );
+    assert.strictEqual(stopThenStartRegistry.queueSize(), 0, source + ' G1/G2 交错完成后队列必须清空');
+
+    const startThenStopApp = express();
+    const startThenStopRegistry = createLiveStreamGenerationRegistry({
+      instanceId: source + '-start-then-stop-test',
+      maxEntries: 4,
+    });
+    const startThenStopCalls = [];
+    const delayedSecondStart = deferred();
+    let startCallCount = 0;
+    registerLivePlaybackRoutes(startThenStopApp, {
+      source: source,
+      pathPrefix: '/api/' + source + '-start-then-stop-video',
+      liveGenerations: startThenStopRegistry,
+      rewriteToProxy: function (url) { return url; },
+      callWithAuth: async function (method, urlPath) {
+        startThenStopCalls.push({ method: method, urlPath: urlPath });
+        if (urlPath.indexOf('/api/play/start/') === 0) {
+          startCallCount++;
+          if (startCallCount === 2) return delayedSecondStart.promise;
+          return upstreamStart(source);
+        }
+        return upstreamStop();
+      },
+    });
+    const newerBasePath = '/api/' + source + '-start-then-stop-video/play/device-1/channel-1';
+    const newerStopPath = '/api/' + source + '-start-then-stop-video/play/stop/device-1/channel-1';
+    const newerFirstStart = await requestJson(startThenStopApp, newerBasePath, 'POST');
+    const newerSecondStart = requestJson(startThenStopApp, newerBasePath, 'POST');
+    await waitFor(function () { return startCallCount === 2; }, source + ' G2 start 未进入上游');
+    const staleOldStop = requestJson(
+      startThenStopApp,
+      newerStopPath + '?liveGeneration=' + encodeURIComponent(newerFirstStart.body.liveGeneration),
+      'POST'
+    );
+    delayedSecondStart.resolve(upstreamStart(source));
+    assert.strictEqual((await newerSecondStart).body.ok, true, source + ' G2 start 必须成功');
+    const staleOldStopResponse = await staleOldStop;
+    assert.strictEqual(staleOldStopResponse.body.ok, true, source + ' G1 旧 stop 必须安全完成');
+    assert.strictEqual(staleOldStopResponse.body.stale, true, source + ' G2 先进入时 G1 stop 必须被识别为 stale');
+    assert.strictEqual(
+      startThenStopCalls.filter(function (call) { return call.urlPath.indexOf('/api/play/stop/') === 0; }).length,
+      0,
+      source + ' G2 start 先进入时 G1 stop 绝不能调用上游'
+    );
+
+    const parallelApp = express();
+    const parallelRegistry = createLiveStreamGenerationRegistry({
+      instanceId: source + '-parallel-test',
+      maxEntries: 4,
+    });
+    const slowStart = deferred();
+    const parallelCalls = [];
+    registerLivePlaybackRoutes(parallelApp, {
+      source: source,
+      pathPrefix: '/api/' + source + '-parallel-video',
+      liveGenerations: parallelRegistry,
+      rewriteToProxy: function (url) { return url; },
+      callWithAuth: async function (method, urlPath) {
+        parallelCalls.push({ method: method, urlPath: urlPath });
+        if (urlPath.indexOf('device-1') !== -1) return slowStart.promise;
+        return upstreamStart(source);
+      },
+    });
+    const slowRequest = requestJson(parallelApp, '/api/' + source + '-parallel-video/play/device-1/channel-1', 'POST');
+    await waitFor(function () { return parallelCalls.length === 1; }, source + ' 慢起播未进入上游');
+    const fastRequest = requestJson(parallelApp, '/api/' + source + '-parallel-video/play/device-2/channel-2', 'POST');
+    await waitFor(function () { return parallelCalls.length === 2; }, source + ' 不同 key 的起播被错误阻塞');
+    assert.strictEqual((await fastRequest).body.ok, true, source + ' 不同 key 必须可以并行完成');
+    slowStart.resolve(upstreamStart(source));
+    assert.strictEqual((await slowRequest).body.ok, true, source + ' 慢起播最终必须成功');
   }
 }
 

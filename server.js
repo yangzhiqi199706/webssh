@@ -232,59 +232,64 @@ function createDcimVideoSession() {
 
 function createLiveStreamGenerationRegistry(options) {
   const settings = options || {};
-  const now = typeof settings.now === 'function' ? settings.now : Date.now;
   const configuredMaxEntries = Number(settings.maxEntries);
   const maxEntries = Number.isFinite(configuredMaxEntries)
     ? Math.max(1, Math.min(4096, Math.floor(configuredMaxEntries))) : 2048;
-  const configuredTtlMs = Number(settings.ttlMs);
-  const ttlMs = Number.isFinite(configuredTtlMs)
-    ? Math.max(1000, Math.min(24 * 60 * 60 * 1000, Math.floor(configuredTtlMs))) : 30 * 60 * 1000;
   const instanceId = settings.instanceId ? String(settings.instanceId)
     : require('crypto').randomBytes(16).toString('hex');
   const entries = new Map();
+  const queues = new Map();
   let sequence = 0;
-
-  function currentTime() {
-    const value = Number(now());
-    return Number.isFinite(value) ? value : Date.now();
-  }
 
   function entryKey(source, deviceId, channelId) {
     return JSON.stringify([String(source || ''), String(deviceId || ''), String(channelId || '')]);
   }
 
-  function prune(referenceTime) {
-    entries.forEach(function (entry, key) {
-      if (referenceTime - entry.lastTouchedAt >= ttlMs) entries.delete(key);
+  function enqueue(key, operation) {
+    const previous = queues.get(key);
+    let result;
+    if (previous) {
+      result = previous.then(function () {
+        return operation();
+      }, function () {
+        return operation();
+      });
+    } else {
+      try {
+        result = Promise.resolve(operation());
+      } catch (error) {
+        result = Promise.reject(error);
+      }
+    }
+    let tail = result.then(function (value) {
+      if (queues.get(key) === tail) queues.delete(key);
+      return value;
+    }, function () {
+      if (queues.get(key) === tail) queues.delete(key);
     });
-    if (entries.size <= maxEntries) return;
-    Array.from(entries.entries()).sort(function (left, right) {
-      return left[1].lastTouchedAt - right[1].lastTouchedAt;
-    }).slice(0, entries.size - maxEntries).forEach(function (item) {
-      entries.delete(item[0]);
-    });
+    queues.set(key, tail);
+    return result;
   }
 
   return {
     issue: function (source, deviceId, channelId) {
-      const issuedAt = currentTime();
-      prune(issuedAt);
+      const key = entryKey(source, deviceId, channelId);
+      if (!entries.has(key) && entries.size >= maxEntries) return null;
       sequence++;
       if (!Number.isSafeInteger(sequence)) throw new Error('实时点播代次已耗尽');
       const generation = instanceId + ':' + sequence;
-      entries.set(entryKey(source, deviceId, channelId), {
+      entries.set(key, {
         generation: generation,
-        lastTouchedAt: issuedAt,
       });
-      prune(issuedAt);
       return generation;
     },
+    current: function (source, deviceId, channelId) {
+      const entry = entries.get(entryKey(source, deviceId, channelId));
+      return entry ? entry.generation : null;
+    },
     matches: function (source, deviceId, channelId, generation) {
-      const checkedAt = currentTime();
-      prune(checkedAt);
       const entry = entries.get(entryKey(source, deviceId, channelId));
       if (!entry || entry.generation !== String(generation || '')) return false;
-      entry.lastTouchedAt = checkedAt;
       return true;
     },
     clearIfCurrent: function (source, deviceId, channelId, generation) {
@@ -295,9 +300,15 @@ function createLiveStreamGenerationRegistry(options) {
       entries.delete(key);
       return true;
     },
+    enqueue: function (source, deviceId, channelId, operation) {
+      if (typeof operation !== 'function') throw new Error('实时点播队列操作必须是函数');
+      return enqueue(entryKey(source, deviceId, channelId), operation);
+    },
     size: function () {
-      prune(currentTime());
       return entries.size;
+    },
+    queueSize: function () {
+      return queues.size;
     },
   };
 }
@@ -310,7 +321,8 @@ function registerLivePlaybackRoutes(app, deps) {
   if (typeof options.callWithAuth !== 'function') throw new Error('callWithAuth is required');
   if (typeof options.rewriteToProxy !== 'function') throw new Error('rewriteToProxy is required');
   if (!options.liveGenerations || typeof options.liveGenerations.issue !== 'function' ||
-    typeof options.liveGenerations.matches !== 'function' || typeof options.liveGenerations.clearIfCurrent !== 'function') {
+    typeof options.liveGenerations.current !== 'function' || typeof options.liveGenerations.clearIfCurrent !== 'function' ||
+    typeof options.liveGenerations.enqueue !== 'function') {
     throw new Error('liveGenerations is required');
   }
 
@@ -334,9 +346,24 @@ function registerLivePlaybackRoutes(app, deps) {
     const deviceId = String(req.params.deviceId || '');
     const channelId = String(req.params.channelId || '');
     const liveGeneration = options.liveGenerations.issue(source, deviceId, channelId);
-    const did = encodeURIComponent(deviceId);
-    const cid = encodeURIComponent(channelId);
-    const r = await options.callWithAuth('GET', '/api/play/start/' + did + '/' + cid, null);
+    if (!liveGeneration) {
+      return res.status(503).json({ ok: false, status: 503, message: '实时点播容量已满，请先停止已有实时流' });
+    }
+    let r;
+    try {
+      r = await options.liveGenerations.enqueue(source, deviceId, channelId, async function () {
+        const did = encodeURIComponent(deviceId);
+        const cid = encodeURIComponent(channelId);
+        const result = await options.callWithAuth('GET', '/api/play/start/' + did + '/' + cid, null);
+        if (!result.ok || !result.data || result.data.code !== 0) {
+          options.liveGenerations.clearIfCurrent(source, deviceId, channelId, liveGeneration);
+        }
+        return result;
+      });
+    } catch (error) {
+      options.liveGenerations.clearIfCurrent(source, deviceId, channelId, liveGeneration);
+      return res.status(502).json({ ok: false, status: 502, message: error.message || '上游起播失败' });
+    }
     if (!r.ok || !r.data || r.data.code !== 0) {
       return res.json({ ok: false, status: r.status, message: (r.data && r.data.msg) || r.message || ('上游返回 ' + r.status), raw: r.data });
     }
@@ -359,14 +386,31 @@ function registerLivePlaybackRoutes(app, deps) {
     const deviceId = String(req.params.deviceId || '');
     const channelId = String(req.params.channelId || '');
     const requestedGeneration = requestedLiveGeneration(req);
-    if (requestedGeneration && !options.liveGenerations.matches(source, deviceId, channelId, requestedGeneration)) {
-      return res.json({ ok: true, stale: true, message: '' });
+    const legacyGeneration = requestedGeneration ? null : options.liveGenerations.current(source, deviceId, channelId);
+    let outcome;
+    try {
+      outcome = await options.liveGenerations.enqueue(source, deviceId, channelId, async function () {
+        if (requestedGeneration) {
+          const currentGeneration = options.liveGenerations.current(source, deviceId, channelId);
+          if (currentGeneration && currentGeneration !== requestedGeneration) return { stale: true };
+        }
+        const did = encodeURIComponent(deviceId);
+        const cid = encodeURIComponent(channelId);
+        const r = await options.callWithAuth('GET', '/api/play/stop/' + did + '/' + cid, null);
+        const ok = Boolean(r.ok && r.data && r.data.code === 0);
+        if (ok && requestedGeneration) {
+          options.liveGenerations.clearIfCurrent(source, deviceId, channelId, requestedGeneration);
+        } else if (ok && legacyGeneration) {
+          options.liveGenerations.clearIfCurrent(source, deviceId, channelId, legacyGeneration);
+        }
+        return { result: r };
+      });
+    } catch (error) {
+      return res.status(502).json({ ok: false, status: 502, message: error.message || '上游停流失败' });
     }
-    const did = encodeURIComponent(deviceId);
-    const cid = encodeURIComponent(channelId);
-    const r = await options.callWithAuth('GET', '/api/play/stop/' + did + '/' + cid, null);
+    if (outcome.stale) return res.json({ ok: true, stale: true, message: '' });
+    const r = outcome.result;
     const ok = Boolean(r.ok && r.data && r.data.code === 0);
-    if (ok) options.liveGenerations.clearIfCurrent(source, deviceId, channelId, requestedGeneration || null);
     return res.json({ ok: ok, message: (r.data && r.data.msg) || r.message || '' });
   });
 }
