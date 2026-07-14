@@ -1331,17 +1331,25 @@ async function runDcimVideoConnectionUiTests() {
 }
 
 async function runWvpRuntimeRouteContractTests() {
+  let anonymousReadCalls = 0;
   let anonymousControllerCalls = 0;
   const anonymousApp = express();
   registerWvpRuntimeRoutes(anonymousApp, {
     runtimeOperations: {
-      readStatus: async () => { throw new Error('匿名请求不得读取状态'); },
+      readStatus: async () => {
+        anonymousReadCalls++;
+        return runtimeOperationStatus(true, true);
+      },
       restart: async () => { anonymousControllerCalls++; throw new Error('匿名请求不得重启'); },
     },
     isAuthed: () => false,
     appendLog: () => {},
     runtimeSummary: () => '',
   });
+  const anonymousStatusResponse = await requestJson(anonymousApp, '/api/db-manager/opengauss/wvp/runtime-status', 'GET');
+  assert.strictEqual(anonymousStatusResponse.statusCode, 401);
+  assert.deepStrictEqual(anonymousStatusResponse.body, { ok: false, message: '请先登录' });
+  assert.strictEqual(anonymousReadCalls, 0);
   const anonymousResponse = await postJson(anonymousApp, '/api/db-manager/opengauss/wvp/restart');
   assert.strictEqual(anonymousResponse.statusCode, 401);
   assert.deepStrictEqual(anonymousResponse.body, { ok: false, message: '请先登录' });
@@ -1425,6 +1433,32 @@ async function runWvpRuntimeOperationTests() {
   assert.strictEqual(pollCollectCalls, 3);
   assert.strictEqual(pollSleepCalls, 2);
   assert.ok(pollSleepCalls <= 15);
+
+  for (const failedCheck of ['datasource', 'database', 'logs']) {
+    const degradedRuntime = runtimeOperationStatus(true, true);
+    degradedRuntime.status.status = 'unhealthy';
+    degradedRuntime.status.ready = false;
+    degradedRuntime.status.checks[failedCheck].healthy = false;
+    const healthSequence = [runtimeOperationStatus(true, true), degradedRuntime];
+    let healthSequenceIndex = 0;
+    const degradedOps = createWvpRuntimeOperations({
+      collect: async () => healthSequence[healthSequenceIndex++] || degradedRuntime,
+      restartService: async () => ({ code: 0 }),
+      sleep: async () => {},
+    });
+    const degradedApp = express();
+    registerWvpRuntimeRoutes(degradedApp, {
+      runtimeOperations: degradedOps,
+      isAuthed: () => true,
+      appendLog: () => {},
+      runtimeSummary: () => '',
+    });
+    const degradedResponse = await postJson(degradedApp, '/api/db-manager/opengauss/wvp/restart');
+    assert.strictEqual(degradedResponse.statusCode, 502, failedCheck + ' 失败时不得报告重启成功');
+    assert.strictEqual(degradedResponse.body.ok, false, failedCheck + ' 失败时 ok 必须为 false');
+    assert.strictEqual(degradedResponse.body.status.ready, false, failedCheck + ' 失败时运行态不得就绪');
+    assert.strictEqual(degradedResponse.body.status.checks[failedCheck].healthy, false, failedCheck + ' 检查结果必须保留');
+  }
 
   let timeoutCollectCalls = 0;
   let timeoutSleepCalls = 0;
@@ -1619,7 +1653,12 @@ const stopEndedPlayback = vm.runInNewContext(
 );
 const releaseTileStream = vm.runInNewContext(
   '(' + extractVideoFunction('releaseTileStream') + ')',
-  { tileStopPathForState: tileStopPathForState }
+  {
+    Promise: Promise,
+    clearTimeout: clearTimeout,
+    setTimeout: setTimeout,
+    tileStopPathForState: tileStopPathForState,
+  }
 );
 const handleTilePlaybackFailure = vm.runInNewContext(
   '(' + extractVideoFunction('handleTilePlaybackFailure') + ')',
@@ -2033,6 +2072,40 @@ async function runVideoPlaybackUiTests() {
   assert.strictEqual(staleTile.playCalls.length, 0);
   assert.strictEqual(otherTile.playCalls.length, 0);
 
+  let resolveOwnedStaleStart;
+  const ownedPlaybackStopRequests = [];
+  const ownedPlaybackTile = {
+    revision: 0,
+    source: 'dcim',
+    mode: 'playback',
+    streamKey: 'shared/record',
+    playCalls: [],
+  };
+  const ownedPlaybackHarness = createPlaybackControllerHarness({
+    activeTile: ownedPlaybackTile,
+    fetch: function (url, options) {
+      if (url.indexOf('/playback/start/') !== -1) {
+        return new Promise(function (resolve) { resolveOwnedStaleStart = resolve; });
+      }
+      ownedPlaybackStopRequests.push({ url: url, options: options });
+      return Promise.resolve({ json: function () { return Promise.resolve({ ok: true }); } });
+    },
+    replaceTile: function (tile, params) { tile.playCalls.push(params); },
+  });
+  ownedPlaybackHarness.controller.setDevices([{ deviceId: 'd1', name: '设备一' }], 'dcim');
+  ownedPlaybackHarness.elements.device.value = 'd1';
+  ownedPlaybackHarness.elements.channel.value = 'c1';
+  ownedPlaybackHarness.elements.channel.options = [{ value: 'c1', textContent: '通道一' }];
+  const ownedStaleStart = ownedPlaybackHarness.controller.start();
+  ownedPlaybackTile.revision++;
+  resolveOwnedStaleStart({ json: function () { return Promise.resolve({
+    ok: true,
+    flvUrl: '/shared.flv',
+    streamKey: 'shared/record',
+  }); } });
+  assert.strictEqual(await ownedStaleStart, false);
+  assert.deepStrictEqual(ownedPlaybackStopRequests, [], '过期响应不得停止活动 Tile 已持有的回放流');
+
   let resolveChangedFormStart;
   const changedFormRequests = [];
   const changedFormTile = { revision: 0, playCalls: [] };
@@ -2086,6 +2159,73 @@ async function runVideoPlaybackUiTests() {
   assert.strictEqual(await fixedTileStart, true);
   assert.strictEqual(fixedTile.playCalls.length, 1);
   assert.strictEqual(changedActiveTile.playCalls.length, 0);
+}
+
+async function runLiveTileReplacementRaceTests() {
+  const prepareTileForReplacement = vm.runInNewContext(
+    '(' + extractVideoFunction('prepareTileForReplacement') + ')',
+    { Promise: Promise }
+  );
+  const calls = [];
+  let releaseStop;
+  const tile = {
+    revision: 0,
+    source: 'dcim',
+    mode: 'live',
+    deviceId: 'device-1',
+    channelId: 'channel-1',
+    streamKey: 'old-live',
+    stop: function () {
+      calls.push('stop');
+      return new Promise(function (resolve) { releaseStop = resolve; });
+    },
+    play: function (params) {
+      calls.push('play:' + params.streamKey);
+      this.revision++;
+      this.source = params.source;
+      this.mode = params.mode;
+      this.deviceId = params.deviceId;
+      this.channelId = params.channelId;
+      this.streamKey = params.streamKey;
+    },
+  };
+  const context = {
+    Promise: Promise,
+    encodeURIComponent: encodeURIComponent,
+    currentSource: 'dcim',
+    sourceEpoch: 1,
+    activeIdx: 0,
+    tiles: [tile],
+    hint: { textContent: '' },
+    window: { DcimVideoRuntime: runtime },
+    tileStopPathForState: tileStopPathForState,
+    replaceTileStream: function (target, params) { target.play(params); return true; },
+    prepareTileForReplacement: prepareTileForReplacement,
+    fetch: function (url) {
+      if (url.indexOf('/channels?') !== -1) {
+        return Promise.resolve({ json: function () { return Promise.resolve({
+          ok: true,
+          list: [{ channelId: 'channel-1', name: '通道一', status: 'ON' }],
+        }); } });
+      }
+      if (url.indexOf('/play/') !== -1) {
+        calls.push('start');
+        return new Promise(function () {});
+      }
+      throw new Error('意外请求: ' + url);
+    },
+  };
+  const livePlaySource = extractVideoFunction('playFromDevice');
+  vm.runInNewContext(livePlaySource + '\nthis.playFromDevice = playFromDevice;', context);
+
+  context.playFromDevice('device-1', '设备一');
+  context.playFromDevice('device-1', '设备一');
+  for (let turn = 0; turn < 5; turn++) await new Promise(function (resolve) { setImmediate(resolve); });
+  assert.deepStrictEqual(calls, ['stop'], '旧流 stop 完成前不得发送新的实时点播');
+
+  releaseStop();
+  for (let turn = 0; turn < 5; turn++) await new Promise(function (resolve) { setImmediate(resolve); });
+  assert.deepStrictEqual(calls, ['stop', 'start'], '连续双击只允许最新请求在 stop 后发起点播');
 }
 
 const dbPage = fs.readFileSync(path.join(__dirname, '..', 'db', 'index.html'), 'utf8');
@@ -2198,7 +2338,7 @@ try {
   try { fs.unlinkSync(shellPath); } catch (error) {}
 }
 
-runWvpRuntimeOperationTests().then(runSshCommandTimeoutTests).then(runSshCommandLateEventTests).then(runWvpRuntimeRouteContractTests).then(runDcimVideoConnectionRouteContractTests).then(runDcimVideoSystemConfigRedactionTests).then(runDcimVideoConnectionRaceTests).then(runDcimVideoAtomicWriteTests).then(runDcimVideoConnectionUiTests).then(runVideoVendorStaticTests).then(runVideoSourceLoadFailureTests).then(runVideoPlaybackUiTests).then(runProtocolMainSyncRollbackFailureTests).then(() => {
+runWvpRuntimeOperationTests().then(runSshCommandTimeoutTests).then(runSshCommandLateEventTests).then(runWvpRuntimeRouteContractTests).then(runDcimVideoConnectionRouteContractTests).then(runDcimVideoSystemConfigRedactionTests).then(runDcimVideoConnectionRaceTests).then(runDcimVideoAtomicWriteTests).then(runDcimVideoConnectionUiTests).then(runVideoVendorStaticTests).then(runVideoSourceLoadFailureTests).then(runVideoPlaybackUiTests).then(runLiveTileReplacementRaceTests).then(runProtocolMainSyncRollbackFailureTests).then(() => {
   console.log('dcim wvp opengauss tests: PASS');
 }).catch((error) => {
   console.error(error);

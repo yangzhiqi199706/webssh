@@ -374,10 +374,35 @@ sdp-ip:    192.168.0.22</pre>
         }
         if (!beaconSent) {
           var requestOptions = unloaded ? { method: 'POST', keepalive: true } : { method: 'POST' };
-          request(path, requestOptions).catch(function () {});
+          var stopRequest;
+          try {
+            stopRequest = request(path, requestOptions);
+          } catch (_error) {
+            return Promise.resolve({ state: 'error' });
+          }
+          return new Promise(function (resolve) {
+            var done = false;
+            var timeoutId = setTimeout(function () {
+              if (done) return;
+              done = true;
+              resolve({ state: 'timeout' });
+            }, 3000);
+            function finish(state) {
+              if (done) return;
+              done = true;
+              clearTimeout(timeoutId);
+              resolve({ state: state });
+            }
+            Promise.resolve(stopRequest).then(function () {
+              finish('stopped');
+            }, function () {
+              finish('error');
+            });
+          });
         }
+        return Promise.resolve({ state: 'beacon' });
       }
-      return state;
+      return Promise.resolve({ state: 'empty' });
     }
 
     function stopTilesForPageHide(tileList) {
@@ -397,6 +422,31 @@ sdp-ip:    192.168.0.22</pre>
       if (tile.streamKey || tile.deviceId || tile.channelId || tile.player) tile.stop();
       tile.play(params);
       return true;
+    }
+
+    function prepareTileForReplacement(tile) {
+      if (!tile) return Promise.resolve({ state: 'empty' });
+      if (tile._replacementStopPromise) return tile._replacementStopPromise;
+      if (!tile.streamKey && !tile.deviceId && !tile.channelId && !tile.player) {
+        return Promise.resolve({ state: 'empty' });
+      }
+      var stopped;
+      try {
+        stopped = tile.stop({ preserveLiveRequest: true });
+      } catch (_error) {
+        stopped = Promise.resolve({ state: 'error' });
+      }
+      var settled = Promise.resolve(stopped).then(function (result) {
+        return result || { state: 'stopped' };
+      }, function () {
+        return { state: 'error' };
+      });
+      var tracked = settled.then(function (result) {
+        if (tile._replacementStopPromise === tracked) tile._replacementStopPromise = null;
+        return result;
+      });
+      tile._replacementStopPromise = tracked;
+      return tracked;
     }
 
     function stopEndedPlayback(tile) {
@@ -452,6 +502,10 @@ sdp-ip:    192.168.0.22</pre>
 
       function stopStalePlayback(source, result) {
         if (!result || !result.ok || !result.streamKey) return;
+        var owned = options.getTiles().some(function (tile) {
+          return tile && tile.source === source && tile.mode === 'playback' && tile.streamKey === result.streamKey;
+        });
+        if (owned) return;
         var path = options.runtime.stopPath(source, 'playback', '', '', result.streamKey);
         options.fetch(path, { method: 'POST' }).catch(function () {});
       }
@@ -674,6 +728,9 @@ sdp-ip:    192.168.0.22</pre>
       this.source = null;
       this.mode = 'live';
       this.revision = 0;
+      this._liveStartRequestId = 0;
+      this._liveStartPending = null;
+      this._replacementStopPromise = null;
       this.elBadge = el.querySelector('.tile-overlay .badge');
       var self = this;
       el.addEventListener('click', function () { setActiveTile(self.idx); });
@@ -683,6 +740,8 @@ sdp-ip:    192.168.0.22</pre>
     Tile.prototype.play = function (params) {
       var self = this;
       if (this.streamKey || this.deviceId || this.channelId || this.player) this.stop();
+      this._liveStartRequestId++;
+      this._liveStartPending = null;
       this.revision++;
       this.deviceId = params.deviceId; this.channelId = params.channelId;
       this.streamKey = params.streamKey; this.source = params.source;
@@ -737,7 +796,11 @@ sdp-ip:    192.168.0.22</pre>
       try { this.video.removeAttribute('src'); this.video.load(); } catch (_e) {}
     };
     Tile.prototype.stop = function (options) {
-      var state = releaseTileStream(this, window.DcimVideoRuntime, fetch, {
+      if (!options || !options.preserveLiveRequest) {
+        this._liveStartRequestId++;
+        this._liveStartPending = null;
+      }
+      var stopPromise = releaseTileStream(this, window.DcimVideoRuntime, fetch, {
         unload: Boolean(options && options.unload),
         navigator: window.navigator,
       });
@@ -749,6 +812,7 @@ sdp-ip:    192.168.0.22</pre>
       this.elBadge.textContent = 'LIVE';
       this.elBadge.classList.remove('pb');
       if (playbackController) playbackController.syncControls();
+      return stopPromise;
     };
 
     function tileHTML(idx) {
@@ -1008,40 +1072,73 @@ sdp-ip:    192.168.0.22</pre>
       var src = currentSource;
       var requestEpoch = sourceEpoch;
       var targetTile = tiles[activeIdx];
-      var targetRevision = targetTile ? targetTile.revision : -1;
       if (!src) { hint.textContent = "请先点「📡 加载 webssh/dcim 视频监控」"; return; }
       if (!targetTile) { hint.textContent = "请先选择可用分屏"; return; }
+      var liveRequestId = (targetTile._liveStartRequestId || 0) + 1;
+      targetTile._liveStartRequestId = liveRequestId;
+      function isCurrentLiveRequest() {
+        return requestEpoch === sourceEpoch && currentSource === src && tiles.indexOf(targetTile) !== -1
+          && targetTile._liveStartRequestId === liveRequestId;
+      }
+      function clearPendingLiveRequest() {
+        if (targetTile._liveStartPending && targetTile._liveStartPending.id === liveRequestId) {
+          targetTile._liveStartPending = null;
+        }
+      }
+      function liveStreamIsOwned(channelId) {
+        return tiles.some(function (tile) {
+          if (!tile) return false;
+          if (tile.source === src && tile.mode === 'live' && tile.deviceId === deviceId && tile.channelId === channelId) return true;
+          var pending = tile._liveStartPending;
+          return pending && pending.source === src && pending.deviceId === deviceId && pending.channelId === channelId;
+        });
+      }
       hint.textContent = "查询通道中… " + deviceName;
       fetch("/api/" + src + "-video/channels?deviceId=" + encodeURIComponent(deviceId) + "&page=1&count=10")
         .then(function (r) { return r.json(); })
         .then(function (resp) {
-          if (requestEpoch !== sourceEpoch || currentSource !== src || tiles.indexOf(targetTile) === -1 || targetTile.revision !== targetRevision) return null;
+          if (!isCurrentLiveRequest()) return null;
           if (!resp.ok || !resp.list || !resp.list.length) {
             hint.textContent = "设备 " + deviceName + " 暂无通道（catalog 可能未同步）"; return null;
           }
           var ch = resp.list.find(function (c) { return c.status === "ON" || c.status === "on"; }) || resp.list[0];
           var chId = ch.channelId || ch.deviceId;
           var chName = ch.name || chId;
-          hint.textContent = "点播中… " + deviceName + " / " + chName;
-          return fetch("/api/" + src + "-video/play/" + encodeURIComponent(deviceId) + "/" + encodeURIComponent(chId), { method: "POST" })
-            .then(function (r) { return r.json(); })
-            .then(function (pr) { return { pr: pr, chId: chId, chName: chName }; });
+          return prepareTileForReplacement(targetTile).then(function (stopResult) {
+            if (!isCurrentLiveRequest()) return null;
+            var startMessage = '点播中… ' + deviceName + ' / ' + chName;
+            if (stopResult && (stopResult.state === 'timeout' || stopResult.state === 'error')) {
+              startMessage = '旧流停止未确认，继续点播… ' + deviceName + ' / ' + chName;
+            }
+            targetTile._liveStartPending = { id: liveRequestId, source: src, deviceId: deviceId, channelId: chId };
+            hint.textContent = startMessage;
+            return fetch("/api/" + src + "-video/play/" + encodeURIComponent(deviceId) + "/" + encodeURIComponent(chId), { method: "POST" })
+              .then(function (r) { return r.json(); })
+              .then(function (pr) { return { pr: pr, chId: chId, chName: chName }; });
+          });
         })
         .then(function (out) {
           if (!out) return;
-          if (requestEpoch !== sourceEpoch || currentSource !== src || tiles.indexOf(targetTile) === -1 || targetTile.revision !== targetRevision) {
-            if (out.pr && out.pr.ok) {
+          if (!isCurrentLiveRequest()) {
+            clearPendingLiveRequest();
+            if (out.pr && out.pr.ok && !liveStreamIsOwned(out.chId)) {
               var stalePath = tileStopPathForState({ source: src, mode: 'live', deviceId: deviceId, channelId: out.chId }, window.DcimVideoRuntime);
               if (stalePath) fetch(stalePath, { method: 'POST' }).catch(function () {});
             }
             return;
           }
-          if (!out.pr || !out.pr.ok) { hint.textContent = "点播失败：" + ((out.pr && out.pr.message) || "未知"); return; }
+          if (!out.pr || !out.pr.ok) {
+            clearPendingLiveRequest();
+            hint.textContent = "点播失败：" + ((out.pr && out.pr.message) || "未知"); return;
+          }
           replaceTileStream(targetTile, { flvUrl: out.pr.flvUrl, streamKey: out.pr.streamKey, deviceId: deviceId,
             channelId: out.chId, channelName: out.chName, deviceName: deviceName, source: src, mode: 'live' });
           hint.textContent = "已起播：" + deviceName + " / " + out.chName + "（" + src + "，分屏 " + (targetTile.idx + 1) + "）";
         })
-        .catch(function (e) { hint.textContent = "请求失败：" + e.message; });
+        .catch(function (e) {
+          clearPendingLiveRequest();
+          if (isCurrentLiveRequest()) hint.textContent = "请求失败：" + e.message;
+        });
     }
 
     $("dcimDeviceList").addEventListener("dblclick", function (e) {
