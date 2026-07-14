@@ -538,6 +538,95 @@ async function runLiveStreamGenerationRouteTests() {
   assert.strictEqual(laterQueueOperationRan, true, '同 key 前一项拒绝后，后续队列项仍必须执行');
   assert.strictEqual(queueRegistry.queueSize(), 0, '队列完成后必须移除自身，不能保留 Promise 尾链');
 
+  const pendingCapacityRegistry = createLiveStreamGenerationRegistry({
+    instanceId: 'pending-capacity-test',
+    maxEntries: 1,
+  });
+  const heldQueueOperation = deferred();
+  let heldQueueOperationRan = false;
+  const heldQueueRequest = pendingCapacityRegistry.enqueue('dcim', 'device-1', 'channel-1', function () {
+    heldQueueOperationRan = true;
+    return heldQueueOperation.promise;
+  });
+  await waitFor(function () { return heldQueueOperationRan; }, '容量测试的首个队列操作未执行');
+  assert.strictEqual(pendingCapacityRegistry.pendingFor('dcim', 'device-1', 'channel-1'), 1, '同 key 待处理数必须计入首个挂起操作');
+  assert.strictEqual(pendingCapacityRegistry.pendingCount(), 1, '全局待处理数必须计入首个挂起操作');
+  for (let index = 0; index < 3; index++) {
+    let rejectedOperationRan = false;
+    await pendingCapacityRegistry.enqueue('dcim', 'device-1', 'channel-1', function () {
+      rejectedOperationRan = true;
+      return Promise.resolve();
+    }).then(function () {
+      throw new Error('同 key 超限操作必须被拒绝');
+    }, function (error) {
+      assert.strictEqual(error.code, 'LIVE_STREAM_QUEUE_FULL', '同 key 超限必须返回可识别的容量错误');
+    });
+    assert.strictEqual(rejectedOperationRan, false, '同 key 超限操作不得进入队列执行');
+    assert.strictEqual(pendingCapacityRegistry.pendingFor('dcim', 'device-1', 'channel-1'), 1, '同 key 连续超限不得突破待处理上限');
+    assert.strictEqual(pendingCapacityRegistry.pendingCount(), 1, '同 key 连续超限不得突破全局待处理上限');
+  }
+  await pendingCapacityRegistry.enqueue('dcim', 'device-2', 'channel-1', function () {
+    throw new Error('全局超限操作不得执行');
+  }).then(function () {
+    throw new Error('全局超限操作必须被拒绝');
+  }, function (error) {
+    assert.strictEqual(error.code, 'LIVE_STREAM_QUEUE_FULL', '全局超限必须返回可识别的容量错误');
+  });
+  assert.strictEqual(pendingCapacityRegistry.pendingFor('dcim', 'device-2', 'channel-1'), 0, '全局超限不得为其他 key 预留待处理槽位');
+  assert.strictEqual(pendingCapacityRegistry.pendingCount(), 1, '全局超限不得增加待处理总数');
+  heldQueueOperation.resolve();
+  await heldQueueRequest;
+  assert.strictEqual(pendingCapacityRegistry.pendingFor('dcim', 'device-1', 'channel-1'), 0, '挂起操作完成后必须释放同 key 待处理计数');
+  assert.strictEqual(pendingCapacityRegistry.pendingCount(), 0, '挂起操作完成后必须释放全局待处理计数');
+
+  let recoveryOperationRan = false;
+  await pendingCapacityRegistry.enqueue('dcim', 'device-1', 'channel-1', function () {
+    recoveryOperationRan = true;
+    return Promise.resolve();
+  });
+  assert.strictEqual(recoveryOperationRan, true, '容量释放后正常新操作必须继续执行');
+  assert.strictEqual(pendingCapacityRegistry.pendingCount(), 0, '正常新操作完成后不得残留待处理计数');
+
+  await pendingCapacityRegistry.enqueue('dcim', 'device-1', 'channel-1', function () {
+    throw new Error('queue test throw');
+  }).then(function () {
+    throw new Error('队列抛错必须向调用方传递');
+  }, function () {});
+  assert.strictEqual(pendingCapacityRegistry.pendingCount(), 0, '队列操作抛错后必须释放待处理计数');
+  await pendingCapacityRegistry.enqueue('dcim', 'device-1', 'channel-1', function () {
+    return Promise.reject(new Error('queue test rejection after capacity'));
+  }).then(function () {
+    throw new Error('队列拒绝必须向调用方传递');
+  }, function () {});
+  assert.strictEqual(pendingCapacityRegistry.pendingCount(), 0, '队列操作拒绝后必须释放待处理计数');
+
+  const fairQueueRegistry = createLiveStreamGenerationRegistry({
+    instanceId: 'fair-queue-test',
+    maxEntries: 4,
+  });
+  const heldFairOperation = deferred();
+  let heldFairOperationRan = false;
+  const firstFairRequest = fairQueueRegistry.enqueue('dcim', 'device-1', 'channel-1', function () {
+    heldFairOperationRan = true;
+    return heldFairOperation.promise;
+  });
+  await waitFor(function () { return heldFairOperationRan; }, '公平性测试的首个队列操作未执行');
+  const secondFairRequest = fairQueueRegistry.enqueue('dcim', 'device-1', 'channel-1', function () {
+    return Promise.resolve();
+  });
+  assert.strictEqual(fairQueueRegistry.pendingFor('dcim', 'device-1', 'channel-1'), 2, '同 key 的待处理数必须受其独立配额约束');
+  assert.strictEqual(fairQueueRegistry.canEnqueue('dcim', 'device-1', 'channel-1'), false, '同 key 达到配额后不得继续占用全局槽位');
+  let differentKeyOperationRan = false;
+  await fairQueueRegistry.enqueue('dcim', 'device-2', 'channel-1', function () {
+    differentKeyOperationRan = true;
+    return Promise.resolve();
+  });
+  assert.strictEqual(differentKeyOperationRan, true, '同 key 达到配额后不同 key 必须仍可入队执行');
+  heldFairOperation.resolve();
+  await firstFairRequest;
+  await secondFairRequest;
+  assert.strictEqual(fairQueueRegistry.pendingCount(), 0, '不同 key 并发与同 key 串行完成后必须回收全部待处理计数');
+
   for (const source of ['dcim', 'webssh']) {
     const routeApp = express();
     const registry = createLiveStreamGenerationRegistry({
@@ -635,6 +724,42 @@ async function runLiveStreamGenerationRouteTests() {
     assert.strictEqual(capacityRejected.statusCode, 503, source + ' 活跃键已满时新起播必须返回 503');
     assert.strictEqual(capacityRejected.body.ok, false, source + ' 容量已满必须明确拒绝');
     assert.strictEqual(capacityCalls.length, 1, source + ' 容量拒绝不得调用上游起播');
+
+    const queueCapacityApp = express();
+    const queueCapacityRegistry = createLiveStreamGenerationRegistry({
+      instanceId: source + '-queue-capacity-test',
+      maxEntries: 1,
+    });
+    const queueCapacityCalls = [];
+    const delayedQueueStart = deferred();
+    registerLivePlaybackRoutes(queueCapacityApp, {
+      source: source,
+      pathPrefix: '/api/' + source + '-queue-capacity-video',
+      liveGenerations: queueCapacityRegistry,
+      rewriteToProxy: function (url) { return url; },
+      callWithAuth: async function (method, urlPath) {
+        queueCapacityCalls.push({ method: method, urlPath: urlPath });
+        if (queueCapacityCalls.length === 1) return delayedQueueStart.promise;
+        return upstreamStart(source);
+      },
+    });
+    const queueCapacityPath = '/api/' + source + '-queue-capacity-video/play/device-1/channel-1';
+    const heldStart = requestJson(queueCapacityApp, queueCapacityPath, 'POST');
+    await waitFor(function () { return queueCapacityCalls.length === 1; }, source + ' 容量测试的首个起播未进入上游');
+    const queueRejectedStart = await requestJson(queueCapacityApp, queueCapacityPath, 'POST');
+    assert.strictEqual(queueRejectedStart.statusCode, 503, source + ' 队列满时起播必须立即返回 503');
+    assert.deepStrictEqual(
+      queueRejectedStart.body,
+      { ok: false, status: 503, message: '实时点播请求繁忙，请稍后重试' },
+      source + ' 队列满时不得向客户端泄露内部异常'
+    );
+    assert.strictEqual(queueCapacityCalls.length, 1, source + ' 队列满时不得调用上游起播');
+    assert.strictEqual(queueCapacityRegistry.pendingCount(), 1, source + ' 队列满时全局待处理数必须保持上限');
+    delayedQueueStart.resolve(upstreamStart(source));
+    assert.strictEqual((await heldStart).body.ok, true, source + ' 挂起起播释放后必须成功完成');
+    assert.strictEqual(queueCapacityRegistry.pendingCount(), 0, source + ' 挂起起播释放后必须回收待处理计数');
+    const recoveredStart = await requestJson(queueCapacityApp, queueCapacityPath, 'POST');
+    assert.strictEqual(recoveredStart.body.ok, true, source + ' 队列容量释放后新起播必须继续成功');
 
     const failedStartApp = express();
     const failedStartRegistry = createLiveStreamGenerationRegistry({

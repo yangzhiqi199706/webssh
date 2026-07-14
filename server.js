@@ -235,17 +235,51 @@ function createLiveStreamGenerationRegistry(options) {
   const configuredMaxEntries = Number(settings.maxEntries);
   const maxEntries = Number.isFinite(configuredMaxEntries)
     ? Math.max(1, Math.min(4096, Math.floor(configuredMaxEntries))) : 2048;
+  const configuredMaxPendingEntries = Number(settings.maxPendingEntries);
+  const maxPendingEntries = Number.isFinite(configuredMaxPendingEntries)
+    ? Math.max(1, Math.min(4096, Math.floor(configuredMaxPendingEntries))) : maxEntries;
+  const configuredMaxPendingPerKey = Number(settings.maxPendingPerKey);
+  const defaultMaxPendingPerKey = Math.min(maxPendingEntries, Math.max(1, Math.min(64, Math.floor(maxPendingEntries / 2))));
+  const maxPendingPerKey = Number.isFinite(configuredMaxPendingPerKey)
+    ? Math.max(1, Math.min(maxPendingEntries, Math.floor(configuredMaxPendingPerKey)))
+    : defaultMaxPendingPerKey;
   const instanceId = settings.instanceId ? String(settings.instanceId)
     : require('crypto').randomBytes(16).toString('hex');
   const entries = new Map();
   const queues = new Map();
+  const pendingByKey = new Map();
+  let totalPending = 0;
   let sequence = 0;
 
   function entryKey(source, deviceId, channelId) {
     return JSON.stringify([String(source || ''), String(deviceId || ''), String(channelId || '')]);
   }
 
+  function pendingForKey(key) {
+    return pendingByKey.get(key) || 0;
+  }
+
+  function canEnqueue(key) {
+    return totalPending < maxPendingEntries && pendingForKey(key) < maxPendingPerKey;
+  }
+
+  function queueFullError() {
+    const error = new Error('实时点播请求繁忙');
+    error.code = 'LIVE_STREAM_QUEUE_FULL';
+    return error;
+  }
+
+  function releasePending(key) {
+    const pending = pendingForKey(key);
+    if (pending <= 1) pendingByKey.delete(key);
+    else pendingByKey.set(key, pending - 1);
+    totalPending--;
+  }
+
   function enqueue(key, operation) {
+    if (!canEnqueue(key)) return Promise.reject(queueFullError());
+    totalPending++;
+    pendingByKey.set(key, pendingForKey(key) + 1);
     const previous = queues.get(key);
     let result;
     if (previous) {
@@ -262,9 +296,11 @@ function createLiveStreamGenerationRegistry(options) {
       }
     }
     let tail = result.then(function (value) {
+      releasePending(key);
       if (queues.get(key) === tail) queues.delete(key);
       return value;
     }, function () {
+      releasePending(key);
       if (queues.get(key) === tail) queues.delete(key);
     });
     queues.set(key, tail);
@@ -304,6 +340,15 @@ function createLiveStreamGenerationRegistry(options) {
       if (typeof operation !== 'function') throw new Error('实时点播队列操作必须是函数');
       return enqueue(entryKey(source, deviceId, channelId), operation);
     },
+    canEnqueue: function (source, deviceId, channelId) {
+      return canEnqueue(entryKey(source, deviceId, channelId));
+    },
+    pendingFor: function (source, deviceId, channelId) {
+      return pendingForKey(entryKey(source, deviceId, channelId));
+    },
+    pendingCount: function () {
+      return totalPending;
+    },
     size: function () {
       return entries.size;
     },
@@ -338,6 +383,14 @@ function registerLivePlaybackRoutes(app, deps) {
     return String(queryGeneration || headerGeneration || '').trim();
   }
 
+  function queueCapacityResponse(res) {
+    return res.status(503).json({ ok: false, status: 503, message: '实时点播请求繁忙，请稍后重试' });
+  }
+
+  function isQueueFullError(error) {
+    return Boolean(error && error.code === 'LIVE_STREAM_QUEUE_FULL');
+  }
+
   const source = options.source;
   const playPath = options.pathPrefix + '/play/:deviceId/:channelId';
   const stopPath = options.pathPrefix + '/play/stop/:deviceId/:channelId';
@@ -345,6 +398,10 @@ function registerLivePlaybackRoutes(app, deps) {
   app.post(playPath, async function (req, res) {
     const deviceId = String(req.params.deviceId || '');
     const channelId = String(req.params.channelId || '');
+    if (typeof options.liveGenerations.canEnqueue === 'function' &&
+      !options.liveGenerations.canEnqueue(source, deviceId, channelId)) {
+      return queueCapacityResponse(res);
+    }
     const liveGeneration = options.liveGenerations.issue(source, deviceId, channelId);
     if (!liveGeneration) {
       return res.status(503).json({ ok: false, status: 503, message: '实时点播容量已满，请先停止已有实时流' });
@@ -362,6 +419,7 @@ function registerLivePlaybackRoutes(app, deps) {
       });
     } catch (error) {
       options.liveGenerations.clearIfCurrent(source, deviceId, channelId, liveGeneration);
+      if (isQueueFullError(error)) return queueCapacityResponse(res);
       return res.status(502).json({ ok: false, status: 502, message: error.message || '上游起播失败' });
     }
     if (!r.ok || !r.data || r.data.code !== 0) {
@@ -385,6 +443,10 @@ function registerLivePlaybackRoutes(app, deps) {
   app.post(stopPath, async function (req, res) {
     const deviceId = String(req.params.deviceId || '');
     const channelId = String(req.params.channelId || '');
+    if (typeof options.liveGenerations.canEnqueue === 'function' &&
+      !options.liveGenerations.canEnqueue(source, deviceId, channelId)) {
+      return queueCapacityResponse(res);
+    }
     const requestedGeneration = requestedLiveGeneration(req);
     const legacyGeneration = requestedGeneration ? null : options.liveGenerations.current(source, deviceId, channelId);
     let outcome;
@@ -406,6 +468,7 @@ function registerLivePlaybackRoutes(app, deps) {
         return { result: r };
       });
     } catch (error) {
+      if (isQueueFullError(error)) return queueCapacityResponse(res);
       return res.status(502).json({ ok: false, status: 502, message: error.message || '上游停流失败' });
     }
     if (outcome.stale) return res.json({ ok: true, stale: true, message: '' });
