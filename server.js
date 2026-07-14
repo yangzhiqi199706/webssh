@@ -230,6 +230,149 @@ function createDcimVideoSession() {
   };
 }
 
+function createLiveStreamGenerationRegistry(options) {
+  const settings = options || {};
+  const now = typeof settings.now === 'function' ? settings.now : Date.now;
+  const configuredMaxEntries = Number(settings.maxEntries);
+  const maxEntries = Number.isFinite(configuredMaxEntries)
+    ? Math.max(1, Math.min(4096, Math.floor(configuredMaxEntries))) : 2048;
+  const configuredTtlMs = Number(settings.ttlMs);
+  const ttlMs = Number.isFinite(configuredTtlMs)
+    ? Math.max(1000, Math.min(24 * 60 * 60 * 1000, Math.floor(configuredTtlMs))) : 30 * 60 * 1000;
+  const instanceId = settings.instanceId ? String(settings.instanceId)
+    : require('crypto').randomBytes(16).toString('hex');
+  const entries = new Map();
+  let sequence = 0;
+
+  function currentTime() {
+    const value = Number(now());
+    return Number.isFinite(value) ? value : Date.now();
+  }
+
+  function entryKey(source, deviceId, channelId) {
+    return JSON.stringify([String(source || ''), String(deviceId || ''), String(channelId || '')]);
+  }
+
+  function prune(referenceTime) {
+    entries.forEach(function (entry, key) {
+      if (referenceTime - entry.lastTouchedAt >= ttlMs) entries.delete(key);
+    });
+    if (entries.size <= maxEntries) return;
+    Array.from(entries.entries()).sort(function (left, right) {
+      return left[1].lastTouchedAt - right[1].lastTouchedAt;
+    }).slice(0, entries.size - maxEntries).forEach(function (item) {
+      entries.delete(item[0]);
+    });
+  }
+
+  return {
+    issue: function (source, deviceId, channelId) {
+      const issuedAt = currentTime();
+      prune(issuedAt);
+      sequence++;
+      if (!Number.isSafeInteger(sequence)) throw new Error('实时点播代次已耗尽');
+      const generation = instanceId + ':' + sequence;
+      entries.set(entryKey(source, deviceId, channelId), {
+        generation: generation,
+        lastTouchedAt: issuedAt,
+      });
+      prune(issuedAt);
+      return generation;
+    },
+    matches: function (source, deviceId, channelId, generation) {
+      const checkedAt = currentTime();
+      prune(checkedAt);
+      const entry = entries.get(entryKey(source, deviceId, channelId));
+      if (!entry || entry.generation !== String(generation || '')) return false;
+      entry.lastTouchedAt = checkedAt;
+      return true;
+    },
+    clearIfCurrent: function (source, deviceId, channelId, generation) {
+      const key = entryKey(source, deviceId, channelId);
+      const entry = entries.get(key);
+      if (!entry) return false;
+      if (generation != null && entry.generation !== String(generation)) return false;
+      entries.delete(key);
+      return true;
+    },
+    size: function () {
+      prune(currentTime());
+      return entries.size;
+    },
+  };
+}
+
+function registerLivePlaybackRoutes(app, deps) {
+  const options = deps || {};
+  if (!app || typeof app.post !== 'function') throw new Error('Express app is required');
+  if (typeof options.source !== 'string' || !options.source) throw new Error('source is required');
+  if (typeof options.pathPrefix !== 'string' || options.pathPrefix.charAt(0) !== '/') throw new Error('pathPrefix is required');
+  if (typeof options.callWithAuth !== 'function') throw new Error('callWithAuth is required');
+  if (typeof options.rewriteToProxy !== 'function') throw new Error('rewriteToProxy is required');
+  if (!options.liveGenerations || typeof options.liveGenerations.issue !== 'function' ||
+    typeof options.liveGenerations.matches !== 'function' || typeof options.liveGenerations.clearIfCurrent !== 'function') {
+    throw new Error('liveGenerations is required');
+  }
+
+  function requestedLiveGeneration(req) {
+    const queryValue = req && req.query ? req.query.liveGeneration : '';
+    const queryGeneration = Array.isArray(queryValue) ? queryValue[0] : queryValue;
+    let headerGeneration = '';
+    if (req && typeof req.get === 'function') {
+      headerGeneration = req.get('x-live-generation') || req.get('live-generation') || '';
+    } else if (req && req.headers) {
+      headerGeneration = req.headers['x-live-generation'] || req.headers['live-generation'] || '';
+    }
+    return String(queryGeneration || headerGeneration || '').trim();
+  }
+
+  const source = options.source;
+  const playPath = options.pathPrefix + '/play/:deviceId/:channelId';
+  const stopPath = options.pathPrefix + '/play/stop/:deviceId/:channelId';
+
+  app.post(playPath, async function (req, res) {
+    const deviceId = String(req.params.deviceId || '');
+    const channelId = String(req.params.channelId || '');
+    const liveGeneration = options.liveGenerations.issue(source, deviceId, channelId);
+    const did = encodeURIComponent(deviceId);
+    const cid = encodeURIComponent(channelId);
+    const r = await options.callWithAuth('GET', '/api/play/start/' + did + '/' + cid, null);
+    if (!r.ok || !r.data || r.data.code !== 0) {
+      return res.json({ ok: false, status: r.status, message: (r.data && r.data.msg) || r.message || ('上游返回 ' + r.status), raw: r.data });
+    }
+    const data = r.data.data || {};
+    const response = {
+      ok: true,
+      liveGeneration: liveGeneration,
+      streamKey: (data.app || 'rtp') + '/' + (data.stream || ''),
+      flvUrl: options.rewriteToProxy(data.flv),
+      hlsUrl: options.rewriteToProxy(data.hls),
+      ssrc: data.ssrc || '',
+      app: data.app || 'rtp',
+      stream: data.stream || '',
+    };
+    if (options.includeMediaServerId) response.mediaServerId = data.mediaServerId || '';
+    return res.json(response);
+  });
+
+  app.post(stopPath, async function (req, res) {
+    const deviceId = String(req.params.deviceId || '');
+    const channelId = String(req.params.channelId || '');
+    const requestedGeneration = requestedLiveGeneration(req);
+    if (requestedGeneration && !options.liveGenerations.matches(source, deviceId, channelId, requestedGeneration)) {
+      return res.json({ ok: true, stale: true, message: '' });
+    }
+    const did = encodeURIComponent(deviceId);
+    const cid = encodeURIComponent(channelId);
+    const r = await options.callWithAuth('GET', '/api/play/stop/' + did + '/' + cid, null);
+    const ok = Boolean(r.ok && r.data && r.data.code === 0);
+    if (ok) options.liveGenerations.clearIfCurrent(source, deviceId, channelId, requestedGeneration || null);
+    return res.json({ ok: ok, message: (r.data && r.data.msg) || r.message || '' });
+  });
+}
+
+const liveStreamGenerations = createLiveStreamGenerationRegistry();
+
 function registerDcimVideoConnectionRoutes(app, deps) {
   const options = deps || {};
   if (!app || typeof app.get !== 'function' || typeof app.put !== 'function' || typeof app.post !== 'function') {
@@ -9261,28 +9404,12 @@ wssTcp.on('connection', function (ws) {
     return String(url).replace(/^(https?:)?\/\/[^/]+/, '/media-dcim');
   }
 
-  app.post('/api/dcim-video/play/:deviceId/:channelId', async function (req, res) {
-    const did = encodeURIComponent(req.params.deviceId || '');
-    const cid = encodeURIComponent(req.params.channelId || '');
-    const r = await callWithAuth('GET', '/api/play/start/' + did + '/' + cid, null);
-    if (!r.ok || !r.data || r.data.code !== 0) {
-      return res.json({ ok: false, status: r.status, message: (r.data && r.data.msg) || r.message || ('上游返回 ' + r.status), raw: r.data });
-    }
-    const d = r.data.data || {};
-    res.json({
-      ok: true,
-      streamKey: (d.app || 'rtp') + '/' + (d.stream || ''),
-      flvUrl: rewriteToDcimProxy(d.flv),
-      hlsUrl: rewriteToDcimProxy(d.hls),
-      ssrc: d.ssrc || '', app: d.app || 'rtp', stream: d.stream || '',
-    });
-  });
-
-  app.post('/api/dcim-video/play/stop/:deviceId/:channelId', async function (req, res) {
-    const did = encodeURIComponent(req.params.deviceId || '');
-    const cid = encodeURIComponent(req.params.channelId || '');
-    const r = await callWithAuth('GET', '/api/play/stop/' + did + '/' + cid, null);
-    res.json({ ok: r.ok && r.data && r.data.code === 0, message: (r.data && r.data.msg) || r.message || '' });
+  registerLivePlaybackRoutes(app, {
+    source: 'dcim',
+    pathPrefix: '/api/dcim-video',
+    liveGenerations: liveStreamGenerations,
+    callWithAuth: callWithAuth,
+    rewriteToProxy: rewriteToDcimProxy,
   });
 
   app.post('/api/dcim-video/playback/start/:deviceId/:channelId', async function (req, res) {
@@ -9508,31 +9635,13 @@ wssTcp.on('connection', function (ws) {
     return String(url).replace(/^(https?:)?\/\/[^/]+/, '/media-webssh');
   }
 
-  app.post('/api/webssh-video/play/:deviceId/:channelId', async function (req, res) {
-    const did = encodeURIComponent(req.params.deviceId || '');
-    const cid = encodeURIComponent(req.params.channelId || '');
-    const r = await callWithAuth('GET', '/api/play/start/' + did + '/' + cid, null);
-    if (!r.ok || !r.data || r.data.code !== 0) {
-      return res.json({ ok: false, status: r.status, message: (r.data && r.data.msg) || r.message || ('上游返回 ' + r.status), raw: r.data });
-    }
-    const d = r.data.data || {};
-    res.json({
-      ok: true,
-      streamKey: (d.app || 'rtp') + '/' + (d.stream || ''),
-      flvUrl: rewriteToProxy(d.flv),
-      hlsUrl: rewriteToProxy(d.hls),
-      ssrc: d.ssrc || '',
-      app: d.app || 'rtp',
-      stream: d.stream || '',
-      mediaServerId: d.mediaServerId || '',
-    });
-  });
-
-  app.post('/api/webssh-video/play/stop/:deviceId/:channelId', async function (req, res) {
-    const did = encodeURIComponent(req.params.deviceId || '');
-    const cid = encodeURIComponent(req.params.channelId || '');
-    const r = await callWithAuth('GET', '/api/play/stop/' + did + '/' + cid, null);
-    res.json({ ok: r.ok && r.data && r.data.code === 0, message: (r.data && r.data.msg) || r.message || '' });
+  registerLivePlaybackRoutes(app, {
+    source: 'webssh',
+    pathPrefix: '/api/webssh-video',
+    liveGenerations: liveStreamGenerations,
+    callWithAuth: callWithAuth,
+    rewriteToProxy: rewriteToProxy,
+    includeMediaServerId: true,
   });
 
   app.post('/api/webssh-video/playback/start/:deviceId/:channelId', async function (req, res) {

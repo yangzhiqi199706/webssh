@@ -346,7 +346,9 @@ sdp-ip:    192.168.0.22</pre>
         return runtime.stopPath(state.source, 'playback', '', '', state.streamKey);
       }
       if (!state.deviceId || !state.channelId) return '';
-      return runtime.stopPath(state.source, 'live', state.deviceId, state.channelId, '');
+      var path = runtime.stopPath(state.source, 'live', state.deviceId, state.channelId, '');
+      if (state.liveGeneration) path += '?liveGeneration=' + encodeURIComponent(state.liveGeneration);
+      return path;
     }
 
     function releaseTileStream(tile, runtime, request, options) {
@@ -356,12 +358,14 @@ sdp-ip:    192.168.0.22</pre>
         deviceId: tile.deviceId,
         channelId: tile.channelId,
         streamKey: tile.streamKey,
+        liveGeneration: tile.liveGeneration,
       };
       tile.revision++;
       tile._destroyPlayer();
       tile.streamKey = null;
       tile.deviceId = null;
       tile.channelId = null;
+      tile.liveGeneration = null;
       tile.source = null;
       tile.mode = 'live';
       var path = tileStopPathForState(state, runtime);
@@ -725,6 +729,7 @@ sdp-ip:    192.168.0.22</pre>
       this.streamKey = null;
       this.deviceId = null;
       this.channelId = null;
+      this.liveGeneration = null;
       this.source = null;
       this.mode = 'live';
       this.revision = 0;
@@ -746,6 +751,7 @@ sdp-ip:    192.168.0.22</pre>
       this.deviceId = params.deviceId; this.channelId = params.channelId;
       this.streamKey = params.streamKey; this.source = params.source;
       this.mode = params.mode === 'playback' ? 'playback' : 'live';
+      this.liveGeneration = this.mode === 'live' && params.liveGeneration ? String(params.liveGeneration) : null;
       this.elTitle.textContent = (params.channelName || params.channelId) + (params.deviceName ? '  ◎ ' + params.deviceName : '');
       this.elBadge.textContent = this.mode === 'playback' ? '回放' : 'LIVE';
       this.elBadge.classList.toggle('pb', this.mode === 'playback');
@@ -1122,7 +1128,13 @@ sdp-ip:    192.168.0.22</pre>
           if (!isCurrentLiveRequest()) {
             clearPendingLiveRequest();
             if (out.pr && out.pr.ok && !liveStreamIsOwned(out.chId)) {
-              var stalePath = tileStopPathForState({ source: src, mode: 'live', deviceId: deviceId, channelId: out.chId }, window.DcimVideoRuntime);
+              var stalePath = tileStopPathForState({
+                source: src,
+                mode: 'live',
+                deviceId: deviceId,
+                channelId: out.chId,
+                liveGeneration: out.pr.liveGeneration,
+              }, window.DcimVideoRuntime);
               if (stalePath) fetch(stalePath, { method: 'POST' }).catch(function () {});
             }
             return;
@@ -1132,7 +1144,8 @@ sdp-ip:    192.168.0.22</pre>
             hint.textContent = "点播失败：" + ((out.pr && out.pr.message) || "未知"); return;
           }
           replaceTileStream(targetTile, { flvUrl: out.pr.flvUrl, streamKey: out.pr.streamKey, deviceId: deviceId,
-            channelId: out.chId, channelName: out.chName, deviceName: deviceName, source: src, mode: 'live' });
+            channelId: out.chId, channelName: out.chName, deviceName: deviceName, source: src, mode: 'live',
+            liveGeneration: out.pr.liveGeneration });
           hint.textContent = "已起播：" + deviceName + " / " + out.chName + "（" + src + "，分屏 " + (targetTile.idx + 1) + "）";
         })
         .catch(function (e) {

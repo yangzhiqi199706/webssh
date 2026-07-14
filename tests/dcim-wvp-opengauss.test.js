@@ -422,7 +422,7 @@ async function runSshCommandLateEventTests() {
   assert.strictEqual(lateChannel.destroyCalls, 1);
 }
 
-function requestJson(app, pathname, method, payload, timeoutMs) {
+function requestJson(app, pathname, method, payload, timeoutMs, requestHeaders) {
   return new Promise((resolve, reject) => {
     const server = http.createServer(app);
     function closeAnd(callback) {
@@ -436,7 +436,7 @@ function requestJson(app, pathname, method, payload, timeoutMs) {
         port: address.port,
         path: pathname,
         method: method || 'GET',
-        headers: payload === undefined ? {} : { 'content-type': 'application/json' },
+        headers: Object.assign({}, requestHeaders || {}, payload === undefined ? {} : { 'content-type': 'application/json' }),
       }, function (response) {
         let text = '';
         response.setEncoding('utf8');
@@ -460,6 +460,104 @@ function requestJson(app, pathname, method, payload, timeoutMs) {
 
 function postJson(app, pathname) {
   return requestJson(app, pathname, 'POST');
+}
+
+async function runLiveStreamGenerationRouteTests() {
+  const createLiveStreamGenerationRegistry = extractServerFunction('createLiveStreamGenerationRegistry');
+  const registerLivePlaybackRoutes = extractServerFunction('registerLivePlaybackRoutes');
+
+  let registryNow = 0;
+  const boundedRegistry = createLiveStreamGenerationRegistry({
+    instanceId: 'bounded-test',
+    maxEntries: 2,
+    ttlMs: 1000,
+    now: function () { return registryNow; },
+  });
+  assert.strictEqual(boundedRegistry.issue('dcim', 'device-1', 'channel-1'), 'bounded-test:1');
+  assert.strictEqual(boundedRegistry.issue('dcim', 'device-2', 'channel-2'), 'bounded-test:2');
+  assert.strictEqual(boundedRegistry.issue('webssh', 'device-1', 'channel-1'), 'bounded-test:3');
+  assert.strictEqual(boundedRegistry.size(), 2, '实时点播代次存储必须受最大条目数限制');
+  registryNow = 1000;
+  assert.strictEqual(boundedRegistry.size(), 0, '实时点播代次必须按 TTL 清理');
+
+  for (const source of ['dcim', 'webssh']) {
+    const routeApp = express();
+    const registry = createLiveStreamGenerationRegistry({
+      instanceId: source + '-route-test',
+      maxEntries: 8,
+      ttlMs: 60000,
+    });
+    const upstreamCalls = [];
+    registerLivePlaybackRoutes(routeApp, {
+      source: source,
+      pathPrefix: '/api/' + source + '-video',
+      liveGenerations: registry,
+      rewriteToProxy: function (url) { return '/media-' + source + url; },
+      callWithAuth: async function (method, urlPath) {
+        upstreamCalls.push({ method: method, urlPath: urlPath });
+        if (urlPath.indexOf('/api/play/start/') === 0) {
+          return {
+            ok: true,
+            status: 200,
+            data: { code: 0, data: { app: 'rtp', stream: source + '-live', flv: '/live.flv', hls: '/live.m3u8' } },
+          };
+        }
+        return { ok: true, status: 200, data: { code: 0, msg: 'stopped' } };
+      },
+    });
+
+    const basePath = '/api/' + source + '-video/play/device-1/channel-1';
+    const stopPath = '/api/' + source + '-video/play/stop/device-1/channel-1';
+    const firstStart = await requestJson(routeApp, basePath, 'POST');
+    const secondStart = await requestJson(routeApp, basePath, 'POST');
+    assert.strictEqual(firstStart.statusCode, 200, source + ' 第一次实时点播必须成功');
+    assert.strictEqual(secondStart.statusCode, 200, source + ' 第二次实时点播必须成功');
+    assert.strictEqual(firstStart.body.ok, true);
+    assert.strictEqual(secondStart.body.ok, true);
+    assert.ok(firstStart.body.liveGeneration, source + ' 起播响应必须返回 liveGeneration');
+    assert.ok(secondStart.body.liveGeneration, source + ' 第二次起播响应必须返回 liveGeneration');
+    assert.notStrictEqual(firstStart.body.liveGeneration, secondStart.body.liveGeneration, source + ' 每次起播必须生成新代次');
+
+    const staleStop = await requestJson(
+      routeApp,
+      stopPath + '?liveGeneration=' + encodeURIComponent(firstStart.body.liveGeneration),
+      'POST'
+    );
+    assert.strictEqual(staleStop.statusCode, 200, source + ' 旧 stop 必须安全返回');
+    assert.strictEqual(staleStop.body.ok, true, source + ' 旧 stop 必须返回 ok');
+    assert.strictEqual(staleStop.body.stale, true, source + ' 旧 stop 必须标记为过时代次');
+    assert.strictEqual(
+      upstreamCalls.filter(function (call) { return call.urlPath.indexOf('/api/play/stop/') === 0; }).length,
+      0,
+      source + ' 新起播已到达后，旧 stop 绝不能调用 WVP stop'
+    );
+
+    const currentStop = await requestJson(
+      routeApp,
+      stopPath,
+      'POST',
+      undefined,
+      undefined,
+      { 'x-live-generation': secondStart.body.liveGeneration }
+    );
+    assert.strictEqual(currentStop.statusCode, 200, source + ' 当前代次 stop 必须成功');
+    assert.strictEqual(currentStop.body.ok, true, source + ' 当前代次 stop 必须返回 ok');
+    assert.strictEqual(
+      upstreamCalls.filter(function (call) { return call.urlPath.indexOf('/api/play/stop/') === 0; }).length,
+      1,
+      source + ' 当前代次 stop 必须且只能调用一次 WVP stop'
+    );
+
+    const thirdStart = await requestJson(routeApp, basePath, 'POST');
+    const legacyStop = await requestJson(routeApp, stopPath, 'POST');
+    assert.strictEqual(thirdStart.body.ok, true, source + ' 旧客户端兼容前需要先成功起播');
+    assert.strictEqual(legacyStop.body.ok, true, source + ' 不带代次的旧客户端 stop 必须兼容');
+    assert.strictEqual(
+      upstreamCalls.filter(function (call) { return call.urlPath.indexOf('/api/play/stop/') === 0; }).length,
+      2,
+      source + ' 不带代次的旧客户端 stop 必须调用 WVP stop'
+    );
+  }
 }
 
 const registerDcimVideoConnectionRoutes = extractServerFunction('registerDcimVideoConnectionRoutes');
@@ -1854,8 +1952,16 @@ async function runVideoPlaybackUiTests() {
     '/api/dcim-video/playback/stop/rtp%2Frecord-1'
   );
   assert.strictEqual(
-    tileStopPathForState({ source: 'webssh', mode: 'live', deviceId: 'device 1', channelId: 'channel/1' }, runtime),
-    '/api/webssh-video/play/stop/device%201/channel%2F1'
+    tileStopPathForState({
+      source: 'webssh', mode: 'live', deviceId: 'device 1', channelId: 'channel/1', liveGeneration: 'webssh generation/1',
+    }, runtime),
+    '/api/webssh-video/play/stop/device%201/channel%2F1?liveGeneration=webssh%20generation%2F1'
+  );
+  assert.strictEqual(
+    tileStopPathForState({
+      source: 'dcim', mode: 'playback', streamKey: 'rtp/record-2', liveGeneration: 'must-not-reach-playback',
+    }, runtime),
+    '/api/dcim-video/playback/stop/rtp%2Frecord-2'
   );
   const replacementCalls = [];
   replaceTileStream({
@@ -1895,7 +2001,8 @@ async function runVideoPlaybackUiTests() {
   assert.deepStrictEqual(playbackFailureHint, { message: '回放播放器不可用', state: 'err' });
   const realtimeStopRequests = [];
   const liveFailureTile = {
-    source: 'webssh', mode: 'live', deviceId: 'device-2', channelId: 'channel/2', streamKey: 'live-stream', revision: 3,
+    source: 'webssh', mode: 'live', deviceId: 'device-2', channelId: 'channel/2', streamKey: 'live-stream',
+    liveGeneration: 'webssh-live-generation', revision: 3,
     _destroyPlayer: function () { this.destroyed = true; },
   };
   liveFailureTile.stop = function () {
@@ -1913,7 +2020,7 @@ async function runVideoPlaybackUiTests() {
   assert.strictEqual(liveFailureTile.deviceId, null);
   assert.strictEqual(liveFailureTile.revision, 4);
   assert.strictEqual(realtimeStopRequests.length, 1);
-  assert.strictEqual(realtimeStopRequests[0].url, '/api/webssh-video/play/stop/device-2/channel%2F2');
+  assert.strictEqual(realtimeStopRequests[0].url, '/api/webssh-video/play/stop/device-2/channel%2F2?liveGeneration=webssh-live-generation');
   assert.strictEqual(realtimeStopRequests[0].options.method, 'POST');
   assert.strictEqual(realtimeHintCalled, false);
 
@@ -2228,6 +2335,69 @@ async function runLiveTileReplacementRaceTests() {
   assert.deepStrictEqual(calls, ['stop', 'start'], '连续双击只允许最新请求在 stop 后发起点播');
 }
 
+async function runLiveGenerationUiTests() {
+  const targetTile = {
+    revision: 0,
+    source: null,
+    mode: 'live',
+    deviceId: null,
+    channelId: null,
+    streamKey: null,
+    liveGeneration: null,
+    _liveStartRequestId: 0,
+    _liveStartPending: null,
+    play: function (params) {
+      this.source = params.source;
+      this.mode = params.mode;
+      this.deviceId = params.deviceId;
+      this.channelId = params.channelId;
+      this.streamKey = params.streamKey;
+      this.liveGeneration = params.liveGeneration;
+    },
+  };
+  const context = {
+    Promise: Promise,
+    encodeURIComponent: encodeURIComponent,
+    currentSource: 'dcim',
+    sourceEpoch: 1,
+    activeIdx: 0,
+    tiles: [targetTile],
+    hint: { textContent: '' },
+    window: { DcimVideoRuntime: runtime },
+    tileStopPathForState: tileStopPathForState,
+    replaceTileStream: replaceTileStream,
+    prepareTileForReplacement: function () { return Promise.resolve({ state: 'empty' }); },
+    fetch: function (url) {
+      if (url.indexOf('/channels?') !== -1) {
+        return Promise.resolve({ json: function () { return Promise.resolve({
+          ok: true,
+          list: [{ channelId: 'channel-1', name: '通道一', status: 'ON' }],
+        }); } });
+      }
+      if (url.indexOf('/play/device-1/channel-1') !== -1) {
+        return Promise.resolve({ json: function () { return Promise.resolve({
+          ok: true,
+          flvUrl: '/media-dcim/rtp/live.flv',
+          streamKey: 'rtp/live',
+          liveGeneration: 'dcim-generation-2',
+        }); } });
+      }
+      throw new Error('意外请求: ' + url);
+    },
+  };
+  const livePlaySource = extractVideoFunction('playFromDevice');
+  vm.runInNewContext(livePlaySource + '\nthis.playFromDevice = playFromDevice;', context);
+
+  context.playFromDevice('device-1', '设备一');
+  for (let turn = 0; turn < 5; turn++) await new Promise(function (resolve) { setImmediate(resolve); });
+  assert.strictEqual(targetTile.liveGeneration, 'dcim-generation-2', 'Tile 必须保存起播响应的 liveGeneration');
+  assert.strictEqual(
+    tileStopPathForState(targetTile, runtime),
+    '/api/dcim-video/play/stop/device-1/channel-1?liveGeneration=dcim-generation-2',
+    '实时 Tile stop 必须携带保存的 liveGeneration'
+  );
+}
+
 const dbPage = fs.readFileSync(path.join(__dirname, '..', 'db', 'index.html'), 'utf8');
 const serverSource = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
 const runtimeSource = fs.readFileSync(path.join(__dirname, '..', 'lib', 'dcim-wvp-runtime.js'), 'utf8');
@@ -2338,7 +2508,7 @@ try {
   try { fs.unlinkSync(shellPath); } catch (error) {}
 }
 
-runWvpRuntimeOperationTests().then(runSshCommandTimeoutTests).then(runSshCommandLateEventTests).then(runWvpRuntimeRouteContractTests).then(runDcimVideoConnectionRouteContractTests).then(runDcimVideoSystemConfigRedactionTests).then(runDcimVideoConnectionRaceTests).then(runDcimVideoAtomicWriteTests).then(runDcimVideoConnectionUiTests).then(runVideoVendorStaticTests).then(runVideoSourceLoadFailureTests).then(runVideoPlaybackUiTests).then(runLiveTileReplacementRaceTests).then(runProtocolMainSyncRollbackFailureTests).then(() => {
+runWvpRuntimeOperationTests().then(runSshCommandTimeoutTests).then(runSshCommandLateEventTests).then(runWvpRuntimeRouteContractTests).then(runDcimVideoConnectionRouteContractTests).then(runDcimVideoSystemConfigRedactionTests).then(runDcimVideoConnectionRaceTests).then(runDcimVideoAtomicWriteTests).then(runDcimVideoConnectionUiTests).then(runLiveStreamGenerationRouteTests).then(runVideoVendorStaticTests).then(runVideoSourceLoadFailureTests).then(runVideoPlaybackUiTests).then(runLiveTileReplacementRaceTests).then(runLiveGenerationUiTests).then(runProtocolMainSyncRollbackFailureTests).then(() => {
   console.log('dcim wvp opengauss tests: PASS');
 }).catch((error) => {
   console.error(error);
