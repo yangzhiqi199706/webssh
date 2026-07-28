@@ -107,5 +107,42 @@ assert.match(uiSource, /saveOpenGaussAccessRules\('append'\)/,
   '页面应支持追加受管访问 CIDR');
 assert.match(uiSource, /opengauss\/access-rules/,
   '页面应调用固定的 openGauss 访问 CIDR 接口');
+assert.match(uiSource, /ga\.disabled = !info\.serviceRunning/,
+  '访问 CIDR 入口必须按 openGauss 服务状态禁用');
+assert.match(uiSource, /<button class="btn primary" id="btnGaussReplaceCidr"[^>]*>替换为此 CIDR<\/button>/,
+  '替换当前 CIDR 应是默认的主操作');
+assert.match(uiSource, /<button class="btn" id="btnGaussAppendCidr"[^>]*>添加 CIDR<\/button>/,
+  '添加 CIDR 应是次要操作');
+assert.match(uiSource, /id="btnGaussInit" title="仅首次使用：[^\"]*后续 CIDR 请使用访问 CIDR 按钮[^\"]*">首次启用<\/button>/,
+  '首次启用按钮必须明确只用于初始化，后续 CIDR 修改走独立入口');
+assert.match(uiSource, /function setOpenGaussAccessBusy\(busy\)[\s\S]{0,800}gaAccessCidr[\s\S]{0,800}data-remove-cidr/,
+  '统一 busy 状态必须禁用输入、操作按钮和全部删除按钮');
+const accessSaveSource = uiSource.slice(
+  uiSource.indexOf('async function saveOpenGaussAccessRules'),
+  uiSource.indexOf('async function removeOpenGaussAccessRule'));
+assert.match(accessSaveSource, /setOpenGaussAccessBusy\(true\)[\s\S]*finally\s*\{\s*setOpenGaussAccessBusy\(false\);\s*\}/,
+  '保存 CIDR 时必须用统一 busy 状态，并在 finally 恢复到服务状态');
+const accessRemoveSource = uiSource.slice(
+  uiSource.indexOf('async function removeOpenGaussAccessRule'),
+  uiSource.indexOf("$('btnCloseGaussAccess')"));
+assert.match(accessRemoveSource, /setOpenGaussAccessBusy\(true\)[\s\S]*finally\s*\{\s*setOpenGaussAccessBusy\(false\);\s*\}/,
+  '删除 CIDR 时必须用统一 busy 状态，并在 finally 恢复到服务状态');
+assert.match(uiSource, /encodeURIComponent\(cidr\)/,
+  '删除 CIDR 时必须对路径参数编码');
+assert.match(uiSource, /danger-banner">⚠ 存在全网段规则，当前 CIDR 不能构成严格限制/,
+  '全网段规则必须用红色风险提示说明无法形成严格限制');
+assert.match(uiSource, /最后一个 WebSSH 受管 CIDR/,
+  '删除最后一条受管规则前必须明确提示');
+assert.match(uiSource, /该网段已存在，未修改配置/,
+  '重复添加必须说明配置未变更');
+assert.match(uiSource, /await refreshStatus\(\)/,
+  'CIDR 成功变更后必须刷新数据库状态');
+const accessUiSource = uiSource.slice(
+  uiSource.indexOf('// openGauss 已启用后的受管访问 CIDR'),
+  uiSource.indexOf('// ========== openGauss 一键建 WVP 表 =========='));
+assert.match(accessUiSource, /数据库不会重启/,
+  'CIDR 管理必须明确说明不会重启数据库');
+assert.doesNotMatch(accessUiSource, /opengauss\/init/,
+  'CIDR 管理不得调用首次启用接口');
 
 console.log('openGauss access rules: OK');
