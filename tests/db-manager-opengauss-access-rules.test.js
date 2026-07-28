@@ -140,6 +140,29 @@ assert.match(uiSource, /await refreshStatus\(\)/,
 const accessUiSource = uiSource.slice(
   uiSource.indexOf('// openGauss 已启用后的受管访问 CIDR'),
   uiSource.indexOf('// ========== openGauss 一键建 WVP 表 =========='));
+assert.match(accessUiSource, /let openGaussAccessLoadRequestId = 0;/,
+  '访问 CIDR 读取必须维护递增请求编号，避免旧响应覆盖新数据');
+const accessLoadSource = accessUiSource.slice(
+  accessUiSource.indexOf('async function openGaussAccessRules'),
+  accessUiSource.indexOf('async function saveOpenGaussAccessRules'));
+assert.match(accessLoadSource, /const requestId = \+\+openGaussAccessLoadRequestId;/,
+  '每次打开访问 CIDR 弹窗必须生成新的读取请求编号');
+assert.match(accessLoadSource, /if \(requestId !== openGaussAccessLoadRequestId\) return;/,
+  '旧读取请求的响应、错误和 finally 都不得更新当前弹窗');
+assert.match(accessUiSource, /btnCloseGaussAccess[^\n]*[\s\S]{0,160}\+\+openGaussAccessLoadRequestId/,
+  '关闭访问 CIDR 弹窗必须使未完成的读取请求失效');
+assert.match(accessUiSource, /function formatOpenGaussAccessSuccess[\s\S]{0,1800}backupPath[\s\S]{0,1800}reloadOutput[\s\S]{0,1800}sqlCheck/,
+  '保存和删除结果必须展示备份、重载和 SQL 验证信息');
+assert.match(accessUiSource, /function limitOpenGaussAccessStatusText[\s\S]{0,600}slice\(0, OPEN_GAUSS_ACCESS_STATUS_LIMIT\)/,
+  '回显的运行输出必须限长');
+assert.match(accessUiSource, /function setOpenGaussAccessStatus[\s\S]{0,400}esc\(text\)/,
+  '回显的运行输出必须通过现有转义函数渲染');
+assert.match(accessSaveSource, /const successText = formatOpenGaussAccessSuccess[\s\S]{0,1200}setOpenGaussAccessStatus\(successText, false\)[\s\S]{0,1200}refreshOpenGaussAccessOverview\(successText\)/,
+  '保存成功后必须先保留成功结果，再单独刷新概览');
+assert.match(accessRemoveSource, /const successText = formatOpenGaussAccessSuccess[\s\S]{0,1200}setOpenGaussAccessStatus\(successText, false\)[\s\S]{0,1200}refreshOpenGaussAccessOverview\(successText\)/,
+  '删除成功后必须先保留成功结果，再单独刷新概览');
+assert.match(accessUiSource, /async function refreshOpenGaussAccessOverview\(successText\)[\s\S]{0,1000}概览刷新失败/,
+  '概览刷新失败不能把已生效或已删除的操作误报为失败');
 assert.match(accessUiSource, /数据库不会重启/,
   'CIDR 管理必须明确说明不会重启数据库');
 assert.doesNotMatch(accessUiSource, /opengauss\/init/,

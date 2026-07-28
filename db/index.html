@@ -903,7 +903,7 @@ SHOW DATABASES;"></textarea>
       const r = await jfetch(API + '/status');
       if (!r.ok) {
         setLed('sshLed', 'sshLedText', 'err', 'SSH: 失败');
-        return;
+        return false;
       }
       const st = r.status || {};
       const ssh = st.ssh || {};
@@ -911,6 +911,7 @@ SHOW DATABASES;"></textarea>
       renderDbCard('mysql', 'Mysql', st.databases && st.databases.mysql);
       renderDbCard('gauss', 'Gauss', st.databases && st.databases.opengauss);
       renderDbCard('dm', 'Dm', st.databases && st.databases.dm);
+      return true;
     }
     function setLed(elId, textId, cls, text) {
       const el = $(elId); el.classList.remove('on', 'warn', 'err');
@@ -1024,12 +1025,46 @@ SHOW DATABASES;"></textarea>
     let openGaussAccessRuleList = [];
     let openGaussAccessServiceRunning = false;
     let openGaussAccessBusy = false;
+    let openGaussAccessLoadRequestId = 0;
+    const OPEN_GAUSS_ACCESS_STATUS_LIMIT = 600;
 
     function setOpenGaussAccessStatus(text, isError) {
       const box = $('gaAccessStatus');
       box.style.display = '';
       box.innerHTML = '<span' + (isError ? ' class="err"' : '') + '>' +
         (isError ? '✗ ' : '✓ ') + esc(text) + '</span>';
+    }
+
+    function limitOpenGaussAccessStatusText(value) {
+      const text = String(value == null ? '' : value).trim();
+      if (!text) return '—';
+      return text.length > OPEN_GAUSS_ACCESS_STATUS_LIMIT
+        ? text.slice(0, OPEN_GAUSS_ACCESS_STATUS_LIMIT) + '…（已截断）'
+        : text;
+    }
+
+    function formatOpenGaussAccessSuccess(result, actionText) {
+      const verification = result && result.verification ? result.verification : {};
+      const rules = Array.isArray(result && result.rules) ? result.rules : [];
+      const backupText = result && result.unchanged
+        ? '无写入（规则未变化）'
+        : limitOpenGaussAccessStatusText(result && result.backupPath);
+      return actionText + '\n最终受管 CIDR：' +
+        limitOpenGaussAccessStatusText(rules.length ? rules.join(', ') : '无') +
+        '\n备份：' + backupText +
+        '\n重载：' + limitOpenGaussAccessStatusText(verification.reloadOutput) +
+        '\nSQL 校验：' + limitOpenGaussAccessStatusText(verification.sqlCheck) +
+        '\n仅重载配置，数据库不会重启。';
+    }
+
+    async function refreshOpenGaussAccessOverview(successText) {
+      try {
+        const refreshed = await refreshStatus();
+        if (!refreshed) throw new Error('状态接口未返回成功结果');
+      } catch (e) {
+        setOpenGaussAccessStatus(successText + '\n概览刷新失败：' +
+          limitOpenGaussAccessStatusText(e && (e.message || e)), false);
+      }
     }
 
     function setOpenGaussAccessBusy(busy) {
@@ -1067,6 +1102,7 @@ SHOW DATABASES;"></textarea>
     }
 
     async function openGaussAccessRules() {
+      const requestId = ++openGaussAccessLoadRequestId;
       $('gaussAccessModal').classList.add('open');
       $('gaAccessCidr').value = '';
       $('gaAccessRules').innerHTML = '<div class="kv-row"><span class="k">状态</span><span class="v">读取中…</span><span></span></div>';
@@ -1076,6 +1112,7 @@ SHOW DATABASES;"></textarea>
       setOpenGaussAccessStatus('正在读取受管访问 CIDR…', false);
       try {
         const result = await jfetch(API + '/opengauss/access-rules');
+        if (requestId !== openGaussAccessLoadRequestId) return;
         if (!result.ok) throw new Error(result.message || '读取访问 CIDR 失败');
         openGaussAccessServiceRunning = !!result.serviceRunning;
         renderOpenGaussAccessRules(result);
@@ -1085,9 +1122,10 @@ SHOW DATABASES;"></textarea>
           setOpenGaussAccessStatus('openGauss 服务未运行，不能修改访问 CIDR。', true);
         }
       } catch (e) {
+        if (requestId !== openGaussAccessLoadRequestId) return;
         setOpenGaussAccessStatus('读取失败：' + (e.message || e), true);
       } finally {
-        setOpenGaussAccessBusy(false);
+        if (requestId === openGaussAccessLoadRequestId) setOpenGaussAccessBusy(false);
       }
     }
 
@@ -1109,13 +1147,11 @@ SHOW DATABASES;"></textarea>
         if (!result.ok) throw new Error(result.message || '更新访问 CIDR 失败');
         renderOpenGaussAccessRules(result);
         $('gaAccessCidr').value = '';
-        if (result.unchanged) {
-          setOpenGaussAccessStatus('该网段已存在，未修改配置。数据库不会重启。', false);
-        } else {
-          const verification = result.verification || {};
-          setOpenGaussAccessStatus('已生效；SELECT 1 = ' + (verification.sqlCheck || '—') + '。仅重载配置，数据库不会重启。', false);
-        }
-        await refreshStatus();
+        const successText = formatOpenGaussAccessSuccess(result, result.unchanged
+          ? '该网段已存在，未修改配置。'
+          : '已生效。');
+        setOpenGaussAccessStatus(successText, false);
+        await refreshOpenGaussAccessOverview(successText);
       } catch (e) {
         setOpenGaussAccessStatus('保存失败：' + (e.message || e), true);
       } finally {
@@ -1137,9 +1173,9 @@ SHOW DATABASES;"></textarea>
         });
         if (!result.ok) throw new Error(result.message || '删除访问 CIDR 失败');
         renderOpenGaussAccessRules(result);
-        const verification = result.verification || {};
-        setOpenGaussAccessStatus('已删除 ' + cidr + '；SELECT 1 = ' + (verification.sqlCheck || '—') + '。仅重载配置，数据库不会重启。', false);
-        await refreshStatus();
+        const successText = formatOpenGaussAccessSuccess(result, '已删除 ' + cidr + '。');
+        setOpenGaussAccessStatus(successText, false);
+        await refreshOpenGaussAccessOverview(successText);
       } catch (e) {
         setOpenGaussAccessStatus('删除失败：' + (e.message || e), true);
       } finally {
@@ -1147,7 +1183,10 @@ SHOW DATABASES;"></textarea>
       }
     }
 
-    $('btnCloseGaussAccess').addEventListener('click', () => $('gaussAccessModal').classList.remove('open'));
+    $('btnCloseGaussAccess').addEventListener('click', () => {
+      ++openGaussAccessLoadRequestId;
+      $('gaussAccessModal').classList.remove('open');
+    });
     $('btnGaussReplaceCidr').addEventListener('click', () => saveOpenGaussAccessRules('replace'));
     $('btnGaussAppendCidr').addEventListener('click', () => saveOpenGaussAccessRules('append'));
 
