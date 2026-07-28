@@ -23,6 +23,7 @@
 
       <button class="btn" id="btnStopAll" type="button" disabled title="待对接">关闭全部</button>
       <button class="btn" id="btnFullscreen" type="button" disabled title="待对接">全屏</button>
+      <button class="btn" id="btnTogglePlayback" type="button" title="切换历史回放模式">回放</button>
 
       <span class="role-tag" id="dcimTag" title="dcim 视频监控状态">
         <span class="dot off" id="dcimDot"></span>dcim 视频监控
@@ -86,6 +87,32 @@ sdp-ip:    192.168.0.22</pre>
           <div class="muted" id="gridHint">UI 占位 - 功能待对接</div>
         </div>
         <div class="column-body grid-body">
+          <div class="playback-bar" id="playbackBar" hidden>
+            <div class="pb-row">
+              <label class="pb-field">开始时间
+                <input id="pbStart" type="datetime-local" step="1" />
+              </label>
+              <label class="pb-field">结束时间
+                <input id="pbEnd" type="datetime-local" step="1" />
+              </label>
+              <button class="btn primary" id="btnPlaybackStart" type="button">开始回放</button>
+              <button class="btn" id="btnPlaybackPause" type="button" title="暂停当前回放">Ⅱ</button>
+              <button class="btn" id="btnPlaybackResume" type="button" title="继续当前回放">▶</button>
+              <label class="pb-speed">倍速
+                <select id="pbSpeed">
+                  <option value="0.25">0.25×</option>
+                  <option value="0.5">0.5×</option>
+                  <option value="1" selected>1×</option>
+                  <option value="2">2×</option>
+                  <option value="4">4×</option>
+                </select>
+              </label>
+              <label class="pb-speed">进度
+                <input id="pbSeek" type="range" min="0" max="0" value="0" step="1" disabled />
+              </label>
+              <span class="hint" id="pbHint"></span>
+            </div>
+          </div>
           <div id="videoGrid" class="video-grid layout-1"></div>
 
           <div class="dcim-panels" id="dcimPanels" hidden>
@@ -135,6 +162,8 @@ sdp-ip:    192.168.0.22</pre>
     var tiles = [];        // Tile 实例数组
     var activeIdx = 0;
     var currentSource = 'webssh';  // 默认走 webssh-wvp（5070），切到 dcim 时改 'dcim'
+    var playbackMode = false;
+    var selectedDevice = null;
 
     function Tile(idx, el) {
       this.idx = idx;
@@ -150,6 +179,8 @@ sdp-ip:    192.168.0.22</pre>
       this.deviceId = null;
       this.channelId = null;
       this.source = null;
+      this.mode = 'live';
+      this.streamId = null;
       var self = this;
       el.addEventListener('click', function () { setActiveTile(self.idx); });
       el.querySelector('.btn-stop').addEventListener('click', function (e) { e.stopPropagation(); self.stop(); });
@@ -158,7 +189,11 @@ sdp-ip:    192.168.0.22</pre>
       var self = this;
       this.deviceId = params.deviceId; this.channelId = params.channelId;
       this.streamKey = params.streamKey; this.source = params.source;
+      this.mode = params.mode || 'live'; this.streamId = params.stream || '';
       this.elTitle.textContent = (params.channelName || params.channelId) + (params.deviceName ? '  ◎ ' + params.deviceName : '');
+      var badge = this.elOverlay.querySelector('.badge');
+      badge.textContent = this.mode === 'playback' ? 'PLAYBACK' : 'LIVE';
+      badge.classList.toggle('pb', this.mode === 'playback');
       this._destroyPlayer();
       this.elEmpty.style.display = 'none';
       this.video.style.display = '';
@@ -176,10 +211,13 @@ sdp-ip:    192.168.0.22</pre>
         { type: 'flv', url: params.flvUrl, isLive: true, hasAudio: false },
         { enableStashBuffer: false, stashInitialSize: 128, lazyLoad: false, autoCleanupSourceBuffer: true }
       );
+      function hideLoader() { self.elLoader.hidden = true; }
+      this.video.addEventListener('loadeddata', hideLoader);
+      this.video.addEventListener('playing', hideLoader);
       p.attachMediaElement(this.video);
-      p.on(window.flvjs.Events.MEDIA_INFO, function () { self.elLoader.hidden = true; });
+      p.on(window.flvjs.Events.MEDIA_INFO, hideLoader);
       p.on(window.flvjs.Events.ERROR, function (et, ed) {
-        self.elLoader.hidden = true;
+        hideLoader();
         console.warn('[tile ' + self.idx + '] flv error', et, ed);
       });
       try { p.load(); } catch (_e) {}
@@ -199,15 +237,20 @@ sdp-ip:    192.168.0.22</pre>
     Tile.prototype.stop = function () {
       var self = this;
       var dev = this.deviceId, ch = this.channelId, src = this.source;
+      var mode = this.mode, stream = this.streamId;
       this._destroyPlayer();
       this.streamKey = null; this.deviceId = null; this.channelId = null; this.source = null;
+      this.mode = 'live'; this.streamId = null;
       this.elEmpty.style.display = '';
       this.video.style.display = 'none';
       this.elOverlay.hidden = true;
       this.elActions.hidden = true;
       this.elLoader.hidden = true;
       if (dev && ch && src) {
-        fetch('/api/' + src + '-video/play/stop/' + encodeURIComponent(dev) + '/' + encodeURIComponent(ch),
+        var stopUrl = mode === 'playback' && stream
+          ? '/api/' + src + '-video/playback/stop/' + encodeURIComponent(dev) + '/' + encodeURIComponent(ch) + '/' + encodeURIComponent(stream)
+          : '/api/' + src + '-video/play/stop/' + encodeURIComponent(dev) + '/' + encodeURIComponent(ch);
+        fetch(stopUrl,
           { method: 'POST' }).catch(function () {});
       }
     };
@@ -242,6 +285,60 @@ sdp-ip:    192.168.0.22</pre>
       activeIdx = (idx >= 0 && idx < tiles.length) ? idx : 0;
       tiles.forEach(function (t, i) { t.el.classList.toggle('active', i === activeIdx); });
     }
+
+    function pad(n) { return n < 10 ? '0' + n : '' + n; }
+    function localDateTime(d) {
+      return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
+        + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+    }
+    function defaultPlaybackRange() {
+      if ($('pbStart').value && $('pbEnd').value) return;
+      var end = new Date(Date.now() - 60 * 1000);
+      var start = new Date(end.getTime() - 5 * 60 * 1000);
+      $('pbStart').value = localDateTime(start);
+      $('pbEnd').value = localDateTime(end);
+    }
+    function toWvpTime(value) {
+      var text = String(value || '').trim().replace('T', ' ');
+      return text.length === 16 ? text + ':00' : text;
+    }
+    function playbackRange() {
+      var start = toWvpTime($('pbStart').value);
+      var end = toWvpTime($('pbEnd').value);
+      if (!start || !end || new Date(start).getTime() >= new Date(end).getTime()) return null;
+      return { start: start, end: end };
+    }
+    function activePlaybackTile() {
+      var tile = tiles[activeIdx];
+      return tile && tile.mode === 'playback' && tile.streamId ? tile : null;
+    }
+    function setPlaybackMode(enabled) {
+      playbackMode = !!enabled;
+      $('playbackBar').hidden = !playbackMode;
+      $('btnTogglePlayback').classList.toggle('primary', playbackMode);
+      $('btnTogglePlayback').setAttribute('aria-pressed', playbackMode ? 'true' : 'false');
+      $('gridTitle').textContent = playbackMode ? '历史回放' : '实时预览';
+      if (playbackMode) {
+        defaultPlaybackRange();
+        $('pbHint').textContent = '设置时间段后双击设备，或选择设备后开始回放';
+      } else {
+        $('pbHint').textContent = '';
+      }
+    }
+    function controlPlayback(cmd, value) {
+      var tile = activePlaybackTile();
+      if (!tile) {
+        $('pbHint').textContent = '请先在回放模式下播放一个通道';
+        return;
+      }
+      var body = value == null ? {} : { value: String(value) };
+      fetch('/api/' + tile.source + '-video/playback/control/' + encodeURIComponent(tile.streamId) + '/' + cmd, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      }).then(function (r) { return r.json(); }).then(function (resp) {
+        $('pbHint').textContent = resp.ok ? '回放控制已执行' : ('回放控制失败：' + (resp.message || '未知错误'));
+      }).catch(function (e) { $('pbHint').textContent = '回放控制失败：' + e.message; });
+    }
+
     renderTiles(1);
     document.querySelectorAll('.layout-switcher .lb').forEach(function (b) {
       b.addEventListener('click', function () {
@@ -272,6 +369,18 @@ sdp-ip:    192.168.0.22</pre>
         if (fn) fn.call(target);
       }
     });
+    $('btnTogglePlayback').addEventListener('click', function () { setPlaybackMode(!playbackMode); });
+    $('btnPlaybackStart').addEventListener('click', function () {
+      if (!selectedDevice) {
+        $('pbHint').textContent = '请先在左侧双击一个设备';
+        return;
+      }
+      playFromDevice(selectedDevice.id, selectedDevice.name);
+    });
+    $('btnPlaybackPause').addEventListener('click', function () { controlPlayback('pause'); });
+    $('btnPlaybackResume').addEventListener('click', function () { controlPlayback('play'); });
+    $('pbSpeed').addEventListener('change', function () { controlPlayback('fastforward', this.value); });
+    $('pbSeek').addEventListener('change', function () { controlPlayback('seek', this.value); });
 
     // 状态轮询：dcim + webssh 两套对称
     function setStatus(dotEl, tagEl, stateClass, title) {
@@ -302,7 +411,7 @@ sdp-ip:    192.168.0.22</pre>
         ['SIP 服务器域', sip.domain || '—'],
         ['SIP 监听 IP', sip.ip || '—'],
         ['SIP 监听端口', sip.port != null ? sip.port : '—'],
-        ['SIP 鉴权密码', sip.password ? sip.password : '(留空 = 不校验)'],
+        ['SIP 鉴权密码', sip.password ? '(已配置，已隐藏)' : '(留空 = 不校验)'],
         ['注册有效期', (sip.registerTimeInterval || '—') + ' 秒'],
         ['云台速度', sip.ptzSpeed != null ? sip.ptzSpeed : '—'],
         ['wvp 版本', (ver.version || '—') + ' (' + (ver.GIT_BRANCH || '') + ' / ' + (ver.BUILD_DATE || '') + ')'],
@@ -350,12 +459,12 @@ sdp-ip:    192.168.0.22</pre>
         var treeHtml = '';
         list.forEach(function (d) {
           var st = d.onLine ? 'on' : 'off';
-          treeHtml += '<div class="dev-node">'
-            + '<div class="dev-head" data-dev="' + esc(d.deviceId) + '" data-name="' + esc(d.name || d.deviceId) + '" title="双击播放">'
+          treeHtml += '<div class="dev-node collapsed" data-dev="' + esc(d.deviceId) + '" data-name="' + esc(d.name || d.deviceId) + '">'
+            + '<div class="dev-head" data-dev="' + esc(d.deviceId) + '" data-name="' + esc(d.name || d.deviceId) + '" title="单击展开通道，双击播放">'
             + '<span class="arrow">▾</span>'
             + '<span class="dev-name">' + esc(d.name || d.deviceId) + '</span>'
             + '<span class="dev-status ' + st + '">' + (d.onLine ? '在线' : '离线') + '</span>'
-            + '</div></div>';
+            + '</div><div class="dev-children"></div></div>';
         });
         $('dcimDeviceList').innerHTML = treeHtml;
         $('dcimDeviceList').style.display = '';
@@ -372,6 +481,47 @@ sdp-ip:    192.168.0.22</pre>
       return String(s == null ? '' : s)
         .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    function renderDeviceChannels(node, channels) {
+      var children = node.querySelector('.dev-children');
+      var deviceId = node.dataset.dev || '';
+      var deviceName = node.dataset.name || deviceId;
+      if (!channels || !channels.length) {
+        children.innerHTML = '<div class="hint" style="padding:4px 6px">无通道</div>';
+        return;
+      }
+      var html = '';
+      channels.forEach(function (channel) {
+        var channelId = channel.channelId || channel.deviceId || '';
+        var channelName = channel.name || channelId;
+        var state = isChannelOnline(channel) ? 'on' : 'off';
+        html += '<div class="ch-leaf" data-dev="' + esc(deviceId) + '" data-name="' + esc(deviceName)
+          + '" data-ch="' + esc(channelId) + '" data-ch-name="' + esc(channelName) + '" title="双击播放">'
+          + '<span class="ch-status ' + state + '"></span>'
+          + '<span class="ch-name">' + esc(channelName) + '</span></div>';
+      });
+      children.innerHTML = html;
+    }
+
+    function loadDeviceChannels(node) {
+      var deviceId = node.dataset.dev || '';
+      var children = node.querySelector('.dev-children');
+      node.classList.remove('collapsed');
+      if (!deviceId || node.dataset.channelsState === 'loaded' || node.dataset.channelsState === 'loading') return;
+      node.dataset.channelsState = 'loading';
+      children.innerHTML = '<div class="hint" style="padding:4px 6px">加载通道中…</div>';
+      fetch('/api/' + currentSource + '-video/channels?deviceId=' + encodeURIComponent(deviceId) + '&page=1&count=100')
+        .then(function (r) { return r.json(); })
+        .then(function (resp) {
+          if (!resp.ok) throw new Error(resp.message || '通道查询失败');
+          node.dataset.channelsState = 'loaded';
+          renderDeviceChannels(node, resp.list || []);
+        })
+        .catch(function (e) {
+          node.dataset.channelsState = '';
+          children.innerHTML = '<div class="hint" style="padding:4px 6px">加载失败：' + esc(e.message) + '</div>';
+        });
     }
 
     // ==================== 加载 dcim/webssh 配置和设备 ====================
@@ -407,6 +557,43 @@ sdp-ip:    192.168.0.22</pre>
       window.open("https://" + location.hostname + ":8086/", "_blank", "noopener");
     });
 
+    function isChannelOnline(channel) {
+      return !!(channel && (channel.status === true || String(channel.status).toUpperCase() === 'ON'));
+    }
+
+    function playChannel(deviceId, deviceName, channelId, channelName) {
+      var src = currentSource;
+      if (!src) { hint.textContent = "请先点「📡 加载 webssh/dcim 视频监控」"; return; }
+      var range = playbackMode ? playbackRange() : null;
+      if (playbackMode && !range) {
+        $('pbHint').textContent = '开始时间必须早于结束时间';
+        return;
+      }
+      hint.textContent = (playbackMode ? "请求回放… " : "点播中… ") + deviceName + " / " + channelName;
+      var endpoint = playbackMode
+        ? "/api/" + src + "-video/playback/start/" + encodeURIComponent(deviceId) + "/" + encodeURIComponent(channelId)
+        : "/api/" + src + "-video/play/" + encodeURIComponent(deviceId) + "/" + encodeURIComponent(channelId);
+      var options = playbackMode
+        ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ startTime: range.start, endTime: range.end }) }
+        : { method: "POST" };
+      return fetch(endpoint, options)
+        .then(function (r) { return r.json(); })
+        .then(function (pr) {
+          if (!pr || !pr.ok) { hint.textContent = "点播失败：" + ((pr && pr.message) || "未知"); return; }
+          var tile = tiles[activeIdx]; if (!tile) return;
+          tile.play({ flvUrl: pr.flvUrl, streamKey: pr.streamKey, deviceId: deviceId,
+            channelId: channelId, channelName: channelName, deviceName: deviceName, source: src,
+            mode: playbackMode ? 'playback' : 'live', stream: pr.stream });
+          if (playbackMode) {
+            var seconds = Math.max(0, Math.floor((new Date(range.end.replace(' ', 'T')).getTime() - new Date(range.start.replace(' ', 'T')).getTime()) / 1000));
+            $('pbSeek').max = String(seconds); $('pbSeek').value = '0'; $('pbSeek').disabled = seconds === 0;
+            $('pbHint').textContent = '回放已起播：' + channelName;
+          }
+          hint.textContent = (playbackMode ? '已开始回放：' : '已起播：') + deviceName + " / " + channelName + "（" + src + "，分屏 " + (activeIdx + 1) + "）";
+        })
+        .catch(function (e) { hint.textContent = "请求失败：" + e.message; });
+    }
+
     // ==================== 双击设备名 → 起播到 active tile ====================
     function playFromDevice(deviceId, deviceName) {
       var src = currentSource;
@@ -416,33 +603,41 @@ sdp-ip:    192.168.0.22</pre>
         .then(function (r) { return r.json(); })
         .then(function (resp) {
           if (!resp.ok || !resp.list || !resp.list.length) {
-            hint.textContent = "设备 " + deviceName + " 暂无通道（catalog 可能未同步）"; return null;
+            hint.textContent = "设备 " + deviceName + " 暂无通道（catalog 可能未同步）"; return;
           }
-          var ch = resp.list.find(function (c) { return c.status === "ON" || c.status === "on"; }) || resp.list[0];
-          var chId = ch.channelId || ch.deviceId;
-          var chName = ch.name || chId;
-          hint.textContent = "点播中… " + deviceName + " / " + chName;
-          return fetch("/api/" + src + "-video/play/" + encodeURIComponent(deviceId) + "/" + encodeURIComponent(chId), { method: "POST" })
-            .then(function (r) { return r.json(); })
-            .then(function (pr) { return { pr: pr, chId: chId, chName: chName }; });
-        })
-        .then(function (out) {
-          if (!out) return;
-          if (!out.pr || !out.pr.ok) { hint.textContent = "点播失败：" + ((out.pr && out.pr.message) || "未知"); return; }
-          var tile = tiles[activeIdx]; if (!tile) return;
-          tile.play({ flvUrl: out.pr.flvUrl, streamKey: out.pr.streamKey, deviceId: deviceId,
-            channelId: out.chId, channelName: out.chName, deviceName: deviceName, source: src });
-          hint.textContent = "已起播：" + deviceName + " / " + out.chName + "（" + src + "，分屏 " + (activeIdx + 1) + "）";
+          var channel = resp.list.find(isChannelOnline) || resp.list[0];
+          return playChannel(deviceId, deviceName, channel.channelId || channel.deviceId, channel.name || channel.channelId || channel.deviceId);
         })
         .catch(function (e) { hint.textContent = "请求失败：" + e.message; });
     }
 
+    $("dcimDeviceList").addEventListener("click", function (e) {
+      var head = e.target.closest(".dev-head");
+      if (!head || e.detail > 1) return;
+      var node = head.closest('.dev-node');
+      if (!node) return;
+      if (!node.classList.contains('collapsed')) {
+        node.classList.add('collapsed');
+        return;
+      }
+      loadDeviceChannels(node);
+    });
+
     $("dcimDeviceList").addEventListener("dblclick", function (e) {
+      var leaf = e.target.closest(".ch-leaf");
+      if (leaf) {
+        selectedDevice = { id: leaf.dataset.dev, name: leaf.dataset.name || leaf.dataset.dev };
+        playChannel(leaf.dataset.dev, leaf.dataset.name || leaf.dataset.dev, leaf.dataset.ch, leaf.dataset.chName || leaf.dataset.ch);
+        return;
+      }
       var head = e.target.closest(".dev-head");
       if (!head) return;
       var did = head.dataset.dev;
       var name = head.dataset.name || did;
-      if (did) playFromDevice(did, name);
+      if (did) {
+        selectedDevice = { id: did, name: name };
+        playFromDevice(did, name);
+      }
     });
 
     window.addEventListener("beforeunload", function () { tiles.forEach(function (t) { t.stop(); }); });

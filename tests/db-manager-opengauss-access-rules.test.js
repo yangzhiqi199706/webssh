@@ -86,12 +86,34 @@ assert.match(serverSource, /const cidr = accessRules\.normalizeIpv4Cidr\(opts\.c
 assert.match(serverSource, /queueOpenGaussAccessUpdate/);
 assert.match(serverSource, /mode === 'append' && parsed\.rules\.indexOf\(normalizedCidr\) >= 0/);
 assert.match(serverSource, /statusCode = 404/);
+const accessAvailabilitySource = serverSource.slice(
+  serverSource.indexOf('async function probeOpenGaussAccessAvailability'),
+  serverSource.indexOf('async function updateOpenGaussAccessRulesLocked'));
+assert.match(accessAvailabilitySource, /async function probeOpenGaussAccessAvailability\(\)/,
+  '访问 CIDR 应有独立的 openGauss 实际可用性探测');
+assert.match(accessAvailabilitySource, /probeServiceRunning\('opengauss'\)[\s\S]{0,900}runOpenGaussGsql\('SELECT 1;'\)/,
+  'CIDR 可用性探测应保留 systemd 诊断，同时以 gsql SELECT 1 确认数据库实际可用');
+assert.match(accessAvailabilitySource, /available: sqlCheck === '1'/,
+  'CIDR 可写性必须由 gsql SELECT 1 的返回值决定');
 const accessUpdateSource = serverSource.slice(
   serverSource.indexOf('async function updateOpenGaussAccessRules('),
   serverSource.indexOf('// ===== openGauss 一键启用'));
+assert.match(accessUpdateSource, /const availability = await probeOpenGaussAccessAvailability\(\);[\s\S]{0,600}if \(!availability\.available\)/,
+  '更新 CIDR 时必须以实际 SQL 可用性作为门槛');
+assert.doesNotMatch(accessUpdateSource, /const service = await probeServiceRunning\('opengauss'\)/,
+  '更新 CIDR 不能将 systemd active 作为唯一门槛');
 assert.match(accessUpdateSource, /shellEscape\(backupPath\)[\s\S]{0,220}reloadOpenGaussAccessRules\(files\)/);
 assert.match(accessUpdateSource, /Math\.random\(\)/);
 assert.doesNotMatch(accessUpdateSource, /systemctl\s+restart|ALTER USER|gs_guc/);
+const accessGetSource = serverSource.slice(
+  serverSource.indexOf("app.get('/api/db-manager/opengauss/access-rules'"),
+  serverSource.indexOf("app.put('/api/db-manager/opengauss/access-rules'"));
+assert.match(accessGetSource, /const availability = await probeOpenGaussAccessAvailability\(\);/,
+  '读取 CIDR 时必须探测实际 SQL 可用性');
+assert.match(accessGetSource, /serviceRunning: availability\.available/,
+  '读取 CIDR 的 serviceRunning 必须代表实际 gsql 可用性');
+assert.match(accessGetSource, /systemdState: availability\.systemdState/,
+  '读取 CIDR 仍须返回 systemd 状态作诊断');
 assert.match(serverSource, /async function initOpenGauss\(opts\)\s*\{\s*return queueOpenGaussAccessUpdate\(\(\) => initOpenGaussLocked\(opts\)\);/);
 assert.match(deploySource, /'lib',/);
 
@@ -107,8 +129,10 @@ assert.match(uiSource, /saveOpenGaussAccessRules\('append'\)/,
   '页面应支持追加受管访问 CIDR');
 assert.match(uiSource, /opengauss\/access-rules/,
   '页面应调用固定的 openGauss 访问 CIDR 接口');
-assert.match(uiSource, /ga\.disabled = !info\.serviceRunning/,
-  '访问 CIDR 入口必须按 openGauss 服务状态禁用');
+assert.match(uiSource, /ga\.disabled = !info\.running/,
+  '访问 CIDR 入口必须按 openGauss 实际连接状态禁用');
+assert.doesNotMatch(uiSource, /ga\.disabled = !info\.serviceRunning/,
+  '访问 CIDR 入口不能因 systemd 历史状态禁用');
 assert.match(uiSource, /<button class="btn primary" id="btnGaussReplaceCidr"[^>]*>替换为此 CIDR<\/button>/,
   '替换当前 CIDR 应是默认的主操作');
 assert.match(uiSource, /<button class="btn" id="btnGaussAppendCidr"[^>]*>添加 CIDR<\/button>/,
@@ -186,5 +210,14 @@ assert.match(accessRemoveSource, /finally \{\s*if \(requestId === openGaussAcces
   '删除 CIDR 的旧 finally 不得解除新会话的 busy 状态');
 assert.match(accessUiSource, /async function refreshOpenGaussAccessOverview\(successText, requestId\)[\s\S]{0,1200}if \(requestId !== openGaussAccessLoadRequestId\) return;/,
   '概览刷新在回写前必须确认仍属于当前访问 CIDR 会话');
+
+const cardRenderSource = uiSource.slice(
+  uiSource.indexOf('function renderDbCard'),
+  uiSource.indexOf('async function doService'));
+assert.match(cardRenderSource,
+  /if \(dbId === 'opengauss'\) \{[\s\S]*actions\.querySelector\('#btnGaussAccessRules'\)[\s\S]*ga\.disabled = !info\.running/,
+  '访问 CIDR 按钮必须只在 openGauss 当前卡片内按实际运行状态赋值');
+assert.doesNotMatch(cardRenderSource, /const ga = \$\('btnGaussAccessRules'\)/,
+  '其他数据库卡片不能通过全局 ID 覆盖 openGauss 的访问 CIDR 按钮状态');
 
 console.log('openGauss access rules: OK');

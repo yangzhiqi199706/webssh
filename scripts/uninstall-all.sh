@@ -49,13 +49,10 @@ warn() { echo "[警告] $*" >&2; }
 
 # -------------------- 1. 停止并 disable 服务（顺序：先 protocol/media 再 main，避免 PartOf 二次触发） --------------------
 for svc in "$SERVICE_PROTO" "$SERVICE_MEDIA" "$SERVICE_MAIN"; do
-  if systemctl list-unit-files 2>/dev/null | grep -q "^${svc}\.service"; then
-    log "停止 $svc ..."
-    systemctl stop    "$svc" 2>/dev/null || true
-    systemctl disable "$svc" 2>/dev/null || true
-  else
-    log "$svc 未注册，跳过"
-  fi
+  log "停止 $svc ..."
+  systemctl stop         "$svc" 2>/dev/null || true
+  systemctl disable      "$svc" 2>/dev/null || true
+  systemctl reset-failed "$svc" 2>/dev/null || true
 done
 
 # -------------------- 2. 删除 systemd unit --------------------

@@ -433,8 +433,8 @@ SHOW DATABASES;"></textarea>
           <!-- 3 张卡：MySQL / openGauss / DM -->
         </div>
         <div class="hint" style="margin-top:10px">
-          「抓取当前基线」：从 <code>/dcim/admin/localhost_8080 + localhost_8086 + /dcim/python</code> 打个 zip 到 <code>/opt/dcim-datasource-versions/mysql/snapshot.zip</code>，作为回退兜底。<br>
-          「上传目录」：浏览器选本地 <code>数据库管理/{高斯,达梦}数据库/</code> 目录 → 客户端过滤 <code>.bak.* / .localbak.* / __pycache__</code> 等垃圾 → JSZip 打包 → 分块上传到目标机。
+          「抓取当前基线」：从 <code>/dcim/admin/localhost_8080 + localhost_8086 + /dcim/python + /dcim/conf</code> 打个 zip 到 <code>/opt/dcim-datasource-versions/mysql/snapshot.zip</code>，作为回退兜底。<br>
+          「上传目录」：浏览器选本地 <code>数据库管理/{MySQL,高斯,达梦}数据库/</code> 目录；其中 <code>conf/</code> 会对应恢复到 <code>/dcim/conf/</code>。客户端过滤 <code>.bak.* / .localbak.* / __pycache__</code> 等垃圾后由 JSZip 打包、分块上传。
         </div>
       </div>
 
@@ -715,6 +715,29 @@ SHOW DATABASES;"></textarea>
       </div>
     </div>
 
+    <!-- 达梦卡片：Apache 虚拟主机配置上传 -->
+    <div class="modal-mask" id="dmApacheVhostsModal" aria-hidden="true">
+      <div class="modal">
+        <div class="modal-head">
+          <h3>Apache 虚拟主机配置</h3>
+          <button class="btn" id="btnCloseDmApacheVhosts" type="button">关闭</button>
+        </div>
+        <div class="modal-body">
+          <div class="danger-banner">上传后会备份当前容器配置，执行 <code>httpd -t</code>；仅出现 Syntax OK 才 graceful 重载。语法检查或重载失败会自动恢复容器内备份。</div>
+          <div class="form-grid" style="grid-template-columns:1fr auto">
+            <label class="field"><span>选择本地 httpd-vhosts.conf</span>
+              <input type="file" id="dmApacheVhostsFile" accept=".conf,text/plain" />
+            </label>
+            <label class="field"><span>&nbsp;</span>
+              <button class="btn danger" id="btnUploadDmApacheVhosts" type="button" disabled>上传并应用</button>
+            </label>
+          </div>
+          <div class="hint">固定目标：<code>dcim:/www/server/apache/conf/extra/httpd-vhosts.conf</code>。</div>
+          <div class="status-box" id="dmApacheVhostsStatus" style="display:none;max-height:250px;overflow:auto"></div>
+        </div>
+      </div>
+    </div>
+
   </div>
   <script>
 
@@ -952,34 +975,121 @@ SHOW DATABASES;"></textarea>
       if (dbId === 'opengauss') {
         btns += '<button class="btn sm primary" id="btnGaussInit" title="仅首次使用：启用服务并创建 dcim 应用账号。后续 CIDR 请使用访问 CIDR 按钮">首次启用</button>';
         btns += '<button class="btn sm" id="btnGaussAccessRules" title="替换、添加或删除 openGauss 的受管访问 CIDR">访问 CIDR</button>';
+        btns += '<button class="btn sm danger" id="btnGaussOptimizeMemory" title="按 6GB 服务器档位备份并优化 openGauss 内存配置，然后重启验证">内存优化</button>';
+        btns += '<button class="btn sm danger" id="btnGaussRepairApacheMount" title="修复切换数据源后 Apache 挂载权限，并重启 dcim 容器验证网页">修复 Apache 挂载</button>';
         btns += '<button class="btn sm" id="btnGaussInitWvp" title="在 dcim 库 public schema 里新建 15 张 WVP 业务表 + 初始 admin 账号">🎬 建 WVP 表</button>';
         btns += '<button class="btn sm" id="btnGaussSyncWvp" title="从 MySQL wvp 库把 15 张 WVP 业务表数据同步到 openGauss dcim.public（WVP 服务不动继续用 MySQL）">🔄 同步 WVP 数据</button>';
+        btns += '<button class="btn sm danger" id="btnGaussFixDeviceProtocolSeq" title="将设备协议表的 ID 序列同步到当前最大 ID">↻ 修复协议序列</button>';
       }
-      // 达梦专属：授权信息 + 上传 dm.key
+      // 达梦专属：授权信息、dm.key 与 Apache 虚拟主机配置
       if (dbId === 'dm') {
         btns += '<button class="btn sm" id="btnDmLicense" title="查看到期时间 / 上传 dm.key 授权文件">🔑 授权信息</button>';
+        btns += '<button class="btn sm danger" id="btnDmApacheVhosts" title="上传 httpd-vhosts.conf，通过语法检查后重载 Apache">⬆ Apache 配置</button>';
       }
       actions.innerHTML = btns;
       actions.querySelectorAll('button[data-svc]').forEach(b => b.addEventListener('click', () => doService(b.dataset.svc, b.dataset.action)));
-      const gi = $('btnGaussInit');
-      if (gi) gi.addEventListener('click', openGaussInitModal);
-      const ga = $('btnGaussAccessRules');
-      if (ga) {
-        ga.disabled = !info.serviceRunning;
-        ga.addEventListener('click', openGaussAccessRules);
+      if (dbId === 'opengauss') {
+        const gi = actions.querySelector('#btnGaussInit');
+        if (gi) gi.addEventListener('click', openGaussInitModal);
+        const ga = actions.querySelector('#btnGaussAccessRules');
+        if (ga) {
+          ga.disabled = !info.running;
+          ga.addEventListener('click', openGaussAccessRules);
+        }
+        const gm = actions.querySelector('#btnGaussOptimizeMemory');
+        if (gm) gm.addEventListener('click', optimizeOpenGaussMemory);
+        const gr = actions.querySelector('#btnGaussRepairApacheMount');
+        if (gr) gr.addEventListener('click', repairOpenGaussApacheMount);
+        const gw = actions.querySelector('#btnGaussInitWvp');
+        if (gw) gw.addEventListener('click', openWvpInitModal);
+        const gs = actions.querySelector('#btnGaussSyncWvp');
+        if (gs) gs.addEventListener('click', openWvpSyncModal);
+        const gp = actions.querySelector('#btnGaussFixDeviceProtocolSeq');
+        if (gp) gp.addEventListener('click', fixDeviceProtocolSequence);
       }
-      const gw = $('btnGaussInitWvp');
-      if (gw) gw.addEventListener('click', openWvpInitModal);
-      const gs = $('btnGaussSyncWvp');
-      if (gs) gs.addEventListener('click', openWvpSyncModal);
-      const dl = $('btnDmLicense');
-      if (dl) dl.addEventListener('click', openDmLicenseModal);
+      if (dbId === 'dm') {
+        const dl = actions.querySelector('#btnDmLicense');
+        if (dl) dl.addEventListener('click', openDmLicenseModal);
+        const da = actions.querySelector('#btnDmApacheVhosts');
+        if (da) da.addEventListener('click', openDmApacheVhostsModal);
+      }
     }
     async function doService(dbId, action) {
       if (action === 'stop' && !confirm('确定停止 ' + dbId + ' 服务？dcim 业务可能会失败。')) return;
       const r = await jfetch(API + '/service/' + dbId + '/' + action, { method: 'POST' });
       alert('操作结果：' + (r.ok ? '成功' : '失败') + '\n' + (r.stderr || r.stdout || r.message || ''));
       setTimeout(refreshStatus, 1500);
+    }
+    async function fixDeviceProtocolSequence() {
+      if (!confirm('确定修复设备协议序列？将把 dcim-deviceprotocol_id_seq 同步到 dcim-deviceprotocol 的最大 ID。')) return;
+      const btn = $('btnGaussFixDeviceProtocolSeq');
+      if (btn) btn.disabled = true;
+      try {
+        const r = await jfetch(API + '/opengauss/fix-deviceprotocol-sequence', { method: 'POST' });
+        if (!r.ok) throw new Error(r.message || '修复失败');
+        alert('设备协议序列已修复\n最大 ID：' + r.maxId + '\n序列值：' + r.lastValue);
+        await refreshStatus();
+      } catch (e) {
+        alert('修复失败：' + (e.message || e));
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    }
+    async function optimizeOpenGaussMemory() {
+      if (!confirm('确定按 6GB 服务器参数优化 openGauss 内存？将备份 postgresql.conf 并重启 openGauss，现有连接会短暂中断。')) return;
+      const btn = $('btnGaussOptimizeMemory');
+      if (btn) {
+        btn.disabled = true;
+        btn.dataset.originalText = btn.textContent;
+        btn.textContent = '配置中…';
+      }
+      try {
+        const r = await jfetch(API + '/opengauss/optimize-memory', { method: 'POST' });
+        if (!r.ok) throw new Error(r.message || '内存优化失败');
+        const p = r.profile || {};
+        alert('openGauss 内存配置已优化\n备份：' + (r.backupPath || '—') +
+          '\nmax_process_memory：' + (p.max_process_memory || '—') +
+          '\nshared_buffers：' + (p.shared_buffers || '—') +
+          '\ncstore_buffers：' + (p.cstore_buffers || '—') +
+          '\nmax_connections：' + (p.max_connections || '—') +
+          '\n验证：SELECT 1 = ' + (r.sqlCheck || '—'));
+        await refreshStatus();
+      } catch (e) {
+        alert('内存优化失败：' + (e.message || e));
+        await refreshStatus();
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = btn.dataset.originalText || '内存优化';
+        }
+      }
+    }
+    async function repairOpenGaussApacheMount() {
+      if (!confirm('确定修复切换高斯数据库后的 Apache 挂载？将把 /dcim/conf/apache 目录设为 755、其中配置文件设为 644，并重启 dcim 容器。三套数据库和网页会短暂中断。')) return;
+      const btn = $('btnGaussRepairApacheMount');
+      if (btn) {
+        btn.disabled = true;
+        btn.dataset.originalText = btn.textContent;
+        btn.textContent = '修复中…';
+      }
+      try {
+        const r = await jfetch(API + '/opengauss/repair-apache-mount', { method: 'POST' });
+        if (!r.ok) throw new Error(r.message || 'Apache 挂载修复失败');
+        alert('Apache 挂载已修复\n宿主目录：' + (r.mountSource || '—') +
+          '\n容器挂载：' + (r.mountTarget || '—') +
+          '\n目录权限：' + ((r.permissions || {}).directories || '755') +
+          '\n文件权限：' + ((r.permissions || {}).files || '644') +
+          '\nHTTPS 验证通过');
+        await refreshStatus();
+      } catch (e) {
+        alert('Apache 挂载修复失败：' + (e.message || e));
+        await refreshStatus();
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = btn.dataset.originalText || '修复 Apache 挂载';
+        }
+      }
     }
     $('btnRefresh').addEventListener('click', refreshStatus);
 
@@ -1025,9 +1135,10 @@ SHOW DATABASES;"></textarea>
         box.innerHTML = '<span class="err">✗ 异常: ' + esc(e.message) + '</span>';
       } finally { btn.disabled = false; }
     });
+
     // openGauss 已启用后的受管访问 CIDR：只 reload pg_hba.conf，不重启数据库。
     let openGaussAccessRuleList = [];
-    let openGaussAccessServiceRunning = false;
+    let openGaussAccessAvailable = false;
     let openGaussAccessBusy = false;
     let openGaussAccessLoadRequestId = 0;
     const OPEN_GAUSS_ACCESS_STATUS_LIMIT = 600;
@@ -1076,7 +1187,7 @@ SHOW DATABASES;"></textarea>
 
     function setOpenGaussAccessBusy(busy) {
       openGaussAccessBusy = busy;
-      const disabled = busy || !openGaussAccessServiceRunning;
+      const disabled = busy || !openGaussAccessAvailable;
       $('gaAccessCidr').disabled = disabled;
       $('btnGaussReplaceCidr').disabled = disabled;
       $('btnGaussAppendCidr').disabled = disabled;
@@ -1099,7 +1210,7 @@ SHOW DATABASES;"></textarea>
         html += rules.map((cidr) =>
           '<div class="kv-row"><span class="k">受管 CIDR</span><span class="v mono">' + esc(cidr) +
           '</span><button class="btn sm danger" type="button" data-remove-cidr="' + esc(cidr) + '"' +
-          (openGaussAccessBusy || !openGaussAccessServiceRunning ? ' disabled' : '') + '>删除</button></div>'
+          (openGaussAccessBusy || !openGaussAccessAvailable ? ' disabled' : '') + '>删除</button></div>'
         ).join('');
       }
       list.innerHTML = html;
@@ -1114,19 +1225,20 @@ SHOW DATABASES;"></textarea>
       $('gaAccessCidr').value = '';
       $('gaAccessRules').innerHTML = '<div class="kv-row"><span class="k">状态</span><span class="v">读取中…</span><span></span></div>';
       openGaussAccessRuleList = [];
-      openGaussAccessServiceRunning = false;
+      openGaussAccessAvailable = false;
       setOpenGaussAccessBusy(true);
       setOpenGaussAccessStatus('正在读取受管访问 CIDR…', false);
       try {
         const result = await jfetch(API + '/opengauss/access-rules');
         if (requestId !== openGaussAccessLoadRequestId) return;
         if (!result.ok) throw new Error(result.message || '读取访问 CIDR 失败');
-        openGaussAccessServiceRunning = !!result.serviceRunning;
+        openGaussAccessAvailable = !!result.serviceRunning;
         renderOpenGaussAccessRules(result);
-        if (openGaussAccessServiceRunning) {
+        if (openGaussAccessAvailable) {
           setOpenGaussAccessStatus('CIDR 变更仅重载配置，不重启数据库。', false);
         } else {
-          setOpenGaussAccessStatus('openGauss 服务未运行，不能修改访问 CIDR。', true);
+          setOpenGaussAccessStatus('openGauss 当前 SQL 探测不可用，不能修改访问 CIDR。' +
+            (result.availabilityError ? '\n原因：' + result.availabilityError : ''), true);
         }
       } catch (e) {
         if (requestId !== openGaussAccessLoadRequestId) return;
@@ -1202,7 +1314,6 @@ SHOW DATABASES;"></textarea>
     });
     $('btnGaussReplaceCidr').addEventListener('click', () => saveOpenGaussAccessRules('replace'));
     $('btnGaussAppendCidr').addEventListener('click', () => saveOpenGaussAccessRules('append'));
-
 
     // ========== openGauss 一键建 WVP 表 ==========
     const WVP_TABLE_LIST = ['wvp_device','wvp_device_alarm','wvp_device_channel','wvp_device_mobile_position',
@@ -1503,6 +1614,54 @@ SHOW DATABASES;"></textarea>
         }
       } catch (e) {
         box.innerHTML = '<span class="err">✗ 异常: ' + esc(e.message) + '</span>';
+      } finally { btn.disabled = false; }
+    });
+
+    // ========== 达梦卡片：Apache 虚拟主机配置上传 ==========
+    function openDmApacheVhostsModal() {
+      $('dmApacheVhostsModal').classList.add('open');
+      $('dmApacheVhostsFile').value = '';
+      $('btnUploadDmApacheVhosts').disabled = true;
+      $('dmApacheVhostsStatus').style.display = 'none';
+      $('dmApacheVhostsStatus').innerHTML = '';
+    }
+    $('btnCloseDmApacheVhosts').addEventListener('click', () => $('dmApacheVhostsModal').classList.remove('open'));
+    $('dmApacheVhostsFile').addEventListener('change', (e) => {
+      $('btnUploadDmApacheVhosts').disabled = !(e.target.files && e.target.files[0]);
+    });
+    $('btnUploadDmApacheVhosts').addEventListener('click', async () => {
+      const file = $('dmApacheVhostsFile').files[0]; if (!file) return;
+      if (file.name !== 'httpd-vhosts.conf') { alert('只能上传固定文件名 httpd-vhosts.conf'); return; }
+      if (file.size === 0 || file.size > 512 * 1024) { alert('配置文件必须大于 0 且不超过 512KB'); return; }
+      if (!confirm('确定上传并应用 Apache 虚拟主机配置？系统会先备份，再执行 httpd -t；只有 Syntax OK 才会 graceful 重载。')) return;
+      const btn = $('btnUploadDmApacheVhosts');
+      const box = $('dmApacheVhostsStatus');
+      btn.disabled = true;
+      box.style.display = '';
+      box.textContent = '读取文件并上传，正在备份、校验 Apache 配置…';
+      try {
+        const contentBase64 = await new Promise((resolve, reject) => {
+          const fr = new FileReader();
+          fr.onload = () => {
+            const dataUrl = String(fr.result || '');
+            const i = dataUrl.indexOf(',');
+            resolve(i >= 0 ? dataUrl.slice(i + 1) : dataUrl);
+          };
+          fr.onerror = () => reject(new Error('读文件失败'));
+          fr.readAsDataURL(file);
+        });
+        const r = await jfetch(API + '/dm/upload-httpd-vhosts', {
+          method: 'POST', body: { fileName: file.name, contentBase64: contentBase64 },
+        });
+        if (!r.ok) throw new Error(r.message || '上传失败');
+        const checks = (r.checks || []).map((c) =>
+          '<b>' + esc(c.url) + '</b>\n' + (c.ok ? '<span style="color:#a7f3d0">✓ HTTP 200 / Apache</span>' : '<span style="color:#fcd34d">⚠ 验证未达到预期</span>') +
+          '\n' + esc(c.headers || '(无响应头)')).join('\n\n');
+        box.innerHTML = '<span style="color:#a7f3d0">✓ Apache 配置已通过语法检查并 graceful 重载</span>\n' +
+          '<b>容器备份</b>: ' + esc(r.containerBackup) + '\n' +
+          '<b>宿主备份</b>: ' + esc(r.hostBackup) + '\n\n' + checks;
+      } catch (e) {
+        box.innerHTML = '<span class="err">✗ ' + esc(e.message || e) + '</span>';
       } finally { btn.disabled = false; }
     });
 
@@ -1819,9 +1978,9 @@ SHOW DATABASES;"></textarea>
     }
     async function packAndUpload(versionKey, files) {
       if (typeof JSZip === 'undefined') { alert('JSZip 未加载'); return; }
-      // 期望用户选的是 "高斯数据库" 或 "达梦数据库" 这一级目录
+      // 期望用户选的是 "MySQL数据库"、"高斯数据库" 或 "达梦数据库" 这一级目录
       // File.webkitRelativePath 里第一段是根目录名（如 "高斯数据库"），要剥掉
-      // 目标 zip 结构：admin/localhost_8080/... + admin/localhost_8086/... + python/...
+      // 目标 zip 结构：admin/localhost_8080/... + admin/localhost_8086/... + python/... + conf/...
       let totalBytes = 0, kept = 0, skipped = 0;
       files.forEach(f => {
         const rp = f.webkitRelativePath || f.name;
@@ -1829,11 +1988,11 @@ SHOW DATABASES;"></textarea>
         if (parts.length < 2) { skipped++; return; }
         const rest = parts.slice(1).join('/');
         if (dsShouldExclude(rest)) { skipped++; return; }
-        // 只保留 localhost_8080 / localhost_8086 / python 三个顶层子目录
-        if (!/^(localhost_8080|localhost_8086|python)\//.test(rest)) { skipped++; return; }
+        // 保留应用目录和 conf；conf 在切换时会恢复到 /dcim/conf/
+        if (!/^(localhost_8080|localhost_8086|python|conf)\//.test(rest)) { skipped++; return; }
         kept++; totalBytes += f.size;
       });
-      if (!kept) { alert('没有找到可打包的文件（需要选 数据库管理/高斯数据库 或 数据库管理/达梦数据库 目录）'); return; }
+      if (!kept) { alert('没有找到可打包的文件（需要选 数据库管理/MySQL数据库、高斯数据库 或 达梦数据库 目录）'); return; }
       const conf = confirm('准备打包 ' + kept + ' 个文件（约 ' + fmtBytes(totalBytes) + '），忽略 ' + skipped + ' 个（含 .bak.* 等历史/垃圾文件）。\n目标版本：' + DS_LABELS[versionKey] + '\n开始？');
       if (!conf) return;
 
@@ -1849,9 +2008,9 @@ SHOW DATABASES;"></textarea>
         if (parts.length < 2) continue;
         const rest = parts.slice(1).join('/');
         if (dsShouldExclude(rest)) continue;
-        if (!/^(localhost_8080|localhost_8086|python)\//.test(rest)) continue;
-        // zip 内路径改成后端预期的结构：admin/localhost_8080/xxx / admin/localhost_8086/xxx / python/xxx
-        const zipPath = rest.startsWith('python/') ? rest : 'admin/' + rest;
+        if (!/^(localhost_8080|localhost_8086|python|conf)\//.test(rest)) continue;
+        // zip 内路径改成后端预期的结构：admin/localhost_8080/xxx / admin/localhost_8086/xxx / python/xxx / conf/xxx
+        const zipPath = rest.startsWith('python/') ? rest : (rest.startsWith('conf/') ? rest : 'admin/' + rest);
         const buf = await f.arrayBuffer();
         zip.file(zipPath, buf);
         addedBytes += f.size;

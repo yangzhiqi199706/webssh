@@ -8819,6 +8819,8 @@ wssTcp.on('connection', function (ws) {
 
   const CONFIG_PATH = process.env.DCIM_VIDEO_CONFIG || path.join(__dirname, 'config', 'dcim-video.json');
   const LOG_PATH = process.env.DCIM_VIDEO_LOG || path.join(__dirname, 'logs', 'dcim-video.log');
+  // 录像机回放通常需要约 10 秒完成 SIP INVITE、RTP 收流与媒体流注册。
+  const DEFAULT_TIMEOUT_MS = 30000;
 
   const defaults = {
     apiBase: 'https://127.0.0.1:18080',
@@ -8826,7 +8828,7 @@ wssTcp.on('connection', function (ws) {
     // dcim 库里 wvp_user.password 字段是已经做了一层 hash 的值，登录时直接用它当
     // password 提交即可（wvp 前端是 md5(明文) 然后等于这个 hash）
     passwordHash: '551c76780e34e1c1fab9ff85dfc79947',
-    timeoutMs: 6000,
+    timeoutMs: DEFAULT_TIMEOUT_MS,
   };
 
   let cfg = JSON.parse(JSON.stringify(defaults));
@@ -8877,7 +8879,7 @@ wssTcp.on('connection', function (ws) {
         port: urlObj.port || 443,
         path: urlObj.pathname + (urlObj.search || ''),
         agent: dcimAgent,
-        timeout: cfg.timeoutMs || 6000,
+        timeout: cfg.timeoutMs || DEFAULT_TIMEOUT_MS,
         headers: Object.assign({}, headers || {}),
       };
       if (buf.length) {
@@ -8895,7 +8897,7 @@ wssTcp.on('connection', function (ws) {
         });
       });
       req.on('timeout', function () {
-        try { req.destroy(new Error('timeout ' + (cfg.timeoutMs || 6000) + 'ms')); } catch (_e) {}
+        try { req.destroy(new Error('timeout ' + (cfg.timeoutMs || DEFAULT_TIMEOUT_MS) + 'ms')); } catch (_e) {}
       });
       req.on('error', function (err) {
         lastError = method + ' ' + urlPath + ': ' + err.message;
@@ -9043,19 +9045,38 @@ wssTcp.on('connection', function (ws) {
     });
   });
 
-  app.post('/api/dcim-video/playback/stop/:streamId', async function (req, res) {
+  function playbackActionOk(r) {
+    const nestedStatus = r.data && r.data.data && Number(r.data.data.status);
+    return !!(r.ok && r.data && r.data.code === 0 && !(nestedStatus >= 400));
+  }
+
+  async function stopPlayback(req, res) {
+    const body = req.body || {};
+    const did = encodeURIComponent(req.params.deviceId || body.deviceId || req.query.deviceId || '');
+    const cid = encodeURIComponent(req.params.channelId || body.channelId || req.query.channelId || '');
     const sid = encodeURIComponent(req.params.streamId || '');
-    const r = await callWithAuth('GET', '/api/playback/stop/' + sid, null);
-    res.json({ ok: r.ok && r.data && r.data.code === 0, message: (r.data && r.data.msg) || r.message || '' });
-  });
+    if (!did || !cid || !sid) {
+      return res.status(400).json({ ok: false, message: 'deviceId/channelId/streamId 必填' });
+    }
+    const r = await callWithAuth('GET', '/api/playback/stop/' + did + '/' + cid + '/' + sid, null);
+    res.json({ ok: playbackActionOk(r), message: (r.data && r.data.msg) || r.message || '' });
+  }
+  app.post('/api/dcim-video/playback/stop/:deviceId/:channelId/:streamId', stopPlayback);
+  // 兼容早期调用方：从 body 或 query 补齐 deviceId/channelId。
+  app.post('/api/dcim-video/playback/stop/:streamId', stopPlayback);
 
   app.post('/api/dcim-video/playback/control/:streamId/:cmd', async function (req, res) {
     const sid = encodeURIComponent(req.params.streamId || '');
-    const cmd = encodeURIComponent(req.params.cmd || '');
-    const value = String((req.body && req.body.value) || req.query.value || '');
-    const u = '/api/playback/control/' + sid + '/' + cmd + (value ? '/' + encodeURIComponent(value) : '');
+    const cmd = String(req.params.cmd || '').trim().toLowerCase();
+    const value = String((req.body && req.body.value) || req.query.value || '').trim();
+    let u = '';
+    if (cmd === 'pause') u = '/api/playback/pause/' + sid;
+    else if (cmd === 'resume' || cmd === 'play') u = '/api/playback/resume/' + sid;
+    else if (cmd === 'seek' && value) u = '/api/playback/seek/' + sid + '/' + encodeURIComponent(value);
+    else if ((cmd === 'speed' || cmd === 'fastforward') && value) u = '/api/playback/speed/' + sid + '/' + encodeURIComponent(value);
+    else return res.status(400).json({ ok: false, message: '不支持的回放控制命令或缺少 value' });
     const r = await callWithAuth('GET', u, null);
-    res.json({ ok: r.ok && r.data && r.data.code === 0, message: (r.data && r.data.msg) || r.message || '', data: r.data && r.data.data });
+    res.json({ ok: playbackActionOk(r), message: (r.data && r.data.msg) || r.message || '', data: r.data && r.data.data });
   });
 
   // /media-dcim/* 反代到 dcim 容器内 ZLM HTTP 80（host:80 → docker-proxy → 容器:80 → ZLM）
@@ -9295,20 +9316,39 @@ wssTcp.on('connection', function (ws) {
     });
   });
 
-  app.post('/api/webssh-video/playback/stop/:streamId', async function (req, res) {
-    const sid = encodeURIComponent(req.params.streamId || '');
-    const r = await callWithAuth('GET', '/api/playback/stop/' + sid, null);
-    res.json({ ok: r.ok && r.data && r.data.code === 0, message: (r.data && r.data.msg) || r.message || '' });
-  });
+  function playbackActionOk(r) {
+    const nestedStatus = r.data && r.data.data && Number(r.data.data.status);
+    return !!(r.ok && r.data && r.data.code === 0 && !(nestedStatus >= 400));
+  }
 
-  // 倍速/暂停/继续/seek（wvp 2.6.9 /api/playback/control/{stream}/{cmd}/{value}）
+  async function stopPlayback(req, res) {
+    const body = req.body || {};
+    const did = encodeURIComponent(req.params.deviceId || body.deviceId || req.query.deviceId || '');
+    const cid = encodeURIComponent(req.params.channelId || body.channelId || req.query.channelId || '');
+    const sid = encodeURIComponent(req.params.streamId || '');
+    if (!did || !cid || !sid) {
+      return res.status(400).json({ ok: false, message: 'deviceId/channelId/streamId 必填' });
+    }
+    const r = await callWithAuth('GET', '/api/playback/stop/' + did + '/' + cid + '/' + sid, null);
+    res.json({ ok: playbackActionOk(r), message: (r.data && r.data.msg) || r.message || '' });
+  }
+  app.post('/api/webssh-video/playback/stop/:deviceId/:channelId/:streamId', stopPlayback);
+  // 兼容早期调用方：从 body 或 query 补齐 deviceId/channelId。
+  app.post('/api/webssh-video/playback/stop/:streamId', stopPlayback);
+
+  // WVP 2.6.9 为暂停、恢复、拖动和倍速分别提供独立路由。
   app.post('/api/webssh-video/playback/control/:streamId/:cmd', async function (req, res) {
     const sid = encodeURIComponent(req.params.streamId || '');
-    const cmd = encodeURIComponent(req.params.cmd || ''); // pause / play / scale / seek
-    const value = String((req.body && req.body.value) || req.query.value || '');
-    const u = '/api/playback/control/' + sid + '/' + cmd + (value ? '/' + encodeURIComponent(value) : '');
+    const cmd = String(req.params.cmd || '').trim().toLowerCase();
+    const value = String((req.body && req.body.value) || req.query.value || '').trim();
+    let u = '';
+    if (cmd === 'pause') u = '/api/playback/pause/' + sid;
+    else if (cmd === 'resume' || cmd === 'play') u = '/api/playback/resume/' + sid;
+    else if (cmd === 'seek' && value) u = '/api/playback/seek/' + sid + '/' + encodeURIComponent(value);
+    else if ((cmd === 'speed' || cmd === 'fastforward') && value) u = '/api/playback/speed/' + sid + '/' + encodeURIComponent(value);
+    else return res.status(400).json({ ok: false, message: '不支持的回放控制命令或缺少 value' });
     const r = await callWithAuth('GET', u, null);
-    res.json({ ok: r.ok && r.data && r.data.code === 0, message: (r.data && r.data.msg) || r.message || '', data: r.data && r.data.data });
+    res.json({ ok: playbackActionOk(r), message: (r.data && r.data.msg) || r.message || '', data: r.data && r.data.data });
   });
 
   // ---------- /media-webssh/* 反代到 webssh-mediaserver ZLM 18180 ----------
@@ -11121,10 +11161,35 @@ wssTcp.on('connection', function (ws) {
     return queueOpenGaussAccessUpdate(() => updateOpenGaussAccessRulesLocked(mode, cidr));
   }
 
+  async function probeOpenGaussAccessAvailability() {
+    const [serviceResult, sqlResult] = await Promise.allSettled([
+      probeServiceRunning('opengauss'),
+      runOpenGaussGsql('SELECT 1;'),
+    ]);
+    const service = serviceResult.status === 'fulfilled' ? serviceResult.value : null;
+    const systemdState = service && service.raw ? service.raw : 'unknown';
+    if (sqlResult.status === 'fulfilled') {
+      const sqlCheck = String(sqlResult.value || '').trim();
+      return {
+        available: sqlCheck === '1',
+        sqlCheck: sqlCheck,
+        systemdState: systemdState,
+        error: sqlCheck === '1' ? '' : 'SELECT 1 返回异常：' + sqlCheck.slice(0, 300),
+      };
+    }
+    return {
+      available: false,
+      sqlCheck: '',
+      systemdState: systemdState,
+      error: String((sqlResult.reason && sqlResult.reason.message) || sqlResult.reason || 'openGauss SQL 探测失败').slice(0, 300),
+    };
+  }
+
   async function updateOpenGaussAccessRulesLocked(mode, cidr) {
-    const service = await probeServiceRunning('opengauss');
-    if (!service.running) {
-      throw new Error('openGauss 服务未运行（' + (service.raw || 'unknown') + '），拒绝修改访问 CIDR');
+    const availability = await probeOpenGaussAccessAvailability();
+    if (!availability.available) {
+      throw new Error('openGauss SQL 不可用，拒绝修改访问 CIDR（systemd: ' +
+        availability.systemdState + '）：' + availability.error);
     }
 
     const files = await locateOpenGaussAccessFiles();
@@ -11205,8 +11270,6 @@ wssTcp.on('connection', function (ws) {
     const password = String(opts.password || 'Gauss@2026');
     const cidr = accessRules.normalizeIpv4Cidr(opts.cidr || '192.168.0.0/24');
     const dbUser = 'dcim';
-    // 简单校验
-    if (!/^[A-Za-z0-9.:\/]+$/.test(cidr) || cidr.length > 64) throw new Error('CIDR 格式非法');
     if (password.length < 8) throw new Error('密码至少 8 位');
     // openGauss 强度要求：大小写/数字/特殊字符至少 3 类
     let kinds = 0;
@@ -11345,19 +11408,239 @@ wssTcp.on('connection', function (ws) {
     };
   }
 
+  // 6GB 宿主机的保守配置：避免默认 6GB process memory + 大缓存导致 gaussdb
+  // 无法创建共享内存。通过 gs_guc 写入，失败时恢复同一份配置备份。
+  async function optimizeOpenGaussMemory() {
+    const db = getDbCfg('opengauss');
+    if (!db) throw new Error('openGauss 未配置');
+    const unit = String(db.systemdUnit || 'opengauss.service');
+    if (!/^[A-Za-z0-9_.@-]+$/.test(unit)) throw new Error('openGauss systemd Unit 非法');
+
+    const profile = {
+      max_process_memory: '2097152',
+      shared_buffers: '128MB',
+      cstore_buffers: '128MB',
+      max_connections: '100',
+    };
+    const logs = [];
+    const step = (name, output) => {
+      const text = '[' + name + '] ' + String(output || '').trim().split('\n').slice(0, 4).join(' | ').slice(0, 400);
+      logs.push(text);
+      appendLog('gauss-memory-optimize ' + text);
+    };
+
+    let r = await sshRun(runInContainerCmd(cfg.container,
+      "find /opt/software/openGauss/data -maxdepth 3 -name postgresql.conf -type f 2>/dev/null | head -1"));
+    const pgConfPath = r.stdout.trim();
+    if (!pgConfPath) throw new Error('未找到 openGauss postgresql.conf');
+    const dataDir = pgConfPath.replace(/\/postgresql\.conf$/, '');
+
+    r = await sshRun(runInContainerCmd(cfg.container,
+      "find /opt/software/openGauss -maxdepth 4 -name gs_guc -type f 2>/dev/null | head -1"));
+    const gsGucPath = r.stdout.trim();
+    if (!gsGucPath) throw new Error('未找到 openGauss gs_guc 工具');
+
+    const backupPath = pgConfPath + '.bak.' + stampForFile();
+    r = await sshRun(runInContainerCmd(cfg.container,
+      'cp -a ' + shellEscape(pgConfPath) + ' ' + shellEscape(backupPath)));
+    if (r.code !== 0) throw new Error('备份 postgresql.conf 失败: ' + (r.stderr || r.stdout).slice(0, 300));
+    step('backup', backupPath);
+
+    async function restoreBackup(reason) {
+      const restoreCmd = 'cp -a ' + shellEscape(backupPath) + ' ' + shellEscape(pgConfPath) +
+        ' && systemctl restart ' + shellEscape(unit) + ' 2>&1';
+      const restoreResult = await sshRun(runInContainerCmd(cfg.container, restoreCmd));
+      step('rollback', restoreResult.stdout || restoreResult.stderr);
+      const suffix = restoreResult.code === 0 ? '已恢复原配置' : '恢复原配置也失败';
+      throw new Error(reason + '；' + suffix + ': ' + (restoreResult.stderr || restoreResult.stdout || '').slice(0, 300));
+    }
+
+    for (const key of Object.keys(profile)) {
+      const value = profile[key];
+      const setCmd = shellEscape(gsGucPath) + ' set -D ' + shellEscape(dataDir) +
+        ' -c ' + shellEscape(key + '=' + value) + ' 2>&1';
+      r = await sshRun(runInContainerAs(cfg.container, 'omm', setCmd));
+      step('set-' + key, r.stdout || r.stderr);
+      if (r.code !== 0) await restoreBackup('写入 ' + key + ' 失败');
+    }
+
+    r = await sshRun(runInContainerCmd(cfg.container,
+      'systemctl restart ' + shellEscape(unit) + ' 2>&1'));
+    step('restart-openGauss', r.stdout || r.stderr);
+    if (r.code !== 0) await restoreBackup('重启 openGauss 失败');
+
+    let ready = false;
+    for (let i = 0; i < 20; i++) {
+      const probe = await sshRun(runInContainerCmd(cfg.container,
+        "ss -lnt 2>/dev/null | awk '{print $4}' | grep -E ':5432$' | head -1"));
+      if (probe.stdout.trim()) { ready = true; break; }
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    if (!ready) await restoreBackup('openGauss 重启后 20 秒内未监听 5432');
+
+    let sqlCheck;
+    try {
+      sqlCheck = await runOpenGaussGsql('SELECT 1;');
+    } catch (err) {
+      await restoreBackup('openGauss SQL 验证失败: ' + (err.message || err));
+    }
+    step('verify', '5432 已监听，SELECT 1 = ' + sqlCheck);
+
+    return { ok: true, backupPath, dataDir, profile, sqlCheck, logs };
+  }
+
+  // 数据源快照覆盖 conf 后，Docker bind mount 的宿主目录可能保留了错误的权限。
+  // 此操作只修复 Apache 虚拟主机目录并重启 dcim 重新挂载，不修改数据库数据或 dbconfig。
+  async function repairOpenGaussApacheMount() {
+    const APACHE_MOUNT_SOURCE = '/dcim/conf/apache';
+    const APACHE_MOUNT_TARGET = '/www/server/panel/vhost/apache';
+    const HTTPS_CHECK_URL = 'https://127.0.0.1:8086/index.html';
+    const logs = [];
+    const step = (name, output) => {
+      const text = '[' + name + '] ' + String(output || '').trim().split('\n').slice(0, 8).join(' | ').slice(0, 700);
+      logs.push(text);
+      appendLog('gauss-apache-mount-repair ' + text);
+    };
+
+    let r = await sshRun('test -d /dcim/conf/apache');
+    if (r.code !== 0) {
+      throw new Error('/dcim/conf/apache 不是目录，无法安全修复；请先从高斯数据源快照恢复 conf/apache 目录');
+    }
+
+    const mountCmd = 'docker inspect ' + shellEscape(cfg.container) +
+      " --format '{{range .Mounts}}{{if eq .Source \"" + APACHE_MOUNT_SOURCE + "\"}}{{.Destination}}{{end}}{{end}}'";
+    r = await sshRun(mountCmd);
+    const mountTarget = r.stdout.trim();
+    if (r.code !== 0 || mountTarget !== APACHE_MOUNT_TARGET) {
+      throw new Error('dcim Apache 挂载校验失败，期望 ' + APACHE_MOUNT_SOURCE + ' -> ' +
+        APACHE_MOUNT_TARGET + '，实际为 ' + (mountTarget || '未找到'));
+    }
+    step('mount', APACHE_MOUNT_SOURCE + ' -> ' + mountTarget);
+
+    const permissionCmd = [
+      'find /dcim/conf/apache -type d -exec chmod 755 {} +',
+      'find /dcim/conf/apache -type f -exec chmod 644 {} +',
+      'printf "dirs=%s files=%s root_mode=%s\\n" "$(find /dcim/conf/apache -type d | wc -l)" "$(find /dcim/conf/apache -type f | wc -l)" "$(stat -c %a /dcim/conf/apache)"',
+    ].join(' && ');
+    r = await sshRun(permissionCmd);
+    if (r.code !== 0) throw new Error('修复 /dcim/conf/apache 权限失败: ' + (r.stderr || r.stdout).slice(0, 400));
+    step('permissions', r.stdout || r.stderr);
+
+    r = await sshRun('docker restart ' + shellEscape(cfg.container) + ' 2>&1');
+    step('restart-dcim', r.stdout || r.stderr);
+    if (r.code !== 0) throw new Error('重启 dcim 容器失败: ' + (r.stderr || r.stdout).slice(0, 400));
+
+    let mounted = false;
+    for (let i = 0; i < 30; i++) {
+      const state = await sshRun('docker inspect ' + shellEscape(cfg.container) + " -f '{{.State.Running}}'");
+      if (state.stdout.trim() === 'true') {
+        const check = await sshRun(runInContainerCmd(cfg.container,
+          'test -d ' + shellEscape(APACHE_MOUNT_TARGET)));
+        if (check.code === 0) { mounted = true; break; }
+      }
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    if (!mounted) throw new Error('dcim 重启后 30 秒内未恢复 Apache 配置目录挂载');
+    step('container-mount', APACHE_MOUNT_TARGET + ' 已挂载');
+
+    const syntax = await sshRun(runInContainerCmd(cfg.container,
+      '/www/server/apache/bin/httpd -t 2>&1'));
+    step('httpd-test', syntax.stdout || syntax.stderr);
+    if (syntax.code !== 0 || !/Syntax OK/i.test(syntax.stdout || syntax.stderr || '')) {
+      throw new Error('Apache 配置语法检查失败: ' + (syntax.stderr || syntax.stdout).slice(0, 400));
+    }
+
+    let httpCheck = { code: -1, stdout: '', stderr: '' };
+    let headers = '';
+    for (let i = 0; i < 15; i++) {
+      httpCheck = await sshRun('curl -k -s -S -I --max-time 5 ' + shellEscape(HTTPS_CHECK_URL) + " | sed -n '1,12p'");
+      headers = String((httpCheck.stdout || '') + '\n' + (httpCheck.stderr || '')).trim();
+      if (httpCheck.code === 0 && /HTTP\/[0-9.]+ 200/i.test(headers) && /^server:\s*Apache/im.test(headers)) break;
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    step('https', headers);
+    if (httpCheck.code !== 0 || !/HTTP\/[0-9.]+ 200/i.test(headers) || !/^server:\s*Apache/im.test(headers)) {
+      throw new Error('HTTPS 验证失败: ' + headers.slice(0, 500));
+    }
+
+    return {
+      ok: true,
+      mountSource: APACHE_MOUNT_SOURCE,
+      mountTarget: APACHE_MOUNT_TARGET,
+      permissions: { directories: '755', files: '644' },
+      httpHeaders: headers,
+      logs,
+    };
+  }
+
+  async function repairDeviceProtocolSequence() {
+    const phpScript = String.raw`<?php
+require '/www/wwwroot/localhost_8086/wwwroot/src/config.php';
+
+$db = Flight::db();
+$db->exec('SELECT setval(\'"dcim-deviceprotocol_id_seq"\', (SELECT GREATEST(MAX("id"), 1) FROM "dcim-deviceprotocol"), true)');
+
+$maxRow = $db->query('SELECT MAX("id") AS max_id FROM "dcim-deviceprotocol"')->fetch(PDO::FETCH_ASSOC);
+$sequenceRow = $db->query('SELECT last_value FROM public."dcim-deviceprotocol_id_seq"')->fetch(PDO::FETCH_ASSOC);
+
+echo json_encode(array(
+  'max_id' => (int)($maxRow['max_id'] ?: 0),
+  'last_value' => (int)($sequenceRow['last_value'] ?: 0),
+), JSON_UNESCAPED_UNICODE);
+`;
+    const tmpPath = '/tmp/dbmgr-fix-deviceprotocol-sequence.php';
+    const encoded = Buffer.from(phpScript, 'utf8').toString('base64');
+    const inner = [
+      'tmp=' + shellEscape(tmpPath),
+      'echo ' + shellEscape(encoded) + ' | base64 -d > "$tmp"',
+      'cd ' + shellEscape('/www/wwwroot/localhost_8086/wwwroot/src'),
+      'php "$tmp"',
+      'status=$?',
+      'rm -f "$tmp"',
+      'exit $status',
+    ].join('; ');
+    const r = await sshRun(runInContainerCmd(cfg.container, inner));
+    const output = String((r.stdout || '') + '\n' + (r.stderr || '')).trim();
+    if (r.code !== 0) {
+      throw new Error('修复设备协议序列失败: ' + output.slice(0, 500));
+    }
+    const match = output.match(/\{[^{}\r\n]*\}\s*$/);
+    if (!match) throw new Error('修复命令未返回结果: ' + output.slice(0, 500));
+    let result;
+    try { result = JSON.parse(match[0]); }
+    catch (_e) { throw new Error('修复结果格式错误: ' + match[0]); }
+    const response = {
+      ok: true,
+      maxId: Number(result.max_id),
+      lastValue: Number(result.last_value),
+    };
+    appendLog('opengauss deviceprotocol sequence repaired maxId=' + response.maxId +
+      ' lastValue=' + response.lastValue);
+    return response;
+  }
+
+  app.post('/api/db-manager/opengauss/fix-deviceprotocol-sequence', async (_req, res) => {
+    try { res.json(await repairDeviceProtocolSequence()); }
+    catch (e) {
+      appendLog('opengauss/fix-deviceprotocol-sequence 失败: ' + e.message);
+      res.status(400).json({ ok: false, message: e.message });
+    }
+  });
+
   app.get('/api/db-manager/opengauss/access-rules', async (_req, res) => {
     try {
+      const availability = await probeOpenGaussAccessAvailability();
       const files = await locateOpenGaussAccessFiles();
       const text = await readContainerText(files.hbaPath);
       const parsed = accessRules.readManagedRules(text);
-      const service = await probeServiceRunning('opengauss');
       res.json({
         ok: true,
         rules: parsed.rules,
         hasManagedBlock: parsed.hasManagedBlock,
         globalAllowWarning: parsed.globalAllowWarning,
-        serviceRunning: service.running,
-        systemdState: service.raw || 'unknown',
+        serviceRunning: availability.available,
+        systemdState: availability.systemdState,
+        availabilityError: availability.error,
         hbaPath: files.hbaPath,
       });
     } catch (e) {
@@ -11399,6 +11682,24 @@ wssTcp.on('connection', function (ws) {
       res.json(r);
     } catch (e) {
       appendLog('opengauss/init 失败: ' + e.message);
+      res.status(400).json({ ok: false, message: e.message });
+    }
+  });
+
+  app.post('/api/db-manager/opengauss/optimize-memory', async (_req, res) => {
+    try {
+      res.json(await optimizeOpenGaussMemory());
+    } catch (e) {
+      appendLog('opengauss/optimize-memory 失败: ' + e.message);
+      res.status(400).json({ ok: false, message: e.message });
+    }
+  });
+
+  app.post('/api/db-manager/opengauss/repair-apache-mount', async (_req, res) => {
+    try {
+      res.json(await repairOpenGaussApacheMount());
+    } catch (e) {
+      appendLog('opengauss/repair-apache-mount 失败: ' + e.message);
       res.status(400).json({ ok: false, message: e.message });
     }
   });
@@ -11811,12 +12112,16 @@ wssTcp.on('connection', function (ws) {
   // - GET  /api/db-manager/dm/license      查授权信息（SYSDBA 查 V$LICENSE + 探 dm.key 文件）
   // - POST /api/db-manager/dm/upload-key   上传 dm.key（base64 content）→ 备份旧 key → 覆盖 → 重启 DM → 重查
   const DM_KEY_PATH = '/home/dmdba/dmdbms/bin/dm.key'; // 达梦 V8 默认查找位置
+  const APACHE_VHOSTS_PATH = '/www/server/apache/conf/extra/httpd-vhosts.conf';
+  const APACHE_HTTPD_BIN = '/www/server/apache/bin/httpd';
   async function queryDmLicense() {
     if (!dmdbLib) throw new Error('dmdb 驱动未安装');
     const db = cfg.databases.dm || {};
     const sysPw = (db.sysdbaPassword && db.sysdbaPassword !== '') ? db.sysdbaPassword : db.password;
     if (!sysPw) throw new Error('SYSDBA 密码未配置（在「连接信息」弹窗里填 达梦 SYSDBA 密码）');
-    const connStr = 'dm://SYSDBA:' + encodeURIComponent(sysPw) + '@' + (db.host || '127.0.0.1') + ':' + (Number(db.port) || 5236);
+    const connStr = buildDmConnectUrl({
+      username: 'SYSDBA', password: sysPw, host: db.host, port: db.port,
+    });
     let conn;
     try {
       conn = await dmdbLib.getConnection(connStr);
@@ -11914,6 +12219,99 @@ wssTcp.on('connection', function (ws) {
     return { ok: true, uploaded: buf.length, backup: bakPath, restarted: ready, license: license };
   }
 
+  async function uploadDmApacheVhosts(fileName, contentBase64) {
+    if (fileName !== 'httpd-vhosts.conf') throw new Error('只允许上传 httpd-vhosts.conf');
+    const compactBase64 = String(contentBase64 || '').replace(/\s+/g, '');
+    if (!/^[A-Za-z0-9+/]*={0,2}$/.test(compactBase64)) throw new Error('文件内容不是有效的 Base64 数据');
+    const buf = Buffer.from(compactBase64, 'base64');
+    if (buf.length === 0) throw new Error('文件内容为空');
+    if (buf.length > 512 * 1024) throw new Error('httpd-vhosts.conf 不能超过 512KB');
+    if (buf.indexOf(0) >= 0 || buf.toString('utf8').indexOf('\uFFFD') >= 0) {
+      throw new Error('httpd-vhosts.conf 必须是 UTF-8 文本配置文件');
+    }
+
+    const ts = stampForFile();
+    const hostTmp = '/tmp/httpd-vhosts.conf.codex';
+    const hostBackup = '/tmp/httpd-vhosts.conf.bak.' + ts;
+    const containerTmp = '/tmp/httpd-vhosts.conf.codex';
+    const containerBackup = APACHE_VHOSTS_PATH + '.bak.' + ts;
+    const localTmpDir = path.join(__dirname, 'tmp', 'dm-apache-vhosts');
+    const localTmp = path.join(localTmpDir, 'httpd-vhosts.conf.upload-' + ts);
+    fs.mkdirSync(localTmpDir, { recursive: true });
+    fs.writeFileSync(localTmp, buf);
+
+    try {
+      await sftpUpload(localTmp, hostTmp);
+      const hostBackupResult = await sshRun('docker cp ' +
+        shellEscape(cfg.container + ':' + APACHE_VHOSTS_PATH) + ' ' + shellEscape(hostBackup));
+      if (hostBackupResult.code !== 0) {
+        throw new Error('备份宿主机配置失败: ' + (hostBackupResult.stderr || hostBackupResult.stdout).slice(0, 400));
+      }
+
+      const copyResult = await sshRun('docker cp ' + shellEscape(hostTmp) + ' ' +
+        shellEscape(cfg.container + ':' + containerTmp));
+      if (copyResult.code !== 0) {
+        throw new Error('复制配置到 dcim 容器失败: ' + (copyResult.stderr || copyResult.stdout).slice(0, 400));
+      }
+
+      const applyCommand = [
+        'set -e',
+        'cp -a ' + APACHE_VHOSTS_PATH + ' ' + containerBackup,
+        'if install -m 0644 ' + containerTmp + ' ' + APACHE_VHOSTS_PATH + '; then true; else cp -a ' + containerBackup + ' ' + APACHE_VHOSTS_PATH + '; echo INSTALL_FAILED_RESTORED; exit 1; fi',
+        'if ' + APACHE_HTTPD_BIN + ' -t; then true; else status=$?; cp -a ' + containerBackup + ' ' + APACHE_VHOSTS_PATH + '; echo HTTPD_TEST_FAILED_RESTORED; exit "$status"; fi',
+        'rm -f ' + containerTmp,
+      ].join('; ');
+      const applyResult = await sshRun(runInContainerCmd(cfg.container, applyCommand));
+      if (applyResult.code !== 0) {
+        throw new Error('Apache 配置语法检查失败，已恢复容器备份 ' + containerBackup + ': ' +
+          String(applyResult.stdout || applyResult.stderr || '').slice(0, 800));
+      }
+
+      const reloadCommand = [
+        'if ' + APACHE_HTTPD_BIN + ' -k graceful; then echo HTTPD_GRACEFUL_OK; else',
+        'status=$?',
+        'cp -a ' + containerBackup + ' ' + APACHE_VHOSTS_PATH,
+        APACHE_HTTPD_BIN + ' -t || true',
+        APACHE_HTTPD_BIN + ' -k graceful || true',
+        'echo HTTPD_GRACEFUL_FAILED_RESTORED',
+        'exit "$status"',
+        'fi',
+      ].join('; ');
+      const reloadResult = await sshRun(runInContainerCmd(cfg.container, reloadCommand));
+      if (reloadResult.code !== 0) {
+        throw new Error('Apache graceful 重载失败，已恢复容器备份 ' + containerBackup + ': ' +
+          String(reloadResult.stdout || reloadResult.stderr || '').slice(0, 800));
+      }
+
+      const lanHost = String((cfg.ssh && cfg.ssh.host) || '192.168.0.60').trim();
+      const urls = ['https://127.0.0.1:8086/index.html', 'https://' + lanHost + ':8086/index.html'];
+      const checks = [];
+      for (const url of urls) {
+        const probe = await sshRun('curl -k -s -S -I --max-time 12 ' + shellEscape(url) + " | sed -n '1,12p'");
+        const headers = String((probe.stdout || '') + (probe.stderr ? '\n' + probe.stderr : '')).trim();
+        checks.push({
+          url: url,
+          ok: probe.code === 0 && /^HTTP\/\S+\s+200\b/m.test(headers) && /^Server:\s*Apache\b/im.test(headers),
+          headers: headers.slice(0, 1200),
+        });
+      }
+      appendLog('dm Apache vhosts uploaded size=' + buf.length + ' backup=' + containerBackup +
+        ' verified=' + checks.every(c => c.ok));
+      return {
+        ok: true,
+        uploaded: buf.length,
+        containerBackup: containerBackup,
+        hostBackup: hostBackup,
+        checks: checks,
+        verified: checks.every(c => c.ok),
+      };
+    } finally {
+      try { fs.unlinkSync(localTmp); } catch (_e) {}
+      try { await sshRun('rm -f ' + shellEscape(hostTmp)); } catch (_e) {}
+      try { await sshRun(runInContainerCmd(cfg.container, 'rm -f ' + containerTmp)); } catch (_e) {}
+    }
+  }
+
   app.get('/api/db-manager/dm/license', async (_req, res) => {
     try {
       const license = await queryDmLicense();
@@ -11937,9 +12335,20 @@ wssTcp.on('connection', function (ws) {
     }
   });
 
+  app.post('/api/db-manager/dm/upload-httpd-vhosts', async (req, res) => {
+    const b = req.body || {};
+    try {
+      const r = await uploadDmApacheVhosts(String(b.fileName || ''), String(b.contentBase64 || ''));
+      res.json(r);
+    } catch (e) {
+      appendLog('dm/upload-httpd-vhosts 失败: ' + e.message);
+      res.status(400).json({ ok: false, message: e.message });
+    }
+  });
+
   // ===== 数据源切换（Phase B）=====
   // 版本快照存放路径（目标机）：/opt/dcim-datasource-versions/{mysql|opengauss|dm}/
-  //   snapshot.zip          代码快照（localhost_8080 + localhost_8086 + python 三个子目录打包）
+  //   snapshot.zip          代码快照（localhost_8080 + localhost_8086 + python + conf 四个子目录打包）
   //   dbconfig.json         对应版本的数据库连接配置（type/host/port/user/password）
   // 切换目标（宿主机上的 bind mount 源，同步生效到容器）：
   //   /dcim/admin/localhost_8080/  ↔ 容器 /www/wwwroot/localhost_8080/
@@ -11949,6 +12358,9 @@ wssTcp.on('connection', function (ws) {
   const DS_VERSIONS_DIR = '/opt/dcim-datasource-versions';
   const DS_KEYS = ['mysql', 'opengauss', 'dm'];
   const DS_LABELS = { mysql: 'MySQL', opengauss: 'openGauss', dm: '达梦 DM' };
+  // 这些路径由 dcim 容器以“宿主文件 → 容器文件”的 bind mount 方式挂载。
+  // 快照出现 conf/conf/... 双层目录时，Docker 会把空目录挂到文件目标而导致容器无法启动。
+  const DCIM_CONF_REQUIRED_FILES = ['rc.local', 'server.crt', 'server.key', 'wvp_cert.p12'];
   const DS_DEFAULT_DBCONFIG = {
     mysql: {
       type: 'mysql', host: '127.0.0.1', port: 3306, name: 'dcim',
@@ -11988,6 +12400,34 @@ wssTcp.on('connection', function (ws) {
     '/www/python/src/collection/config/dbconfig.json',
   ];
 
+  function validateDcimConfSnapshotEntries(entries) {
+    const nested = entries.filter(entry => entry.indexOf('conf/conf/') === 0);
+    if (nested.length) {
+      throw new Error('快照 conf 目录结构错误（检测到 conf/conf/... 双层目录），请重新从 数据库管理/{MySQL,高斯,达梦}数据库 根目录上传');
+    }
+    const missing = DCIM_CONF_REQUIRED_FILES.filter(name => entries.indexOf('conf/' + name) < 0);
+    if (missing.length) {
+      throw new Error('快照 conf 缺少 Docker 挂载必需文件: ' + missing.join(', '));
+    }
+    if (!entries.some(entry => entry.indexOf('conf/apache/') === 0)) {
+      throw new Error('快照 conf 缺少 apache/ 虚拟主机配置目录');
+    }
+  }
+
+  async function assertDcimConfMountSources() {
+    const checks = [
+      'test -f /dcim/conf/rc.local',
+      'test -f /dcim/conf/server.crt',
+      'test -f /dcim/conf/server.key',
+      'test -f /dcim/conf/wvp_cert.p12',
+      'test -d /dcim/conf/apache',
+    ];
+    const result = await sshRun(checks.join(' && '));
+    if (result.code !== 0) {
+      throw new Error('dcim 配置挂载源类型异常：rc.local/server.crt/server.key/wvp_cert.p12 必须是文件，apache 必须是目录');
+    }
+  }
+
   // 读目标机当前 dbconfig.json，判断当前是哪种数据库
   async function detectCurrentDatasource() {
     const r = await sshRun('cat /dcim/conf/dbconfig.json 2>/dev/null');
@@ -12023,7 +12463,7 @@ wssTcp.on('connection', function (ws) {
     return result;
   }
 
-  // 从目标机当前生产 /dcim/admin + /dcim/python 抓一份基线快照（默认标签 mysql）
+  // 从目标机当前生产 /dcim/admin + /dcim/python + /dcim/conf 抓一份基线快照（默认标签 mysql）
   async function initCurrentBaseline(versionKey) {
     if (!DS_KEYS.includes(versionKey)) throw new Error('非法 version: ' + versionKey);
     const dst = DS_VERSIONS_DIR + '/' + versionKey;
@@ -12031,8 +12471,9 @@ wssTcp.on('connection', function (ws) {
     // 需要 zip 工具；kylin 默认有
     const cmd = [
       'mkdir -p ' + dst,
+      'mkdir -p /dcim/conf',
       'cd /dcim && rm -f ' + shellEscape(zip),
-      'zip -qr ' + shellEscape(zip) + ' admin/localhost_8080 admin/localhost_8086 python' +
+      'zip -qr ' + shellEscape(zip) + ' admin/localhost_8080 admin/localhost_8086 python conf' +
         " -x '*.bak.*' '*.localbak.*' '*.servercopy.*' '*.php1' '*.localbeforepull.*'" +
         " '*/__pycache__/*' '*.pyc' 'php-beast.log' '**/.git/*' '**/.git' '**/.gitignore' '**/.gitattributes'",
       'ls -la ' + shellEscape(zip),
@@ -12119,6 +12560,14 @@ wssTcp.on('connection', function (ws) {
     // 快照就绪校验
     const chk = await sshRun('test -f ' + remoteZip + ' && test -f ' + remoteDbConf + ' && echo READY || echo MISSING');
     if (chk.stdout.trim() !== 'READY') throw new Error('目标版本快照未就绪，请先上传（或跑「抓当前基线」）');
+    // 旧版快照没有 conf/。这类快照切换时保留目标机现有 conf，避免误删 HTTPS、Apache 等配置。
+    const zipEntriesResult = await sshRun('unzip -Z1 ' + shellEscape(remoteZip) + ' 2>&1');
+    if (zipEntriesResult.code !== 0) {
+      throw new Error('无法读取快照目录结构: ' + String(zipEntriesResult.stderr || zipEntriesResult.stdout || '').slice(0, 400));
+    }
+    const zipEntries = String(zipEntriesResult.stdout || '').split(/\r?\n/).filter(Boolean);
+    const snapshotHasConf = zipEntries.some(entry => entry.indexOf('conf/') === 0);
+    if (snapshotHasConf) validateDcimConfSnapshotEntries(zipEntries);
 
     const ts = stampForFile();
     const backupTag = 'ds-switch-' + ts;
@@ -12132,13 +12581,13 @@ wssTcp.on('connection', function (ws) {
     record('stop-services', r.stdout || r.stderr);
 
     try {
-      // 2. 备份 /dcim/admin/localhost_808{0,6} + /dcim/python + /dcim/conf/dbconfig.json
+      // 2. 备份 /dcim/admin/localhost_808{0,6} + /dcim/python + 整个 /dcim/conf
       const bakCmd = [
         'mkdir -p ' + backupDir,
         'cp -a /dcim/admin/localhost_8080 ' + backupDir + '/localhost_8080',
         'cp -a /dcim/admin/localhost_8086 ' + backupDir + '/localhost_8086',
         'cp -a /dcim/python ' + backupDir + '/python',
-        'cp -a /dcim/conf/dbconfig.json ' + backupDir + '/dbconfig.json',
+        'cp -a /dcim/conf ' + backupDir + '/conf',
       ].join(' && ');
       r = await sshRun(bakCmd);
       if (r.code !== 0) throw new Error('备份失败: ' + (r.stderr || r.stdout).slice(0, 400));
@@ -12149,12 +12598,13 @@ wssTcp.on('connection', function (ws) {
         'rm -rf /dcim/admin/localhost_8080/* /dcim/admin/localhost_8080/.[!.]* 2>/dev/null',
         'rm -rf /dcim/admin/localhost_8086/* /dcim/admin/localhost_8086/.[!.]* 2>/dev/null',
         'rm -rf /dcim/python/src /dcim/python/deps 2>/dev/null',
+        snapshotHasConf ? 'rm -rf /dcim/conf/* /dcim/conf/.[!.]* 2>/dev/null' : 'true',
         'true',
       ].join('; ');
       await sshRun(cleanCmd);
-      record('clean', '已清空目标目录');
+      record('clean', snapshotHasConf ? '已清空目标目录（含 conf）' : '已清空应用目录（旧快照保留 conf）');
 
-      // 4. 解压快照到 /dcim/（zip 包内根应有 admin/localhost_8080 / admin/localhost_8086 / python）
+      // 4. 解压快照到 /dcim/（zip 包内根应有 admin/localhost_8080 / admin/localhost_8086 / python / conf）
       // 用 unzip -o 覆盖；unzip 一般宿主机有；容器内不用
       const unzipR = await sshRun('cd /dcim && unzip -o -q ' + remoteZip + ' && echo UNZIP_OK');
       if (!/UNZIP_OK/.test(unzipR.stdout)) {
@@ -12164,6 +12614,19 @@ wssTcp.on('connection', function (ws) {
         if (!/PY_OK/.test(pyR.stdout)) throw new Error('解压失败（unzip 和 python3 都失败）: ' + unzipR.stderr + ' | ' + pyR.stderr);
       }
       record('extract', '快照已解压到 /dcim/');
+
+      if (snapshotHasConf) {
+        // 浏览器打包无法保留 Unix 权限，恢复后收紧私钥/证书包权限并保留 rc.local 可执行。
+        const confPermCmd = [
+          'chown -R root:root /dcim/conf',
+          'find /dcim/conf -type d -exec chmod 755 {} \\;',
+          'find /dcim/conf -type f -exec chmod 644 {} \\;',
+          "find /dcim/conf -type f \\( -name '*.key' -o -name '*.p12' \\) -exec chmod 600 {} \\;",
+          'test ! -f /dcim/conf/rc.local || chmod 755 /dcim/conf/rc.local',
+        ].join(' && ');
+        await sshRun(confPermCmd);
+        record('conf', '已恢复 /dcim/conf（私钥与证书包权限已收紧）');
+      }
 
       // 5. 覆盖 dbconfig.json：所有 dcim 会读的位置都必须写（否则旧 dbconfig 残留会导致 500）
       //   - 宿主 3 处（bind mount 到容器）
@@ -12176,6 +12639,10 @@ wssTcp.on('connection', function (ws) {
         await sshRun('docker cp ' + remoteDbConf + ' ' + cfg.container + ':' + cp);
       }
       record('dbconfig', '已覆盖到 ' + (DS_DBCONFIG_HOST_PATHS.length + DS_DBCONFIG_CONTAINER_PATHS.length) + ' 个位置');
+
+      // Apache 证书、rc.local 等均以宿主文件挂到容器文件；类型异常必须在启动容器服务前失败并回滚。
+      await assertDcimConfMountSources();
+      record('conf-mounts', 'dcim 配置挂载源类型校验通过');
 
       // 6. 权限修复：/dcim/admin 属主是 www:www；/dcim/python 属主是 1000:www
       await sshRun('chown -R www:www /dcim/admin/localhost_8080 /dcim/admin/localhost_8086 2>/dev/null; ' +
@@ -12218,10 +12685,12 @@ wssTcp.on('connection', function (ws) {
         'cp -a ' + backupDir + '/localhost_8086/. /dcim/admin/localhost_8086/',
         'rm -rf /dcim/python/src /dcim/python/deps 2>/dev/null; true',
         'cp -a ' + backupDir + '/python/. /dcim/python/',
-        'cp -f ' + backupDir + '/dbconfig.json /dcim/conf/dbconfig.json',
+        'rm -rf /dcim/conf/* /dcim/conf/.[!.]* 2>/dev/null',
+        'mkdir -p /dcim/conf',
+        'cp -a ' + backupDir + '/conf/. /dcim/conf/',
       ].join(' && ');
       await sshRun(rbCmd);
-      await sshRun('docker cp ' + backupDir + '/dbconfig.json ' + cfg.container +
+      await sshRun('docker cp ' + backupDir + '/conf/dbconfig.json ' + cfg.container +
         ':/www/python/src/collection/config/dbconfig.json');
       await sshRun(runInContainerCmd(cfg.container,
         'systemctl start php-fpm-70 php-fpm-74 httpd dcim 2>&1 || true'));

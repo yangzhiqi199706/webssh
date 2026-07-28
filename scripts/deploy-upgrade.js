@@ -56,6 +56,17 @@ function log(msg) {
   console.log(`[${new Date().toISOString().slice(11, 19)}] ${msg}`);
 }
 
+function createTarArchive(tarPath, tarArgs, fallbackTarArgs) {
+  try {
+    execFileSync('tar', tarArgs, { stdio: 'inherit' });
+  } catch (err) {
+    if (!fallbackTarArgs) throw err;
+    log('当前 tar 不支持 --force-local，使用兼容参数重试');
+    try { fs.unlinkSync(tarPath); } catch (_e) {}
+    execFileSync('tar', fallbackTarArgs, { stdio: 'inherit' });
+  }
+}
+
 function buildTar() {
   const stamp = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14);
   const tarName = `webssh-upgrade-${stamp}.tar.gz`;
@@ -66,12 +77,13 @@ function buildTar() {
       throw new Error(`缺少待上传内容：${entry}`);
     }
   }
-  // 用系统自带的 tar（Git for Windows 自带 GNU tar）
-  // Windows 下要 --force-local，否则 "C:\..." 会被当成远端主机
+  // GNU tar 需要 --force-local 才会把 "C:\..." 视为本地路径；Windows 自带 bsdtar
+  // 不认识该参数，但可直接使用标准参数。
+  const fallbackTarArgs = ['-czf', tarPath, '-C', ROOT, ...PAYLOAD_ENTRIES];
   const tarArgs = process.platform === 'win32'
     ? ['--force-local', '-czf', tarPath, '-C', ROOT, ...PAYLOAD_ENTRIES]
-    : ['-czf', tarPath, '-C', ROOT, ...PAYLOAD_ENTRIES];
-  execFileSync('tar', tarArgs, { stdio: 'inherit' });
+    : fallbackTarArgs;
+  createTarArchive(tarPath, tarArgs, process.platform === 'win32' ? fallbackTarArgs : null);
   const sha = crypto.createHash('sha256').update(fs.readFileSync(tarPath)).digest('hex');
   log(`tar 大小：${(fs.statSync(tarPath).size / 1024).toFixed(1)} KB  sha256=${sha.slice(0, 16)}...`);
   return { tarPath, tarName, sha };

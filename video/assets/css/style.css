@@ -150,7 +150,9 @@ body {
 
 /* 视频分屏 */
 .video-grid {
-  flex: 1; min-height: 0;
+  flex: 0 0 auto;
+  height: clamp(260px, 45vh, 420px);
+  min-height: 260px;
   display: grid; gap: 6px;
   background: #020617;
   border-radius: 10px;
@@ -215,6 +217,9 @@ body {
   color: var(--cyan); font-size: 12px;
   pointer-events: none;
 }
+.tile .tile-overlay[hidden],
+.tile .tile-actions[hidden],
+.tile .tile-loader[hidden] { display: none; }
 
 /* 回放栏 */
 .playback-bar {

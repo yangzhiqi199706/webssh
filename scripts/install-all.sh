@@ -298,7 +298,7 @@ EOF
   else
     # 仅更新 secret（用 python 改 JSON 更安全，没 python 就回退用 sed）
     if command -v python3 >/dev/null 2>&1; then
-      python3 - <<PYUPD
+      VC="$VC" SECRET="$SECRET" python3 - <<'PYUPD'
 import json, os
 p = os.environ['VC']
 with open(p, 'r', encoding='utf-8') as f: d = json.load(f)
