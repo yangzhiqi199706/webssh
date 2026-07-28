@@ -27,6 +27,8 @@ assert.deepStrictEqual(legacy.rules, ['192.168.0.0/24', '192.168.50.0/24']);
 assert.strictEqual(legacy.hasManagedBlock, false);
 assert.strictEqual(legacy.globalAllowWarning, true);
 assert.strictEqual(rules.readManagedRules('local all all trust\n').globalAllowWarning, false);
+assert.strictEqual(rules.readManagedRules('host all all 0.0.0.0/0 sha256 # temporary\n').globalAllowWarning, true);
+assert.strictEqual(rules.readManagedRules('host all all 0.0.0.0/0 sha256x # not sha256\n').globalAllowWarning, false);
 
 const replaced = rules.writeManagedRules(source, ['192.168.50.0/24', '192.168.50.0/24']);
 assert.match(replaced, /# webssh:dcim-cidr-begin/);
@@ -62,5 +64,11 @@ assert.strictEqual(crlfReplaced, 'header comment\r\n' +
   'host    dcim    dcim    192.0.2.0/24    sha256\r\n' +
   '# webssh:dcim-cidr-end\r\n' +
   'host otherapp otherdb 198.51.100.0/24 scram-sha-256\r\n\r\n');
+
+assert.strictEqual(rules.writeManagedRules('local all all trust\n', ['192.0.2.0/24']),
+  'local all all trust\n' +
+  '# webssh:dcim-cidr-begin\n' +
+  'host    dcim    dcim    192.0.2.0/24    sha256\n' +
+  '# webssh:dcim-cidr-end');
 
 console.log('openGauss access rules: OK');
