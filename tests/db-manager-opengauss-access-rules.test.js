@@ -120,13 +120,13 @@ assert.match(uiSource, /function setOpenGaussAccessBusy\(busy\)[\s\S]{0,800}gaAc
 const accessSaveSource = uiSource.slice(
   uiSource.indexOf('async function saveOpenGaussAccessRules'),
   uiSource.indexOf('async function removeOpenGaussAccessRule'));
-assert.match(accessSaveSource, /setOpenGaussAccessBusy\(true\)[\s\S]*finally\s*\{\s*setOpenGaussAccessBusy\(false\);\s*\}/,
-  '保存 CIDR 时必须用统一 busy 状态，并在 finally 恢复到服务状态');
+assert.match(accessSaveSource, /setOpenGaussAccessBusy\(true\)[\s\S]*finally\s*\{\s*if \(requestId === openGaussAccessLoadRequestId\) setOpenGaussAccessBusy\(false\);\s*\}/,
+  '保存 CIDR 时必须用统一 busy 状态，并且只能由当前会话在 finally 恢复');
 const accessRemoveSource = uiSource.slice(
   uiSource.indexOf('async function removeOpenGaussAccessRule'),
   uiSource.indexOf("$('btnCloseGaussAccess')"));
-assert.match(accessRemoveSource, /setOpenGaussAccessBusy\(true\)[\s\S]*finally\s*\{\s*setOpenGaussAccessBusy\(false\);\s*\}/,
-  '删除 CIDR 时必须用统一 busy 状态，并在 finally 恢复到服务状态');
+assert.match(accessRemoveSource, /setOpenGaussAccessBusy\(true\)[\s\S]*finally\s*\{\s*if \(requestId === openGaussAccessLoadRequestId\) setOpenGaussAccessBusy\(false\);\s*\}/,
+  '删除 CIDR 时必须用统一 busy 状态，并且只能由当前会话在 finally 恢复');
 assert.match(uiSource, /encodeURIComponent\(cidr\)/,
   '删除 CIDR 时必须对路径参数编码');
 assert.match(uiSource, /danger-banner">⚠ 存在全网段规则，当前 CIDR 不能构成严格限制/,
@@ -157,15 +157,34 @@ assert.match(accessUiSource, /function limitOpenGaussAccessStatusText[\s\S]{0,60
   '回显的运行输出必须限长');
 assert.match(accessUiSource, /function setOpenGaussAccessStatus[\s\S]{0,400}esc\(text\)/,
   '回显的运行输出必须通过现有转义函数渲染');
-assert.match(accessSaveSource, /const successText = formatOpenGaussAccessSuccess[\s\S]{0,1200}setOpenGaussAccessStatus\(successText, false\)[\s\S]{0,1200}refreshOpenGaussAccessOverview\(successText\)/,
+assert.match(accessSaveSource, /const successText = formatOpenGaussAccessSuccess[\s\S]{0,1200}setOpenGaussAccessStatus\(successText, false\)[\s\S]{0,1200}refreshOpenGaussAccessOverview\(successText, requestId\)/,
   '保存成功后必须先保留成功结果，再单独刷新概览');
-assert.match(accessRemoveSource, /const successText = formatOpenGaussAccessSuccess[\s\S]{0,1200}setOpenGaussAccessStatus\(successText, false\)[\s\S]{0,1200}refreshOpenGaussAccessOverview\(successText\)/,
+assert.match(accessRemoveSource, /const successText = formatOpenGaussAccessSuccess[\s\S]{0,1200}setOpenGaussAccessStatus\(successText, false\)[\s\S]{0,1200}refreshOpenGaussAccessOverview\(successText, requestId\)/,
   '删除成功后必须先保留成功结果，再单独刷新概览');
-assert.match(accessUiSource, /async function refreshOpenGaussAccessOverview\(successText\)[\s\S]{0,1000}概览刷新失败/,
+assert.match(accessUiSource, /async function refreshOpenGaussAccessOverview\(successText, requestId\)[\s\S]{0,1000}概览刷新失败/,
   '概览刷新失败不能把已生效或已删除的操作误报为失败');
 assert.match(accessUiSource, /数据库不会重启/,
   'CIDR 管理必须明确说明不会重启数据库');
 assert.doesNotMatch(accessUiSource, /opengauss\/init/,
   'CIDR 管理不得调用首次启用接口');
+
+assert.match(accessSaveSource, /const requestId = openGaussAccessLoadRequestId;/,
+  '保存 CIDR 必须捕获当前弹窗会话代次');
+assert.match(accessSaveSource, /await jfetch\([\s\S]{0,700}if \(requestId !== openGaussAccessLoadRequestId\) return;/,
+  '保存 CIDR 的旧成功响应不得更新新会话');
+assert.match(accessSaveSource, /catch \(e\) \{\s*if \(requestId !== openGaussAccessLoadRequestId\) return;/,
+  '保存 CIDR 的旧失败响应不得更新新会话');
+assert.match(accessSaveSource, /finally \{\s*if \(requestId === openGaussAccessLoadRequestId\) setOpenGaussAccessBusy\(false\);\s*\}/,
+  '保存 CIDR 的旧 finally 不得解除新会话的 busy 状态');
+assert.match(accessRemoveSource, /const requestId = openGaussAccessLoadRequestId;/,
+  '删除 CIDR 必须捕获当前弹窗会话代次');
+assert.match(accessRemoveSource, /await jfetch\([\s\S]{0,700}if \(requestId !== openGaussAccessLoadRequestId\) return;/,
+  '删除 CIDR 的旧成功响应不得更新新会话');
+assert.match(accessRemoveSource, /catch \(e\) \{\s*if \(requestId !== openGaussAccessLoadRequestId\) return;/,
+  '删除 CIDR 的旧失败响应不得更新新会话');
+assert.match(accessRemoveSource, /finally \{\s*if \(requestId === openGaussAccessLoadRequestId\) setOpenGaussAccessBusy\(false\);\s*\}/,
+  '删除 CIDR 的旧 finally 不得解除新会话的 busy 状态');
+assert.match(accessUiSource, /async function refreshOpenGaussAccessOverview\(successText, requestId\)[\s\S]{0,1200}if \(requestId !== openGaussAccessLoadRequestId\) return;/,
+  '概览刷新在回写前必须确认仍属于当前访问 CIDR 会话');
 
 console.log('openGauss access rules: OK');

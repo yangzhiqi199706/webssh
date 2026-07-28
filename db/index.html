@@ -1057,11 +1057,14 @@ SHOW DATABASES;"></textarea>
         '\n仅重载配置，数据库不会重启。';
     }
 
-    async function refreshOpenGaussAccessOverview(successText) {
+    async function refreshOpenGaussAccessOverview(successText, requestId) {
+      if (requestId !== openGaussAccessLoadRequestId) return;
       try {
         const refreshed = await refreshStatus();
+        if (requestId !== openGaussAccessLoadRequestId) return;
         if (!refreshed) throw new Error('状态接口未返回成功结果');
       } catch (e) {
+        if (requestId !== openGaussAccessLoadRequestId) return;
         setOpenGaussAccessStatus(successText + '\n概览刷新失败：' +
           limitOpenGaussAccessStatusText(e && (e.message || e)), false);
       }
@@ -1130,6 +1133,7 @@ SHOW DATABASES;"></textarea>
     }
 
     async function saveOpenGaussAccessRules(mode) {
+      const requestId = openGaussAccessLoadRequestId;
       const cidr = $('gaAccessCidr').value.trim();
       if (!cidr) {
         setOpenGaussAccessStatus('请先输入 CIDR。', true);
@@ -1144,6 +1148,7 @@ SHOW DATABASES;"></textarea>
         const result = await jfetch(API + '/opengauss/access-rules', {
           method: 'PUT', body: { mode: mode, cidr: cidr },
         });
+        if (requestId !== openGaussAccessLoadRequestId) return;
         if (!result.ok) throw new Error(result.message || '更新访问 CIDR 失败');
         renderOpenGaussAccessRules(result);
         $('gaAccessCidr').value = '';
@@ -1151,15 +1156,17 @@ SHOW DATABASES;"></textarea>
           ? '该网段已存在，未修改配置。'
           : '已生效。');
         setOpenGaussAccessStatus(successText, false);
-        await refreshOpenGaussAccessOverview(successText);
+        await refreshOpenGaussAccessOverview(successText, requestId);
       } catch (e) {
+        if (requestId !== openGaussAccessLoadRequestId) return;
         setOpenGaussAccessStatus('保存失败：' + (e.message || e), true);
       } finally {
-        setOpenGaussAccessBusy(false);
+        if (requestId === openGaussAccessLoadRequestId) setOpenGaussAccessBusy(false);
       }
     }
 
     async function removeOpenGaussAccessRule(cidr) {
+      const requestId = openGaussAccessLoadRequestId;
       const isLastRule = openGaussAccessRuleList.length === 1;
       const notice = isLastRule
         ? '这是最后一个 WebSSH 受管 CIDR。删除后不会保留任何受管的 dcim 访问规则。'
@@ -1171,15 +1178,17 @@ SHOW DATABASES;"></textarea>
         const result = await jfetch(API + '/opengauss/access-rules/' + encodeURIComponent(cidr), {
           method: 'DELETE',
         });
+        if (requestId !== openGaussAccessLoadRequestId) return;
         if (!result.ok) throw new Error(result.message || '删除访问 CIDR 失败');
         renderOpenGaussAccessRules(result);
         const successText = formatOpenGaussAccessSuccess(result, '已删除 ' + cidr + '。');
         setOpenGaussAccessStatus(successText, false);
-        await refreshOpenGaussAccessOverview(successText);
+        await refreshOpenGaussAccessOverview(successText, requestId);
       } catch (e) {
+        if (requestId !== openGaussAccessLoadRequestId) return;
         setOpenGaussAccessStatus('删除失败：' + (e.message || e), true);
       } finally {
-        setOpenGaussAccessBusy(false);
+        if (requestId === openGaussAccessLoadRequestId) setOpenGaussAccessBusy(false);
       }
     }
 
