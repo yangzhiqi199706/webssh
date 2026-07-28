@@ -75,6 +75,7 @@ assert.strictEqual(rules.writeManagedRules('local all all trust\n', ['192.0.2.0/
 
 const serverSource = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
 const deploySource = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'deploy-upgrade.js'), 'utf8');
+const uiSource = fs.readFileSync(path.join(__dirname, '..', 'db', 'index.html'), 'utf8');
 
 assert.match(serverSource, /const accessRules = require\('\.\/lib\/opengauss-access-rules'\);/);
 assert.match(serverSource, /app\.get\('\/api\/db-manager\/opengauss\/access-rules'/);
@@ -93,5 +94,18 @@ assert.match(accessUpdateSource, /Math\.random\(\)/);
 assert.doesNotMatch(accessUpdateSource, /systemctl\s+restart|ALTER USER|gs_guc/);
 assert.match(serverSource, /async function initOpenGauss\(opts\)\s*\{\s*return queueOpenGaussAccessUpdate\(\(\) => initOpenGaussLocked\(opts\)\);/);
 assert.match(deploySource, /'lib',/);
+
+assert.match(uiSource, /btnGaussAccessRules/,
+  'openGauss 卡片应提供独立的访问 CIDR 管理入口');
+assert.match(uiSource, /gaussAccessModal/,
+  '页面应提供访问 CIDR 管理弹窗');
+assert.match(uiSource, /openGaussAccessRules/,
+  '页面应加载 openGauss 的受管访问 CIDR 规则');
+assert.match(uiSource, /saveOpenGaussAccessRules\('replace'\)/,
+  '页面应支持替换受管访问 CIDR');
+assert.match(uiSource, /saveOpenGaussAccessRules\('append'\)/,
+  '页面应支持追加受管访问 CIDR');
+assert.match(uiSource, /opengauss\/access-rules/,
+  '页面应调用固定的 openGauss 访问 CIDR 接口');
 
 console.log('openGauss access rules: OK');

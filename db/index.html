@@ -567,6 +567,33 @@ SHOW DATABASES;"></textarea>
       </div>
     </div>
 
+    <!-- openGauss 已启用后的访问 CIDR 管理弹窗 -->
+    <div class="modal-mask" id="gaussAccessModal" aria-hidden="true">
+      <div class="modal">
+        <div class="modal-head">
+          <h3>openGauss 访问 CIDR</h3>
+          <button class="btn" id="btnCloseGaussAccess" type="button">关闭</button>
+        </div>
+        <div class="modal-body">
+          <div class="hint">
+            此处只管理 WebSSH 写入的 <code>dcim</code> 访问 CIDR。首次启用请使用「启用 &amp; 建 dcim 用户」；后续修改仅重载 <code>pg_hba.conf</code>，<b>不会重启数据库</b>。
+          </div>
+          <label class="field"><span>待添加或替换的 CIDR</span>
+            <input id="gaAccessCidr" placeholder="例如 192.168.50.0/24" autocomplete="off" />
+          </label>
+          <div class="section-title">受管访问规则</div>
+          <div class="kv-list" id="gaAccessRules">
+            <div class="kv-row"><span class="k">状态</span><span class="v">读取中…</span><span></span></div>
+          </div>
+          <div class="actions" style="justify-content:flex-end">
+            <button class="btn" id="btnGaussReplaceCidr" type="button">替换为此 CIDR</button>
+            <button class="btn primary" id="btnGaussAppendCidr" type="button">添加 CIDR</button>
+          </div>
+          <div class="status-box" id="gaAccessStatus" style="display:none"></div>
+        </div>
+      </div>
+    </div>
+
     <!-- openGauss 一键建 WVP 表弹窗 -->
     <div class="modal-mask" id="wvpInitModal" aria-hidden="true">
       <div class="modal">
@@ -919,6 +946,7 @@ SHOW DATABASES;"></textarea>
       // openGauss 专属：一键启用（enable+start+创建 dcim 用户+开局域网白名单）
       if (dbId === 'opengauss') {
         btns += '<button class="btn sm primary" id="btnGaussInit" title="启用 openGauss 并创建 dcim 应用账号 + 开放局域网访问">🚀 启用 &amp; 建 dcim 用户</button>';
+        btns += '<button class="btn sm" id="btnGaussAccessRules" title="替换、添加或删除 openGauss 的受管访问 CIDR">访问 CIDR</button>';
         btns += '<button class="btn sm" id="btnGaussInitWvp" title="在 dcim 库 public schema 里新建 15 张 WVP 业务表 + 初始 admin 账号">🎬 建 WVP 表</button>';
         btns += '<button class="btn sm" id="btnGaussSyncWvp" title="从 MySQL wvp 库把 15 张 WVP 业务表数据同步到 openGauss dcim.public（WVP 服务不动继续用 MySQL）">🔄 同步 WVP 数据</button>';
       }
@@ -930,6 +958,11 @@ SHOW DATABASES;"></textarea>
       actions.querySelectorAll('button[data-svc]').forEach(b => b.addEventListener('click', () => doService(b.dataset.svc, b.dataset.action)));
       const gi = $('btnGaussInit');
       if (gi) gi.addEventListener('click', openGaussInitModal);
+      const ga = $('btnGaussAccessRules');
+      if (ga) {
+        ga.disabled = !info.serviceRunning;
+        ga.addEventListener('click', openGaussAccessRules);
+      }
       const gw = $('btnGaussInitWvp');
       if (gw) gw.addEventListener('click', openWvpInitModal);
       const gs = $('btnGaussSyncWvp');
@@ -987,6 +1020,133 @@ SHOW DATABASES;"></textarea>
         box.innerHTML = '<span class="err">✗ 异常: ' + esc(e.message) + '</span>';
       } finally { btn.disabled = false; }
     });
+    // openGauss 已启用后的受管访问 CIDR：只 reload pg_hba.conf，不重启数据库。
+    let openGaussAccessRuleList = [];
+    let openGaussAccessServiceRunning = false;
+
+    function setOpenGaussAccessStatus(text, isError) {
+      const box = $('gaAccessStatus');
+      box.style.display = '';
+      box.innerHTML = '<span' + (isError ? ' class="err"' : '') + '>' +
+        (isError ? '✗ ' : '✓ ') + esc(text) + '</span>';
+    }
+
+    function setOpenGaussAccessActionDisabled(disabled) {
+      $('btnGaussReplaceCidr').disabled = disabled;
+      $('btnGaussAppendCidr').disabled = disabled;
+    }
+
+    function renderOpenGaussAccessRules(result) {
+      const rules = Array.isArray(result && result.rules) ? result.rules.slice() : [];
+      const list = $('gaAccessRules');
+      openGaussAccessRuleList = rules;
+      let html = '';
+      if (result && result.globalAllowWarning) {
+        html += '<div class="danger-banner">⚠ 存在全网段规则，当前 CIDR 不能构成严格限制</div>';
+      }
+      if (!rules.length) {
+        html += '<div class="kv-row"><span class="k">受管 CIDR</span><span class="v"><span class="pill warn">未配置</span></span><span></span></div>';
+      } else {
+        html += rules.map((cidr) =>
+          '<div class="kv-row"><span class="k">受管 CIDR</span><span class="v mono">' + esc(cidr) +
+          '</span><button class="btn sm danger" type="button" data-remove-cidr="' + esc(cidr) + '"' +
+          (openGaussAccessServiceRunning ? '' : ' disabled') + '>删除</button></div>'
+        ).join('');
+      }
+      list.innerHTML = html;
+      $$('button[data-remove-cidr]', list).forEach((button) => {
+        button.addEventListener('click', () => removeOpenGaussAccessRule(button.dataset.removeCidr));
+      });
+    }
+
+    async function openGaussAccessRules() {
+      $('gaussAccessModal').classList.add('open');
+      $('gaAccessCidr').value = '';
+      $('gaAccessRules').innerHTML = '<div class="kv-row"><span class="k">状态</span><span class="v">读取中…</span><span></span></div>';
+      openGaussAccessRuleList = [];
+      openGaussAccessServiceRunning = false;
+      setOpenGaussAccessActionDisabled(true);
+      setOpenGaussAccessStatus('正在读取受管访问 CIDR…', false);
+      try {
+        const result = await jfetch(API + '/opengauss/access-rules');
+        if (!result.ok) throw new Error(result.message || '读取访问 CIDR 失败');
+        openGaussAccessServiceRunning = !!result.serviceRunning;
+        renderOpenGaussAccessRules(result);
+        setOpenGaussAccessActionDisabled(!openGaussAccessServiceRunning);
+        if (openGaussAccessServiceRunning) {
+          setOpenGaussAccessStatus('CIDR 变更仅重载配置，不重启数据库。', false);
+        } else {
+          setOpenGaussAccessStatus('openGauss 服务未运行，不能修改访问 CIDR。', true);
+        }
+      } catch (e) {
+        setOpenGaussAccessActionDisabled(true);
+        setOpenGaussAccessStatus('读取失败：' + (e.message || e), true);
+      }
+    }
+
+    async function saveOpenGaussAccessRules(mode) {
+      const cidr = $('gaAccessCidr').value.trim();
+      if (!cidr) {
+        setOpenGaussAccessStatus('请先输入 CIDR。', true);
+        $('gaAccessCidr').focus();
+        return;
+      }
+      const actionText = mode === 'replace' ? '替换现有受管 CIDR' : '添加此 CIDR';
+      if (!confirm('确定' + actionText + '？系统只会重载 pg_hba.conf，数据库不会重启。')) return;
+      setOpenGaussAccessActionDisabled(true);
+      setOpenGaussAccessStatus('正在保存并重载访问配置…', false);
+      try {
+        const result = await jfetch(API + '/opengauss/access-rules', {
+          method: 'PUT', body: { mode: mode, cidr: cidr },
+        });
+        if (!result.ok) throw new Error(result.message || '更新访问 CIDR 失败');
+        renderOpenGaussAccessRules(result);
+        $('gaAccessCidr').value = '';
+        if (result.unchanged) {
+          setOpenGaussAccessStatus('该网段已存在，未修改配置。数据库不会重启。', false);
+        } else {
+          const verification = result.verification || {};
+          setOpenGaussAccessStatus('已生效；SELECT 1 = ' + (verification.sqlCheck || '—') + '。仅重载配置，数据库不会重启。', false);
+        }
+        await refreshStatus();
+      } catch (e) {
+        setOpenGaussAccessStatus('保存失败：' + (e.message || e), true);
+      } finally {
+        setOpenGaussAccessActionDisabled(!openGaussAccessServiceRunning);
+      }
+    }
+
+    async function removeOpenGaussAccessRule(cidr) {
+      const isLastRule = openGaussAccessRuleList.length === 1;
+      const notice = isLastRule
+        ? '这是最后一个 WebSSH 受管 CIDR。删除后不会保留任何受管的 dcim 访问规则。'
+        : '将删除 WebSSH 受管的 CIDR ' + cidr + '。';
+      if (!confirm(notice + ' 系统只会重载 pg_hba.conf，数据库不会重启。是否继续？')) return;
+      const buttons = $$('button[data-remove-cidr]', $('gaAccessRules'));
+      buttons.forEach((button) => { button.disabled = true; });
+      setOpenGaussAccessStatus('正在删除并重载访问配置…', false);
+      try {
+        const result = await jfetch(API + '/opengauss/access-rules/' + encodeURIComponent(cidr), {
+          method: 'DELETE',
+        });
+        if (!result.ok) throw new Error(result.message || '删除访问 CIDR 失败');
+        renderOpenGaussAccessRules(result);
+        const verification = result.verification || {};
+        setOpenGaussAccessStatus('已删除 ' + cidr + '；SELECT 1 = ' + (verification.sqlCheck || '—') + '。仅重载配置，数据库不会重启。', false);
+        await refreshStatus();
+      } catch (e) {
+        setOpenGaussAccessStatus('删除失败：' + (e.message || e), true);
+      } finally {
+        $$('button[data-remove-cidr]', $('gaAccessRules')).forEach((button) => {
+          button.disabled = !openGaussAccessServiceRunning;
+        });
+      }
+    }
+
+    $('btnCloseGaussAccess').addEventListener('click', () => $('gaussAccessModal').classList.remove('open'));
+    $('btnGaussReplaceCidr').addEventListener('click', () => saveOpenGaussAccessRules('replace'));
+    $('btnGaussAppendCidr').addEventListener('click', () => saveOpenGaussAccessRules('append'));
+
 
     // ========== openGauss 一键建 WVP 表 ==========
     const WVP_TABLE_LIST = ['wvp_device','wvp_device_alarm','wvp_device_channel','wvp_device_mobile_position',
