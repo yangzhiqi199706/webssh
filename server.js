@@ -10202,6 +10202,7 @@ wssTcp.on('connection', function (ws) {
 (function setupDbManager() {
   const path = require('path');
   const { spawn } = require('child_process');
+  const accessRules = require('./lib/opengauss-access-rules');
   let mysql2, pgLib, dmdbLib;
   try { mysql2 = require('mysql2/promise'); } catch (_e) { mysql2 = null; }
   try { pgLib = require('pg'); } catch (_e) { pgLib = null; }
@@ -10944,15 +10945,169 @@ wssTcp.on('connection', function (ws) {
     } catch (e) { res.status(400).json({ ok: false, message: e.message }); }
   });
 
+  async function locateOpenGaussAccessFiles() {
+    let result = await sshRun(runInContainerCmd(cfg.container,
+      "find /opt/software/openGauss/data -maxdepth 3 -name pg_hba.conf -type f 2>/dev/null | head -1"));
+    const hbaPath = String(result.stdout || '').trim();
+    if (result.code !== 0 || !hbaPath) {
+      throw new Error('未找到 openGauss pg_hba.conf（预期 /opt/software/openGauss/data 下）');
+    }
+
+    result = await sshRun(runInContainerCmd(cfg.container,
+      "find /opt/software/openGauss -maxdepth 4 -name gs_ctl -type f 2>/dev/null | head -1"));
+    const gsCtlPath = String(result.stdout || '').trim();
+    if (result.code !== 0 || !gsCtlPath) {
+      throw new Error('未找到 openGauss gs_ctl 工具（预期 /opt/software/openGauss 下）');
+    }
+
+    return {
+      hbaPath: hbaPath,
+      dataDir: hbaPath.replace(/\/pg_hba\.conf$/, ''),
+      gsCtlPath: gsCtlPath,
+    };
+  }
+
+  async function readContainerText(filePath) {
+    const result = await sshRun(runInContainerCmd(cfg.container,
+      'cat ' + shellEscape(filePath) + ' 2>&1'));
+    if (result.code !== 0) {
+      const detail = String(result.stderr || result.stdout || '').trim().slice(0, 300);
+      throw new Error('读取容器文件失败 ' + filePath + '：' + detail);
+    }
+    return String(result.stdout || '');
+  }
+
+  async function replaceContainerText(filePath, text, backupPath) {
+    const contentBase64 = Buffer.from(String(text), 'utf8').toString('base64');
+    const tempPath = filePath + '.tmp.webssh-cidr.' + Date.now() + '.' + Math.random().toString(16).slice(2);
+    const command = [
+      'cp -a ' + shellEscape(filePath) + ' ' + shellEscape(backupPath),
+      'cp -a ' + shellEscape(filePath) + ' ' + shellEscape(tempPath),
+      'printf %s ' + shellEscape(contentBase64) + ' | base64 -d > ' + shellEscape(tempPath),
+      'mv -f ' + shellEscape(tempPath) + ' ' + shellEscape(filePath),
+    ].join(' && ');
+    const result = await sshRun(runInContainerCmd(cfg.container, command));
+    if (result.code !== 0) {
+      const detail = String(result.stderr || result.stdout || '').trim().slice(0, 300);
+      throw new Error('备份或原子替换容器文件失败 ' + filePath + '：' + detail);
+    }
+    return { backupPath: backupPath };
+  }
+
+  async function reloadOpenGaussAccessRules(files) {
+    const reloadCommand = shellEscape(files.gsCtlPath) + ' reload -D ' +
+      shellEscape(files.dataDir) + ' 2>&1';
+    const result = await sshRun(runInContainerAs(cfg.container, 'omm', reloadCommand));
+    if (result.code !== 0) {
+      const detail = String(result.stderr || result.stdout || '').trim().slice(0, 300);
+      throw new Error('openGauss 重载 pg_hba.conf 失败：' + detail);
+    }
+
+    const sqlCheck = await runOpenGaussGsql('SELECT 1;');
+    if (sqlCheck !== '1') {
+      throw new Error('openGauss SQL 验证失败，预期返回 1，实际：' + String(sqlCheck).slice(0, 300));
+    }
+    return {
+      sqlCheck: sqlCheck,
+      reloadOutput: String(result.stdout || result.stderr || '').trim().slice(0, 300),
+    };
+  }
+
+  let openGaussAccessUpdateTail = Promise.resolve();
+  function queueOpenGaussAccessUpdate(task) {
+    const next = openGaussAccessUpdateTail.then(task, task);
+    // 保持队列可用，不能让一次失败永久阻塞之后的 CIDR 操作。
+    openGaussAccessUpdateTail = next.catch(() => {});
+    return next;
+  }
+
+  async function updateOpenGaussAccessRules(mode, cidr) {
+    return queueOpenGaussAccessUpdate(() => updateOpenGaussAccessRulesLocked(mode, cidr));
+  }
+
+  async function updateOpenGaussAccessRulesLocked(mode, cidr) {
+    const service = await probeServiceRunning('opengauss');
+    if (!service.running) {
+      throw new Error('openGauss 服务未运行（' + (service.raw || 'unknown') + '），拒绝修改访问 CIDR');
+    }
+
+    const files = await locateOpenGaussAccessFiles();
+    const originalText = await readContainerText(files.hbaPath);
+    const parsed = accessRules.readManagedRules(originalText);
+    const normalizedCidr = accessRules.normalizeIpv4Cidr(cidr);
+    let nextRules;
+    if (mode === 'append' && parsed.rules.indexOf(normalizedCidr) >= 0) {
+      return {
+        ok: true,
+        unchanged: true,
+        rules: parsed.rules,
+        globalAllowWarning: parsed.globalAllowWarning,
+        backupPath: null,
+        verification: null,
+      };
+    } else if (mode === 'replace') {
+      nextRules = [normalizedCidr];
+    } else if (mode === 'append') {
+      nextRules = parsed.rules.concat([normalizedCidr]);
+    } else if (mode === 'remove') {
+      if (parsed.rules.indexOf(normalizedCidr) < 0) {
+        const missing = new Error('CIDR 不在 WebSSH 管理的规则中：' + normalizedCidr);
+        missing.statusCode = 404;
+        throw missing;
+      }
+      nextRules = parsed.rules.filter((rule) => rule !== normalizedCidr);
+    } else {
+      throw new Error('不支持的访问 CIDR 更新方式：' + mode);
+    }
+
+    const nextText = accessRules.writeManagedRules(originalText, nextRules);
+    const backupPath = files.hbaPath + '.bak.webssh-cidr.' + stampForFile() + '.' +
+      Date.now() + '.' + Math.random().toString(16).slice(2);
+    await replaceContainerText(files.hbaPath, nextText, backupPath);
+
+    try {
+      const verification = await reloadOpenGaussAccessRules(files);
+      const nextParsed = accessRules.readManagedRules(nextText);
+      return {
+        ok: true,
+        rules: nextParsed.rules,
+        globalAllowWarning: nextParsed.globalAllowWarning,
+        backupPath: backupPath,
+        verification: verification,
+      };
+    } catch (err) {
+      let restoreError = '';
+      try {
+        const restore = await sshRun(runInContainerCmd(cfg.container,
+          'cp -a ' + shellEscape(backupPath) + ' ' + shellEscape(files.hbaPath)));
+        if (restore.code !== 0) {
+          throw new Error(String(restore.stderr || restore.stdout || '').trim().slice(0, 300));
+        }
+        await reloadOpenGaussAccessRules(files);
+      } catch (rollbackErr) {
+        restoreError = String((rollbackErr && rollbackErr.message) || rollbackErr || '未知错误').slice(0, 300);
+      }
+      const failure = String((err && err.message) || err || '未知错误').slice(0, 300);
+      if (restoreError) {
+        throw new Error('更新访问 CIDR 后验证失败：' + failure + '；恢复原配置也失败：' + restoreError);
+      }
+      throw new Error('更新访问 CIDR 后验证失败：' + failure + '；已恢复原配置并重新加载');
+    }
+  }
+
   // ===== openGauss 一键启用 + 建 dcim 应用账号 + 局域网白名单 =====
   // 场景：初始版本的 dcim 容器里 openGauss 是 disabled+inactive，也没有可远程连的应用账号。
   // 本接口完成：启动 opengauss.service → 建/改 dcim 账号 → 改 pg_hba+listen_addresses → 重启，
   // 让 dcim / 局域网客户端可通过 dcim/Gauss@2026 从 <CIDR> 连过来。
   // 路径自适应：50.10 与 0.60 的 gauss home / data dir 目录名不同（app/bin 与 bin，dn 与 single_node）
   async function initOpenGauss(opts) {
+    return queueOpenGaussAccessUpdate(() => initOpenGaussLocked(opts));
+  }
+
+  async function initOpenGaussLocked(opts) {
     opts = opts || {};
     const password = String(opts.password || 'Gauss@2026');
-    const cidr = String(opts.cidr || '192.168.0.0/24');
+    const cidr = accessRules.normalizeIpv4Cidr(opts.cidr || '192.168.0.0/24');
     const dbUser = 'dcim';
     // 简单校验
     if (!/^[A-Za-z0-9.:\/]+$/.test(cidr) || cidr.length > 64) throw new Error('CIDR 格式非法');
@@ -11043,15 +11198,13 @@ wssTcp.on('connection', function (ws) {
     r = await sshRun(runInContainerCmd(cfg.container, laFix));
     step('listen-addresses', r.stdout || r.stderr);
 
-    // 7. pg_hba.conf 加白名单（幂等，只加一次）
-    const hbaLine = 'host    ' + dbUser + '    ' + dbUser + '    ' + cidr + '    sha256';
-    // grep 时把 CIDR 里的 / 转义、单独匹配整行避免子串冲突
-    const cidrEsc = cidr.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
-    const hbaFix = 'grep -qE "^host\\s+' + dbUser + '\\s+' + dbUser + '\\s+' + cidrEsc + '\\s" ' + pgHbaPath +
-      ' || echo ' + shellEscape(hbaLine).slice(1, -1) + ' >> ' + pgHbaPath +
-      ' && tail -5 ' + pgHbaPath;
-    r = await sshRun(runInContainerCmd(cfg.container, hbaFix));
-    step('pg_hba', r.stdout || r.stderr);
+    // 7. pg_hba.conf 写入 WebSSH 受管块。保留非受管规则，初始 CIDR 可随后的独立接口无重启维护。
+    const currentHbaText = await readContainerText(pgHbaPath);
+    const currentRules = accessRules.readManagedRules(currentHbaText).rules;
+    const nextHbaText = accessRules.writeManagedRules(currentHbaText, currentRules.concat([cidr]));
+    const initBackupPath = pgHbaPath + '.bak.webssh-init.' + stampForFile();
+    await replaceContainerText(pgHbaPath, nextHbaText, initBackupPath);
+    step('pg_hba', '已写入 WebSSH 受管 CIDR 块，备份：' + initBackupPath);
 
     // 8. 重启 opengauss 让 listen_addresses + pg_hba 生效
     r = await sshRun(runInContainerCmd(cfg.container, 'systemctl restart opengauss 2>&1'));
@@ -11095,6 +11248,53 @@ wssTcp.on('connection', function (ws) {
       logs,
     };
   }
+
+  app.get('/api/db-manager/opengauss/access-rules', async (_req, res) => {
+    try {
+      const files = await locateOpenGaussAccessFiles();
+      const text = await readContainerText(files.hbaPath);
+      const parsed = accessRules.readManagedRules(text);
+      const service = await probeServiceRunning('opengauss');
+      res.json({
+        ok: true,
+        rules: parsed.rules,
+        hasManagedBlock: parsed.hasManagedBlock,
+        globalAllowWarning: parsed.globalAllowWarning,
+        serviceRunning: service.running,
+        systemdState: service.raw || 'unknown',
+        hbaPath: files.hbaPath,
+      });
+    } catch (e) {
+      appendLog('opengauss/access-rules 读取失败: ' + e.message);
+      res.status(400).json({ ok: false, message: e.message });
+    }
+  });
+
+  app.put('/api/db-manager/opengauss/access-rules', async (req, res) => {
+    const body = req.body || {};
+    const mode = String(body.mode || '');
+    if (mode !== 'replace' && mode !== 'append') {
+      return res.status(400).json({ ok: false, message: 'mode 只能是 replace 或 append' });
+    }
+    try {
+      const result = await updateOpenGaussAccessRules(mode, body.cidr);
+      res.json(result);
+    } catch (e) {
+      appendLog('opengauss/access-rules 更新失败: ' + e.message);
+      res.status(400).json({ ok: false, message: e.message });
+    }
+  });
+
+  app.delete('/api/db-manager/opengauss/access-rules/:cidr', async (req, res) => {
+    try {
+      const cidr = decodeURIComponent(req.params.cidr || '');
+      const result = await updateOpenGaussAccessRules('remove', cidr);
+      res.json(result);
+    } catch (e) {
+      appendLog('opengauss/access-rules 删除失败: ' + e.message);
+      res.status(e.statusCode === 404 ? 404 : 400).json({ ok: false, message: e.message });
+    }
+  });
 
   app.post('/api/db-manager/opengauss/init', async (req, res) => {
     const b = req.body || {};

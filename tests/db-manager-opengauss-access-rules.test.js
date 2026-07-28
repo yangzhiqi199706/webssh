@@ -1,6 +1,8 @@
 'use strict';
 
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
 const rules = require('../lib/opengauss-access-rules');
 
 const source = [
@@ -70,5 +72,26 @@ assert.strictEqual(rules.writeManagedRules('local all all trust\n', ['192.0.2.0/
   '# webssh:dcim-cidr-begin\n' +
   'host    dcim    dcim    192.0.2.0/24    sha256\n' +
   '# webssh:dcim-cidr-end');
+
+const serverSource = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+const deploySource = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'deploy-upgrade.js'), 'utf8');
+
+assert.match(serverSource, /const accessRules = require\('\.\/lib\/opengauss-access-rules'\);/);
+assert.match(serverSource, /app\.get\('\/api\/db-manager\/opengauss\/access-rules'/);
+assert.match(serverSource, /app\.put\('\/api\/db-manager\/opengauss\/access-rules'/);
+assert.match(serverSource, /app\.delete\('\/api\/db-manager\/opengauss\/access-rules\/:cidr'/);
+assert.match(serverSource, /files\.gsCtlPath[\s\S]{0,100}reload -D/);
+assert.match(serverSource, /const cidr = accessRules\.normalizeIpv4Cidr\(opts\.cidr \|\| '192\.168\.0\.0\/24'\);/);
+assert.match(serverSource, /queueOpenGaussAccessUpdate/);
+assert.match(serverSource, /mode === 'append' && parsed\.rules\.indexOf\(normalizedCidr\) >= 0/);
+assert.match(serverSource, /statusCode = 404/);
+const accessUpdateSource = serverSource.slice(
+  serverSource.indexOf('async function updateOpenGaussAccessRules('),
+  serverSource.indexOf('// ===== openGauss 一键启用'));
+assert.match(accessUpdateSource, /shellEscape\(backupPath\)[\s\S]{0,220}reloadOpenGaussAccessRules\(files\)/);
+assert.match(accessUpdateSource, /Math\.random\(\)/);
+assert.doesNotMatch(accessUpdateSource, /systemctl\s+restart|ALTER USER|gs_guc/);
+assert.match(serverSource, /async function initOpenGauss\(opts\)\s*\{\s*return queueOpenGaussAccessUpdate\(\(\) => initOpenGaussLocked\(opts\)\);/);
+assert.match(deploySource, /'lib',/);
 
 console.log('openGauss access rules: OK');
