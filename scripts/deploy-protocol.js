@@ -64,6 +64,152 @@ if (!PASSWORD) {
 function log(m) { console.log(`[${new Date().toISOString().slice(11, 19)}] ${m}`); }
 function die(m) { console.error('[失败] ' + m); process.exit(1); }
 
+function buildTarArguments(tarPath, workingDirectory, entries, useForceLocal) {
+  return (useForceLocal ? ['--force-local'] : []).concat([
+    '-czf', tarPath, '-C', workingDirectory,
+  ], entries);
+}
+
+function shouldRetryWithoutForceLocal(error) {
+  return /option\s+--force-local\s+is\s+not\s+supported/i.test(String(error.stderr || ''));
+}
+
+function createTarArchive(tarPath, workingDirectory, entries) {
+  const useForceLocal = process.platform === 'win32';
+  const tarArgs = buildTarArguments(tarPath, workingDirectory, entries, useForceLocal);
+  try {
+    // 仅在 Windows 首次调用时捕获 stderr，用于精确识别不支持 --force-local 的 tar。
+    execFileSync('tar', tarArgs, { stdio: useForceLocal ? ['ignore', 'inherit', 'pipe'] : 'inherit' });
+  } catch (error) {
+    if (useForceLocal && shouldRetryWithoutForceLocal(error)) {
+      log('当前 tar 不支持 --force-local，省略该参数后重试');
+      execFileSync('tar', buildTarArguments(tarPath, workingDirectory, entries, false), { stdio: 'inherit' });
+      return;
+    }
+    if (useForceLocal && error && error.stderr) process.stderr.write(String(error.stderr));
+    throw error;
+  }
+}
+
+function protocolMainSyncEntries() {
+  return [
+    'server.js',
+    'index.html',
+    'login.html',
+    'package.json',
+    'package-lock.json',
+    'lib',
+    'video',
+  ];
+}
+
+const MAIN_SYNC_ENTRIES = protocolMainSyncEntries();
+
+function createMainSyncDirectorySwap(mainSync, appDir, entry, stamp) {
+  const requiredFiles = entry === 'lib'
+    ? ['dcim-wvp.js', 'dcim-wvp-runtime.js']
+    : entry === 'video'
+      ? ['index.html', 'assets/js/video-runtime.js', 'assets/css/style.css']
+      : null;
+  if (!requiredFiles) throw new Error('不支持的主壳目录切换: ' + entry);
+  const source = `${mainSync}/${entry}`;
+  const target = `${appDir}/${entry}`;
+  const staged = `${appDir}/.${entry}.stage-${stamp}`;
+  const backup = `${appDir}/.${entry}.backup-${stamp}`;
+  const checks = requiredFiles.map((file) => `test -f ${staged}/${file}`).join(' && ');
+  return {
+    entry: entry,
+    staged: staged,
+    backup: backup,
+    stage: `rm -rf ${staged}; if ! test -d ${source} || ! cp -a ${source} ${staged} || ! (${checks}); then rm -rf ${staged}; exit 1; fi`,
+    switch: `if [ -e ${backup} ]; then rm -rf ${backup}; fi; if [ -e ${target} ]; then mv ${target} ${backup}; fi; if mv ${staged} ${target} && test -d ${target}; then true; else if [ -e ${backup} ]; then rm -rf ${target}; mv ${backup} ${target}; else rm -rf ${target}; fi; rm -rf ${staged}; exit 1; fi`,
+    rollback: `if [ -e ${backup} ]; then rm -rf ${target} && mv ${backup} ${target}; else rm -rf ${target}; fi; rm -rf ${staged}`,
+    cleanup: `rm -rf ${backup} ${staged}`,
+  };
+}
+
+function createMainSyncReleasePlan(appDir, stamp, service, httpPort) {
+  const entries = [
+    'server.js', 'index.html', 'login.html', 'package.json', 'package-lock.json',
+    'node_modules', 'lib', 'video', 'snmp-bundle', 'proto-conv', 'db',
+  ];
+  const backup = `${appDir}/.main-sync-backup-${stamp}`;
+  const backupSteps = entries.map((entry) => {
+    const target = `${appDir}/${entry}`;
+    return `if [ -e ${target} ]; then cp -a ${target} ${backup}/${entry}; touch ${backup}/.${entry}.exists; fi`;
+  });
+  const restoreSteps = entries.map((entry) => {
+    const target = `${appDir}/${entry}`;
+    return `if [ -e ${backup}/.${entry}.exists ]; then rm -rf ${target}; cp -a ${backup}/${entry} ${target}; else rm -rf ${target}; fi`;
+  });
+  restoreSteps.push(`rm -rf ${appDir}/.lib.stage-${stamp} ${appDir}/.lib.backup-${stamp} ${appDir}/.video.stage-${stamp} ${appDir}/.video.backup-${stamp}`);
+  return {
+    backup: backup,
+    backupCommand: `set -e; rm -rf ${backup}; mkdir -p ${backup}; ${backupSteps.join('; ')}`,
+    restoreCommand: `set -e; ${restoreSteps.join('; ')}`,
+    cleanupCommand: `rm -rf ${backup}`,
+    recoveryCommands: [
+      `set -e; ${restoreSteps.join('; ')}`,
+      `systemctl restart ${service}`,
+      `systemctl is-active ${service}`,
+      `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${httpPort}/health`,
+    ],
+  };
+}
+
+function recoverMainSyncRelease(conn, runExec, releasePlan, originalError) {
+  const commands = releasePlan.recoveryCommands;
+  const stages = [
+    '恢复主壳内容',
+    '重启主服务',
+    '确认主服务状态',
+    '确认主服务健康检查',
+  ];
+  const originalMessage = originalError && originalError.message ? originalError.message : String(originalError);
+
+  function failure(stage, result) {
+    const detail = result && typeof result.code !== 'undefined'
+      ? '（exit=' + result.code + '，输出=' + String(result.stdout || '').trim() + '）'
+      : result && result.message ? '（' + result.message + '）' : '';
+    return new Error('回滚失败：' + stage + detail + '；原始部署失败：' + originalMessage);
+  }
+
+  return (async function () {
+    let result;
+    try {
+      result = await runExec(conn, commands[0], { allowNonZero: true });
+    } catch (error) {
+      throw failure(stages[0], error);
+    }
+    if (!result || result.code !== 0) throw failure(stages[0], result);
+
+    try {
+      result = await runExec(conn, commands[1], { allowNonZero: true });
+    } catch (error) {
+      throw failure(stages[1], error);
+    }
+    if (!result || result.code !== 0) throw failure(stages[1], result);
+
+    try {
+      result = await runExec(conn, commands[2], { allowNonZero: true });
+    } catch (error) {
+      throw failure(stages[2], error);
+    }
+    if (!result || result.code !== 0 || String(result.stdout || '').trim() !== 'active') {
+      throw failure(stages[2], result);
+    }
+
+    try {
+      result = await runExec(conn, commands[3], { allowNonZero: true });
+    } catch (error) {
+      throw failure(stages[3], error);
+    }
+    if (!result || result.code !== 0 || String(result.stdout || '').trim() !== '200') {
+      throw failure(stages[3], result);
+    }
+  }());
+}
+
 function sha256File(p) {
   const h = crypto.createHash('sha256');
   h.update(fs.readFileSync(p));
@@ -139,11 +285,12 @@ function buildPackage() {
   // 6) 主壳同步素材（让 install-protocol.sh 之后由 deploy-protocol.js 走 SFTP 推送）
   if (!SKIP_MAIN_SYNC) {
     fs.mkdirSync(path.join(releaseDir, 'main-sync'));
-    fs.copyFileSync(path.join(ROOT, 'server.js'), path.join(releaseDir, 'main-sync', 'server.js'));
-    fs.copyFileSync(path.join(ROOT, 'index.html'), path.join(releaseDir, 'main-sync', 'index.html'));
-    fs.copyFileSync(path.join(ROOT, 'login.html'), path.join(releaseDir, 'main-sync', 'login.html'));
-    fs.copyFileSync(path.join(ROOT, 'package.json'), path.join(releaseDir, 'main-sync', 'package.json'));
-    fs.copyFileSync(path.join(ROOT, 'package-lock.json'), path.join(releaseDir, 'main-sync', 'package-lock.json'));
+    MAIN_SYNC_ENTRIES.forEach((entry) => {
+      const source = path.join(ROOT, entry);
+      const target = path.join(releaseDir, 'main-sync', entry);
+      if (fs.statSync(source).isDirectory()) copyDirFiltered(source, target, () => true);
+      else fs.copyFileSync(source, target);
+    });
     // http-proxy 整个模块（连同它的依赖）
     fs.mkdirSync(path.join(releaseDir, 'main-sync', 'node_modules'));
     copyDirFiltered(
@@ -203,10 +350,7 @@ function buildPackage() {
   // 7) 打 tar.gz
   const tarPath = path.join(distDir, `${releaseName}.tar.gz`);
   log(`打 tar.gz: ${tarPath}`);
-  const tarArgs = process.platform === 'win32'
-    ? ['--force-local', '-czf', tarPath, '-C', stageRoot, releaseName]
-    : ['-czf', tarPath, '-C', stageRoot, releaseName];
-  execFileSync('tar', tarArgs, { stdio: 'inherit' });
+  createTarArchive(tarPath, stageRoot, [releaseName]);
   log(`tar 大小: ${(fs.statSync(tarPath).size / 1024 / 1024).toFixed(1)} MB`);
   // 顺手清理 stage
   fs.rmSync(releaseDir, { recursive: true, force: true });
@@ -335,6 +479,8 @@ async function main() {
   // 2. 连接
   log(`连接 ${USER}@${HOST}:${PORT}...`);
   const conn = await connect();
+  const directorySwaps = [];
+  let mainSyncRelease = null;
   try {
     // 前置检查
     await exec(conn, `test -d ${INSTALL_DIR} && test -d ${INSTALL_DIR}/app && test -x ${INSTALL_DIR}/runtime/node/bin/node && echo webssh 主服务已就位`);
@@ -360,17 +506,27 @@ async function main() {
     // 6. 主壳代码同步（在协议助手装好之后再做，避免 Node 还没起来反代就被引）
     if (!SKIP_MAIN_SYNC) {
       const mainSync = `${remoteWork}/main-sync`;
-      log('同步主壳代码（server.js / index.html / http-proxy 模块）...');
+      log('同步主壳代码（server.js / lib / video / http-proxy 模块）...');
       await exec(conn, `test -d ${mainSync} && echo main-sync OK`);
       // 备份原 app/server.js index.html，覆盖
       const stamp = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14);
+      const releasePlan = createMainSyncReleasePlan(`${INSTALL_DIR}/app`, stamp, SERVICE, HTTP_PORT);
+      await exec(conn, releasePlan.backupCommand);
+      mainSyncRelease = releasePlan;
       await exec(conn, `cp -a ${INSTALL_DIR}/app/server.js ${INSTALL_DIR}/app/server.js.bak-${stamp}`);
       await exec(conn, `cp -a ${INSTALL_DIR}/app/index.html ${INSTALL_DIR}/app/index.html.bak-${stamp}`);
-      await exec(conn, `cp -f ${mainSync}/server.js ${INSTALL_DIR}/app/server.js`);
-      await exec(conn, `cp -f ${mainSync}/index.html ${INSTALL_DIR}/app/index.html`);
-      await exec(conn, `cp -f ${mainSync}/login.html ${INSTALL_DIR}/app/login.html`);
-      await exec(conn, `cp -f ${mainSync}/package.json ${INSTALL_DIR}/app/package.json`);
-      await exec(conn, `cp -f ${mainSync}/package-lock.json ${INSTALL_DIR}/app/package-lock.json`);
+
+      for (const entry of ['lib', 'video']) {
+        const swap = createMainSyncDirectorySwap(mainSync, `${INSTALL_DIR}/app`, entry, stamp);
+        await exec(conn, swap.stage);
+        await exec(conn, swap.switch);
+        directorySwaps.push(swap);
+      }
+      for (const entry of MAIN_SYNC_ENTRIES) {
+        const source = `${mainSync}/${entry}`;
+        const target = `${INSTALL_DIR}/app/${entry}`;
+        if (entry !== 'lib' && entry !== 'video') await exec(conn, `cp -f ${source} ${target}`);
+      }
       // 拷 http-proxy + 它的依赖到 app/node_modules
       await exec(conn, `cp -a ${mainSync}/node_modules/. ${INSTALL_DIR}/app/node_modules/`);
       await exec(conn, `ls ${INSTALL_DIR}/app/node_modules/http-proxy/package.json && ${INSTALL_DIR}/runtime/node/bin/node -e "console.log('http-proxy', require('/opt/webssh/app/node_modules/http-proxy/package.json').version)"`);
@@ -423,6 +579,16 @@ async function main() {
     const h4 = await exec(conn, `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${HTTP_PORT}${PROTOCOL_PREFIX}/static/common.css`, { allowNonZero: true });
     log(`GET http://127.0.0.1:${HTTP_PORT}${PROTOCOL_PREFIX}/static/common.css -> ${h4.stdout.trim()}`);
 
+    // 主服务和探活都已成功，才删除保留的旧 lib/video 目录。
+    for (const swap of directorySwaps) {
+      await exec(conn, swap.cleanup, { allowNonZero: true });
+    }
+    directorySwaps.length = 0;
+    if (mainSyncRelease) {
+      await exec(conn, mainSyncRelease.cleanupCommand, { allowNonZero: true });
+      mainSyncRelease = null;
+    }
+
     // 8. 清理
     await exec(conn, `rm -f ${remoteTar}`);
     await exec(conn, `rm -rf ${remoteWork}`);
@@ -430,6 +596,17 @@ async function main() {
     log('');
     log('✅ 部署完成');
     log(`浏览器访问: http://${HOST}:${HTTP_PORT}/ -> 左栏「协议助手」`);
+  } catch (error) {
+    if (mainSyncRelease) {
+      log('主壳同步失败，按完整发布备份恢复 ...');
+      await recoverMainSyncRelease(conn, exec, mainSyncRelease, error);
+    } else if (directorySwaps.length) {
+      log('主壳目录同步失败，恢复保留的 lib/video ...');
+      for (let index = directorySwaps.length - 1; index >= 0; index--) {
+        await exec(conn, directorySwaps[index].rollback, { allowNonZero: true });
+      }
+    }
+    throw error;
   } finally {
     conn.end();
   }

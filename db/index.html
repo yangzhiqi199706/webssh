@@ -593,6 +593,32 @@ SHOW DATABASES;"></textarea>
         </div>
       </div>
     </div>
+    <!-- WVP openGauss 运行状态弹窗 -->
+    <div class="modal-mask" id="wvpRuntimeModal" aria-hidden="true">
+      <div class="modal">
+        <div class="modal-head">
+          <h3>WVP openGauss 运行状态</h3>
+          <button class="btn" id="btnCloseWvpRuntime" type="button">关闭</button>
+        </div>
+        <div class="modal-body">
+          <div class="hint">仅显示服务、监听、数据源和数据库计数等安全状态，不显示连接串、密码、环境变量或日志正文。</div>
+          <div class="section-title">整体状态</div>
+          <div class="kv-list" id="wvpRuntimeOverall">
+            <div class="kv-row"><span class="k">状态</span><span class="v">加载中…</span><span></span></div>
+          </div>
+          <div class="section-title">六项检查</div>
+          <div class="kv-list" id="wvpRuntimeChecks">
+            <div class="kv-row"><span class="k">检查</span><span class="v">加载中…</span><span></span></div>
+          </div>
+          <div class="danger-banner">⚠ 重启会使视频服务短暂中断，确认前请通知正在观看或接入设备的用户。</div>
+          <div class="actions" style="justify-content:flex-end">
+            <button class="btn" id="btnRefreshWvpRuntime" type="button">刷新状态</button>
+            <button class="btn danger" id="btnRestartWvp" type="button">重启 WVP</button>
+          </div>
+          <div class="status-box" id="wvpRuntimeActionStatus" style="display:none"></div>
+        </div>
+      </div>
+    </div>
 
     <!-- openGauss 一键建 WVP 表弹窗 -->
     <div class="modal-mask" id="wvpInitModal" aria-hidden="true">
@@ -977,6 +1003,7 @@ SHOW DATABASES;"></textarea>
         btns += '<button class="btn sm" id="btnGaussAccessRules" title="替换、添加或删除 openGauss 的受管访问 CIDR">访问 CIDR</button>';
         btns += '<button class="btn sm danger" id="btnGaussOptimizeMemory" title="按 6GB 服务器档位备份并优化 openGauss 内存配置，然后重启验证">内存优化</button>';
         btns += '<button class="btn sm danger" id="btnGaussRepairApacheMount" title="修复切换数据源后 Apache 挂载权限，并重启 dcim 容器验证网页">修复 Apache 挂载</button>';
+        btns += '<button class="btn sm" id="btnWvpRuntime" title="查看 dcim 容器 WVP openGauss 服务、监听和数据源安全状态">🩺 WVP 高斯状态</button>';
         btns += '<button class="btn sm" id="btnGaussInitWvp" title="在 dcim 库 public schema 里新建 15 张 WVP 业务表 + 初始 admin 账号">🎬 建 WVP 表</button>';
         btns += '<button class="btn sm" id="btnGaussSyncWvp" title="从 MySQL wvp 库把 15 张 WVP 业务表数据同步到 openGauss dcim.public（WVP 服务不动继续用 MySQL）">🔄 同步 WVP 数据</button>';
         btns += '<button class="btn sm danger" id="btnGaussFixDeviceProtocolSeq" title="将设备协议表的 ID 序列同步到当前最大 ID">↻ 修复协议序列</button>';
@@ -1006,6 +1033,8 @@ SHOW DATABASES;"></textarea>
         if (gs) gs.addEventListener('click', openWvpSyncModal);
         const gp = actions.querySelector('#btnGaussFixDeviceProtocolSeq');
         if (gp) gp.addEventListener('click', fixDeviceProtocolSequence);
+        const wr = actions.querySelector('#btnWvpRuntime');
+        if (wr) wr.addEventListener('click', openWvpRuntimeModal);
       }
       if (dbId === 'dm') {
         const dl = actions.querySelector('#btnDmLicense');
@@ -1314,6 +1343,99 @@ SHOW DATABASES;"></textarea>
     });
     $('btnGaussReplaceCidr').addEventListener('click', () => saveOpenGaussAccessRules('replace'));
     $('btnGaussAppendCidr').addEventListener('click', () => saveOpenGaussAccessRules('append'));
+    // ========== WVP openGauss 运行状态 / 受控重启 ==========
+    const WVP_RUNTIME_LABELS = {
+      service: '服务', legacyService: '旧服务', listeners: '监听',
+      datasource: '数据源', database: '数据库', logs: '日志',
+    };
+    let lastWvpRuntimeStatus = null;
+    let wvpRuntimePending = false;
+
+    function openWvpRuntimeModal() {
+      $('wvpRuntimeModal').classList.add('open');
+      $('wvpRuntimeActionStatus').style.display = 'none';
+      $('wvpRuntimeActionStatus').innerHTML = '';
+      renderWvpRuntimeStatus(null);
+      loadWvpRuntimeStatus();
+    }
+    $('btnCloseWvpRuntime').addEventListener('click', () => $('wvpRuntimeModal').classList.remove('open'));
+    $('btnRefreshWvpRuntime').addEventListener('click', loadWvpRuntimeStatus);
+
+    function renderWvpRuntimeStatus(status) {
+      lastWvpRuntimeStatus = status || null;
+      const ready = Boolean(status && status.ready);
+      const restartAllowed = Boolean(status && status.restartAllowed);
+      const unavailable = !status || status.status === 'unavailable';
+      const restartHint = unavailable ? '状态不可用' : (restartAllowed ? '可重启新服务' : '未通过重启前检查');
+      $('wvpRuntimeOverall').innerHTML = [
+        ['运行状态', '<span class="pill ' + (ready ? 'ok' : 'err') + '">' + (ready ? '已就绪' : '未就绪') + '</span>'],
+        ['重启许可', '<span class="pill ' + (restartAllowed ? 'ok' : 'err') + '">' + restartHint + '</span>'],
+      ].map(([k, v]) => '<div class="kv-row"><span class="k">' + k + '</span><span class="v">' + v + '</span><span></span></div>').join('');
+      const checks = (status && status.checks) || {};
+      $('wvpRuntimeChecks').innerHTML = Object.keys(WVP_RUNTIME_LABELS).map((key) => {
+        const item = checks[key] || {};
+        const healthy = Boolean(item.healthy);
+        return '<div class="kv-row"><span class="k">' + WVP_RUNTIME_LABELS[key] + '</span>' +
+          '<span class="v">' + esc(item.summary || '状态不可用') + '</span>' +
+          '<span class="pill ' + (healthy ? 'ok' : 'err') + '">' + (healthy ? '通过' : '失败') + '</span></div>';
+      }).join('');
+      $('btnRestartWvp').disabled = wvpRuntimePending || !restartAllowed;
+      $('btnRefreshWvpRuntime').disabled = wvpRuntimePending;
+    }
+
+    async function loadWvpRuntimeStatus() {
+      try {
+        const r = await jfetch(API + '/opengauss/wvp/runtime-status');
+        renderWvpRuntimeStatus(r.ok ? r.status : (r.status || null));
+        if (!r.ok) {
+          const box = $('wvpRuntimeActionStatus');
+          box.style.display = '';
+          box.innerHTML = '<span class="err">' + (r.timedOut ? '探测超时，状态不可用。' : '状态不可用，未执行重启。') + '</span>';
+        }
+      } catch (_e) {
+        renderWvpRuntimeStatus(null);
+        const box = $('wvpRuntimeActionStatus');
+        box.style.display = '';
+        box.innerHTML = '<span class="err">状态不可用，未执行重启。</span>';
+      }
+    }
+
+    function wvpRestartFeedback(result) {
+      const r = result || {};
+      if (!r.ok && r.message === '请先登录') return { success: false, message: '登录已过期，请重新登录' };
+      if (r.restartCode === 75) return { success: false, message: '旧服务冲突，未执行重启。' };
+      if (r.statusCode === 504) return { success: false, message: '探测超时，未继续轮询。' };
+      if (r.statusCode === 503) return { success: false, message: '状态不可用，未执行重启。' };
+      if (r.ok) return { success: true, message: '✓ WVP 已重启，核心服务和监听已恢复。' };
+      if (r.restartCode === null) return { success: false, message: '重启前检查未通过，未执行重启。' };
+      return { success: false, message: '状态不可用或重启未达到就绪状态，请查看六项检查。' };
+    }
+    function applyWvpRestartFeedback(box, result) {
+      const feedback = wvpRestartFeedback(result);
+      box.innerHTML = feedback.success
+        ? '<span style="color:#a7f3d0">' + feedback.message + '</span>'
+        : '<span class="err">' + feedback.message + '</span>';
+      return feedback;
+    }
+    // WVP_RESTART_FEEDBACK_END
+
+    $('btnRestartWvp').addEventListener('click', async () => {
+      if (!confirm('确定重启 WVP？视频服务会短暂中断（约 5-15 秒）。')) return;
+      wvpRuntimePending = true;
+      renderWvpRuntimeStatus(lastWvpRuntimeStatus);
+      const box = $('wvpRuntimeActionStatus');
+      box.style.display = ''; box.textContent = '正在重启并等待服务、18080 和 5060 恢复…';
+      try {
+        const r = await jfetch(API + '/opengauss/wvp/restart', { method: 'POST' });
+        renderWvpRuntimeStatus(r.status || lastWvpRuntimeStatus);
+        applyWvpRestartFeedback(box, r);
+      } catch (_e) {
+        box.innerHTML = '<span class="err">状态不可用，未执行重启。</span>';
+      } finally {
+        wvpRuntimePending = false;
+        renderWvpRuntimeStatus(lastWvpRuntimeStatus);
+      }
+    });
 
     // ========== openGauss 一键建 WVP 表 ==========
     const WVP_TABLE_LIST = ['wvp_device','wvp_device_alarm','wvp_device_channel','wvp_device_mobile_position',

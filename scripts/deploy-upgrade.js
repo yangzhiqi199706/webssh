@@ -34,36 +34,56 @@ if (!PASSWORD) {
 }
 
 // 需要同步到远端 /opt/webssh/app/ 的条目（相对项目根路径）
-// 完整部署：包含 server.js、package*.json、完整 node_modules、index.html、serial/、sms/、ha/、proto-conv/、video/、snmp-bundle/
-const PAYLOAD_ENTRIES = [
-  'server.js',
-  'index.html',
-  'login.html',
-  'package.json',
-  'package-lock.json',
-  'serial',
-  'sms',
-  'ha',
-  'proto-conv',
-  'video',
-  'db',
-  'lib',
-  'snmp-bundle',
-  'node_modules',
-];
+// 完整部署：包含 server.js、lib/、package*.json、完整 node_modules、各 iframe 子站和 snmp-bundle/
+function upgradePayloadEntries() {
+  return [
+    'server.js',
+    'lib',
+    'index.html',
+    'login.html',
+    'package.json',
+    'package-lock.json',
+    'serial',
+    'sms',
+    'ha',
+    'proto-conv',
+    'video',
+    'db',
+    'snmp-bundle',
+    'node_modules',
+  ];
+}
+
+const PAYLOAD_ENTRIES = upgradePayloadEntries();
 
 function log(msg) {
   console.log(`[${new Date().toISOString().slice(11, 19)}] ${msg}`);
 }
 
-function createTarArchive(tarPath, tarArgs, fallbackTarArgs) {
+function buildTarArguments(tarPath, workingDirectory, entries, useForceLocal) {
+  return (useForceLocal ? ['--force-local'] : []).concat([
+    '-czf', tarPath, '-C', workingDirectory,
+  ], entries);
+}
+
+function shouldRetryWithoutForceLocal(error) {
+  return /option\s+--force-local\s+is\s+not\s+supported/i.test(String(error.stderr || ''));
+}
+
+function createTarArchive(tarPath, workingDirectory, entries) {
+  const useForceLocal = process.platform === 'win32';
+  const tarArgs = buildTarArguments(tarPath, workingDirectory, entries, useForceLocal);
   try {
-    execFileSync('tar', tarArgs, { stdio: 'inherit' });
-  } catch (err) {
-    if (!fallbackTarArgs) throw err;
-    log('当前 tar 不支持 --force-local，使用兼容参数重试');
-    try { fs.unlinkSync(tarPath); } catch (_e) {}
-    execFileSync('tar', fallbackTarArgs, { stdio: 'inherit' });
+    // 仅在 Windows 首次调用时捕获 stderr，用于精确识别不支持 --force-local 的 tar。
+    execFileSync('tar', tarArgs, { stdio: useForceLocal ? ['ignore', 'inherit', 'pipe'] : 'inherit' });
+  } catch (error) {
+    if (useForceLocal && shouldRetryWithoutForceLocal(error)) {
+      log('当前 tar 不支持 --force-local，省略该参数后重试');
+      execFileSync('tar', buildTarArguments(tarPath, workingDirectory, entries, false), { stdio: 'inherit' });
+      return;
+    }
+    if (useForceLocal && error && error.stderr) process.stderr.write(String(error.stderr));
+    throw error;
   }
 }
 
@@ -77,13 +97,8 @@ function buildTar() {
       throw new Error(`缺少待上传内容：${entry}`);
     }
   }
-  // GNU tar 需要 --force-local 才会把 "C:\..." 视为本地路径；Windows 自带 bsdtar
-  // 不认识该参数，但可直接使用标准参数。
-  const fallbackTarArgs = ['-czf', tarPath, '-C', ROOT, ...PAYLOAD_ENTRIES];
-  const tarArgs = process.platform === 'win32'
-    ? ['--force-local', '-czf', tarPath, '-C', ROOT, ...PAYLOAD_ENTRIES]
-    : fallbackTarArgs;
-  createTarArchive(tarPath, tarArgs, process.platform === 'win32' ? fallbackTarArgs : null);
+  // 优先使用 --force-local；部分 Windows tar 不支持时会自动去除此参数重试。
+  createTarArchive(tarPath, ROOT, PAYLOAD_ENTRIES);
   const sha = crypto.createHash('sha256').update(fs.readFileSync(tarPath)).digest('hex');
   log(`tar 大小：${(fs.statSync(tarPath).size / 1024).toFixed(1)} KB  sha256=${sha.slice(0, 16)}...`);
   return { tarPath, tarName, sha };

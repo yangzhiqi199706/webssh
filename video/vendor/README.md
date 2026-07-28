@@ -1,27 +1,18 @@
-# flv.js 离线 vendor
+# flv.js 离线 Vendor
 
-把 flv.js 的 dist 文件放在这里，文件名固定为 `flv.min.js`。
+- 文件：`flv.min.js`
+- 固定版本：`flv.js@1.6.2`
+- 来源：官方 npm 包 `flv.js@1.6.2` 的 `dist/flv.min.js`
+- 许可证：Apache License 2.0，完整文本见同目录 `LICENSE`
+- SHA-256：`733b9b325dbc59871a652c0a84f2f285a2cfd06cf2efcedcd87cb1e194cd1e8f`
 
-## 获取方式
+更新时只允许离线下载并解包官方 npm 包：
 
-**方式一：从 GitHub release 下载**
-- 仓库：https://github.com/bilibili/flv.js
-- 推荐版本：**v1.6.2**（兼容性最好，2024 年的稳定 dist）
-- 下载 `dist/flv.min.js` 后改名为 `flv.min.js` 放到本目录
-
-**方式二：从 npm 镜像下载**
-```bash
-curl -L -o video/vendor/flv.min.js \
-  https://registry.npmmirror.com/flv.js/-/flv.js-1.6.2.tgz
-# 或解压 tgz 后拿 package/dist/flv.min.js
+```powershell
+npm pack flv.js@1.6.2 --pack-destination $env:TEMP
+tar -xzf "$env:TEMP/flv.js-1.6.2.tgz" -C $env:TEMP
+Copy-Item "$env:TEMP/package/dist/flv.min.js" video/vendor/flv.min.js
+Copy-Item "$env:TEMP/package/LICENSE" video/vendor/LICENSE
 ```
 
-**方式三：本地 windows（无外网时）**
-让有外网的电脑下好后丢进 `.offline-downloads/flvjs/flv.min.js`，
-打全栈包时由 `scripts/build-fullstack-on-server.js` 自动塞进 `app/video/vendor/`。
-
-## 注意
-
-- 不要用 v2.x（mpegts.js 重写版，API 变了）
-- 文件大小约 150 KB
-- 不要走 CDN：webssh 部署目标是离线 Linux，外网不通
+不要改用 CDN 或 v2.x。`video/` 会随现有部署目录同步，因此目标离线环境不依赖联网运行时。

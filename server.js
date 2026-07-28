@@ -4,8 +4,536 @@ const http = require('http');
 const net = require('net');
 const WebSocket = require('ws');
 const { Client } = require('ssh2');
+const { createSshCommandRunner, registerWvpRuntimeRoutes } = require('./lib/dcim-wvp-runtime');
+const wvpUtils = require('./lib/dcim-wvp');
 const { spawn } = require('child_process');
 const httpProxy = require('http-proxy');
+
+const runSshCommand = createSshCommandRunner(Client);
+
+function createDcimVideoDefaults() {
+  return {
+    apiBase: 'https://127.0.0.1:18080',
+    username: 'admin',
+    passwordHash: '',
+    timeoutMs: 6000,
+  };
+}
+
+function writeDcimVideoConfig(configPath, config, fileSystem, pathModule, tempSuffix) {
+  const fileOps = fileSystem || fs;
+  const pathOps = pathModule || require('path');
+  const directory = pathOps.dirname(configPath);
+  const suffix = tempSuffix || (Date.now() + '-' + Math.random().toString(16).slice(2));
+  const tempPath = pathOps.join(directory, pathOps.basename(configPath) + '.tmp-' + suffix);
+  const content = Buffer.from(JSON.stringify(config, null, 2) + '\n', 'utf8');
+  let fd = null;
+  let tempCreated = false;
+  try {
+    fileOps.mkdirSync(directory, { recursive: true });
+    fd = fileOps.openSync(tempPath, 'wx', 0o600);
+    tempCreated = true;
+    let offset = 0;
+    while (offset < content.length) {
+      const written = fileOps.writeSync(fd, content, offset, content.length - offset);
+      if (!written) throw new Error('配置临时文件写入不完整');
+      offset += written;
+    }
+    if (typeof fileOps.fsyncSync === 'function') fileOps.fsyncSync(fd);
+    fileOps.closeSync(fd);
+    fd = null;
+    fileOps.chmodSync(tempPath, 0o600);
+    fileOps.renameSync(tempPath, configPath);
+  } catch (error) {
+    if (fd !== null) {
+      try { fileOps.closeSync(fd); } catch (_e) {}
+    }
+    if (tempCreated) {
+      try { fileOps.unlinkSync(tempPath); } catch (_e) {}
+    }
+    throw error;
+  }
+}
+
+function dcimVideoRequestLabel(method, urlPath) {
+  const pathname = String(urlPath || '').split('?')[0] || '/';
+  return String(method || 'GET').toUpperCase() + ' ' + pathname;
+}
+
+function sanitizeDcimVideoSystemConfig(value) {
+  let inputValue = value;
+  if (typeof inputValue === 'string') {
+    try { inputValue = JSON.parse(inputValue); }
+    catch (_e) { return '***'; }
+    if (!inputValue || typeof inputValue !== 'object') return '***';
+  }
+  const seen = new WeakSet();
+
+  function isSensitiveKey(key) {
+    const normalized = String(key || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+    return normalized.indexOf('password') !== -1 || normalized === 'passwd' || normalized === 'pwd' ||
+      normalized === 'pass' || normalized.indexOf('passphrase') !== -1 || normalized.indexOf('passcode') !== -1 ||
+      normalized.indexOf('authpwd') !== -1 || normalized.indexOf('authpass') !== -1 ||
+      normalized.indexOf('authkey') !== -1 || normalized.indexOf('authcode') !== -1 ||
+      normalized.indexOf('accesskey') !== -1 || normalized.indexOf('clientsecret') !== -1 ||
+      normalized.indexOf('clientkey') !== -1 ||
+      normalized.indexOf('secret') !== -1 || normalized.indexOf('token') !== -1 ||
+      normalized.indexOf('authorization') !== -1 || normalized.indexOf('privatekey') !== -1 ||
+      normalized.indexOf('apikey') !== -1 || normalized.indexOf('credential') !== -1;
+  }
+
+  function defineSafeValue(output, key, value) {
+    try {
+      Object.defineProperty(output, key, {
+        configurable: true,
+        enumerable: true,
+        writable: true,
+        value: value,
+      });
+    } catch (_e) {}
+  }
+
+  function safeJsonStringify(input) {
+    try { return JSON.stringify(input); }
+    catch (_e) { return '"***"'; }
+  }
+
+  function hasSensitiveTextAssignment(input) {
+    const assignments = String(input).match(/(?:^|[^a-zA-Z0-9])([a-zA-Z][a-zA-Z0-9_-]*)\s*(?:=|:)\s*[^\s,;\]\[{}()]+/g) || [];
+    return assignments.some(function (assignment) {
+      const keyMatch = /([a-zA-Z][a-zA-Z0-9_-]*)\s*(?:=|:)/.exec(assignment);
+      return keyMatch && isSensitiveKey(keyMatch[1]);
+    });
+  }
+
+  function cloneAndRedact(input) {
+    if (typeof input === 'string') {
+      try {
+        const parsed = JSON.parse(input);
+        if (parsed && typeof parsed === 'object') return safeJsonStringify(cloneAndRedact(parsed));
+      } catch (_e) {}
+      return hasSensitiveTextAssignment(input) ? '***' : input;
+    }
+    if (input === null || typeof input === 'boolean' || typeof input === 'number') return input;
+    if (!input || typeof input !== 'object') return '***';
+    if (seen.has(input)) return '***';
+    seen.add(input);
+
+    try {
+      const isArray = Array.isArray(input);
+      const keys = Object.keys(input);
+      const output = isArray ? [] : {};
+      if (isArray) {
+        const lengthDescriptor = Object.getOwnPropertyDescriptor(input, 'length');
+        const length = lengthDescriptor && lengthDescriptor.value;
+        if (typeof length === 'number' && length >= 0 && length <= 4294967295 && Math.floor(length) === length) {
+          output.length = length;
+        }
+      }
+
+      keys.forEach(function (key) {
+        let descriptor;
+        try { descriptor = Object.getOwnPropertyDescriptor(input, key); }
+        catch (_e) { descriptor = null; }
+        const hasValue = descriptor && Object.prototype.hasOwnProperty.call(descriptor, 'value');
+        const safeValue = hasValue && !isSensitiveKey(key) ? cloneAndRedact(descriptor.value) : '***';
+        defineSafeValue(output, key, safeValue);
+      });
+      return output;
+    } catch (_e) {
+      return '***';
+    } finally {
+      seen.delete(input);
+    }
+  }
+
+  return cloneAndRedact(inputValue);
+}
+
+function registerVideoSystemConfigRoute(app, deps) {
+  const options = deps || {};
+  if (!app || typeof app.get !== 'function') throw new Error('Express app is required');
+  if (typeof options.path !== 'string' || options.path.charAt(0) !== '/') throw new Error('path is required');
+  if (typeof options.callWithAuth !== 'function') throw new Error('callWithAuth is required');
+  if (typeof options.sanitizeSystemConfig !== 'function') throw new Error('sanitizeSystemConfig is required');
+
+  function descriptorValue(input, key) {
+    if (!input || typeof input !== 'object') return '***';
+    try {
+      const descriptor = Object.getOwnPropertyDescriptor(input, key);
+      return descriptor && Object.prototype.hasOwnProperty.call(descriptor, 'value') ? descriptor.value : '***';
+    } catch (_e) {
+      return '***';
+    }
+  }
+
+  function configPayload(input) {
+    if (!input || typeof input !== 'object') return input;
+    try {
+      const descriptor = Object.getOwnPropertyDescriptor(input, 'data');
+      return descriptor && Object.prototype.hasOwnProperty.call(descriptor, 'value') ? descriptor.value : input;
+    } catch (_e) {
+      return input;
+    }
+  }
+
+  app.get(options.path, async function (_req, res) {
+    try {
+      const r = await options.callWithAuth('GET', '/api/server/system/configInfo', null);
+      const safeResponseData = options.sanitizeSystemConfig(descriptorValue(r, 'data'));
+      if (descriptorValue(r, 'ok') !== true) {
+        return res.json({ ok: false, message: '读取 WVP 配置失败', data: safeResponseData });
+      }
+
+      return res.json({ ok: true, data: configPayload(safeResponseData) });
+    } catch (_e) {
+      return res.json({ ok: false, message: '读取 WVP 配置失败', data: '***' });
+    }
+  });
+}
+
+function createDcimVideoSession() {
+  let generation = 0;
+  let cachedToken = '';
+  let lastLoginAt = 0;
+  let lastError = '';
+  return {
+    generation: function () { return generation; },
+    isCurrent: function (requestGeneration) { return requestGeneration === generation; },
+    token: function () { return cachedToken; },
+    lastLoginAt: function () { return lastLoginAt; },
+    lastError: function () { return lastError; },
+    reset: function () {
+      generation++;
+      cachedToken = '';
+      lastLoginAt = 0;
+      lastError = '';
+    },
+    acceptLogin: function (requestGeneration, token, loginAt) {
+      if (requestGeneration !== generation) return false;
+      cachedToken = String(token || '');
+      lastLoginAt = Number(loginAt) || Date.now();
+      lastError = '';
+      return true;
+    },
+    rejectLogin: function (requestGeneration, errorMessage) {
+      if (requestGeneration !== generation) return false;
+      cachedToken = '';
+      lastError = String(errorMessage || '');
+      return true;
+    },
+    setError: function (requestGeneration, errorMessage) {
+      if (requestGeneration !== generation) return false;
+      lastError = String(errorMessage || '');
+      return true;
+    },
+  };
+}
+
+function createLiveStreamGenerationRegistry(options) {
+  const settings = options || {};
+  const configuredMaxEntries = Number(settings.maxEntries);
+  const maxEntries = Number.isFinite(configuredMaxEntries)
+    ? Math.max(1, Math.min(4096, Math.floor(configuredMaxEntries))) : 2048;
+  const configuredMaxPendingEntries = Number(settings.maxPendingEntries);
+  const maxPendingEntries = Number.isFinite(configuredMaxPendingEntries)
+    ? Math.max(1, Math.min(4096, Math.floor(configuredMaxPendingEntries))) : maxEntries;
+  const configuredMaxPendingPerKey = Number(settings.maxPendingPerKey);
+  const defaultMaxPendingPerKey = Math.min(maxPendingEntries, Math.max(1, Math.min(64, Math.floor(maxPendingEntries / 2))));
+  const maxPendingPerKey = Number.isFinite(configuredMaxPendingPerKey)
+    ? Math.max(1, Math.min(maxPendingEntries, Math.floor(configuredMaxPendingPerKey)))
+    : defaultMaxPendingPerKey;
+  const instanceId = settings.instanceId ? String(settings.instanceId)
+    : require('crypto').randomBytes(16).toString('hex');
+  const entries = new Map();
+  const queues = new Map();
+  const pendingByKey = new Map();
+  let totalPending = 0;
+  let sequence = 0;
+
+  function entryKey(source, deviceId, channelId) {
+    return JSON.stringify([String(source || ''), String(deviceId || ''), String(channelId || '')]);
+  }
+
+  function pendingForKey(key) {
+    return pendingByKey.get(key) || 0;
+  }
+
+  function canEnqueue(key) {
+    return totalPending < maxPendingEntries && pendingForKey(key) < maxPendingPerKey;
+  }
+
+  function queueFullError() {
+    const error = new Error('实时点播请求繁忙');
+    error.code = 'LIVE_STREAM_QUEUE_FULL';
+    return error;
+  }
+
+  function releasePending(key) {
+    const pending = pendingForKey(key);
+    if (pending <= 1) pendingByKey.delete(key);
+    else pendingByKey.set(key, pending - 1);
+    totalPending--;
+  }
+
+  function enqueue(key, operation) {
+    if (!canEnqueue(key)) return Promise.reject(queueFullError());
+    totalPending++;
+    pendingByKey.set(key, pendingForKey(key) + 1);
+    const previous = queues.get(key);
+    let result;
+    if (previous) {
+      result = previous.then(function () {
+        return operation();
+      }, function () {
+        return operation();
+      });
+    } else {
+      try {
+        result = Promise.resolve(operation());
+      } catch (error) {
+        result = Promise.reject(error);
+      }
+    }
+    let tail = result.then(function (value) {
+      releasePending(key);
+      if (queues.get(key) === tail) queues.delete(key);
+      return value;
+    }, function () {
+      releasePending(key);
+      if (queues.get(key) === tail) queues.delete(key);
+    });
+    queues.set(key, tail);
+    return result;
+  }
+
+  return {
+    issue: function (source, deviceId, channelId) {
+      const key = entryKey(source, deviceId, channelId);
+      if (!entries.has(key) && entries.size >= maxEntries) return null;
+      sequence++;
+      if (!Number.isSafeInteger(sequence)) throw new Error('实时点播代次已耗尽');
+      const generation = instanceId + ':' + sequence;
+      entries.set(key, {
+        generation: generation,
+      });
+      return generation;
+    },
+    current: function (source, deviceId, channelId) {
+      const entry = entries.get(entryKey(source, deviceId, channelId));
+      return entry ? entry.generation : null;
+    },
+    matches: function (source, deviceId, channelId, generation) {
+      const entry = entries.get(entryKey(source, deviceId, channelId));
+      if (!entry || entry.generation !== String(generation || '')) return false;
+      return true;
+    },
+    clearIfCurrent: function (source, deviceId, channelId, generation) {
+      const key = entryKey(source, deviceId, channelId);
+      const entry = entries.get(key);
+      if (!entry) return false;
+      if (generation != null && entry.generation !== String(generation)) return false;
+      entries.delete(key);
+      return true;
+    },
+    enqueue: function (source, deviceId, channelId, operation) {
+      if (typeof operation !== 'function') throw new Error('实时点播队列操作必须是函数');
+      return enqueue(entryKey(source, deviceId, channelId), operation);
+    },
+    canEnqueue: function (source, deviceId, channelId) {
+      return canEnqueue(entryKey(source, deviceId, channelId));
+    },
+    pendingFor: function (source, deviceId, channelId) {
+      return pendingForKey(entryKey(source, deviceId, channelId));
+    },
+    pendingCount: function () {
+      return totalPending;
+    },
+    size: function () {
+      return entries.size;
+    },
+    queueSize: function () {
+      return queues.size;
+    },
+  };
+}
+
+function registerLivePlaybackRoutes(app, deps) {
+  const options = deps || {};
+  if (!app || typeof app.post !== 'function') throw new Error('Express app is required');
+  if (typeof options.source !== 'string' || !options.source) throw new Error('source is required');
+  if (typeof options.pathPrefix !== 'string' || options.pathPrefix.charAt(0) !== '/') throw new Error('pathPrefix is required');
+  if (typeof options.callWithAuth !== 'function') throw new Error('callWithAuth is required');
+  if (typeof options.rewriteToProxy !== 'function') throw new Error('rewriteToProxy is required');
+  if (!options.liveGenerations || typeof options.liveGenerations.issue !== 'function' ||
+    typeof options.liveGenerations.current !== 'function' || typeof options.liveGenerations.clearIfCurrent !== 'function' ||
+    typeof options.liveGenerations.enqueue !== 'function') {
+    throw new Error('liveGenerations is required');
+  }
+
+  function requestedLiveGeneration(req) {
+    const queryValue = req && req.query ? req.query.liveGeneration : '';
+    const queryGeneration = Array.isArray(queryValue) ? queryValue[0] : queryValue;
+    let headerGeneration = '';
+    if (req && typeof req.get === 'function') {
+      headerGeneration = req.get('x-live-generation') || req.get('live-generation') || '';
+    } else if (req && req.headers) {
+      headerGeneration = req.headers['x-live-generation'] || req.headers['live-generation'] || '';
+    }
+    return String(queryGeneration || headerGeneration || '').trim();
+  }
+
+  function queueCapacityResponse(res) {
+    return res.status(503).json({ ok: false, status: 503, message: '实时点播请求繁忙，请稍后重试' });
+  }
+
+  function isQueueFullError(error) {
+    return Boolean(error && error.code === 'LIVE_STREAM_QUEUE_FULL');
+  }
+
+  const source = options.source;
+  const playPath = options.pathPrefix + '/play/:deviceId/:channelId';
+  const stopPath = options.pathPrefix + '/play/stop/:deviceId/:channelId';
+
+  app.post(playPath, async function (req, res) {
+    const deviceId = String(req.params.deviceId || '');
+    const channelId = String(req.params.channelId || '');
+    if (typeof options.liveGenerations.canEnqueue === 'function' &&
+      !options.liveGenerations.canEnqueue(source, deviceId, channelId)) {
+      return queueCapacityResponse(res);
+    }
+    const liveGeneration = options.liveGenerations.issue(source, deviceId, channelId);
+    if (!liveGeneration) {
+      return res.status(503).json({ ok: false, status: 503, message: '实时点播容量已满，请先停止已有实时流' });
+    }
+    let r;
+    try {
+      r = await options.liveGenerations.enqueue(source, deviceId, channelId, async function () {
+        const did = encodeURIComponent(deviceId);
+        const cid = encodeURIComponent(channelId);
+        const result = await options.callWithAuth('GET', '/api/play/start/' + did + '/' + cid, null);
+        if (!result.ok || !result.data || result.data.code !== 0) {
+          options.liveGenerations.clearIfCurrent(source, deviceId, channelId, liveGeneration);
+        }
+        return result;
+      });
+    } catch (error) {
+      options.liveGenerations.clearIfCurrent(source, deviceId, channelId, liveGeneration);
+      if (isQueueFullError(error)) return queueCapacityResponse(res);
+      return res.status(502).json({ ok: false, status: 502, message: error.message || '上游起播失败' });
+    }
+    if (!r.ok || !r.data || r.data.code !== 0) {
+      return res.json({ ok: false, status: r.status, message: (r.data && r.data.msg) || r.message || ('上游返回 ' + r.status), raw: r.data });
+    }
+    const data = r.data.data || {};
+    const response = {
+      ok: true,
+      liveGeneration: liveGeneration,
+      streamKey: (data.app || 'rtp') + '/' + (data.stream || ''),
+      flvUrl: options.rewriteToProxy(data.flv),
+      hlsUrl: options.rewriteToProxy(data.hls),
+      ssrc: data.ssrc || '',
+      app: data.app || 'rtp',
+      stream: data.stream || '',
+    };
+    if (options.includeMediaServerId) response.mediaServerId = data.mediaServerId || '';
+    return res.json(response);
+  });
+
+  app.post(stopPath, async function (req, res) {
+    const deviceId = String(req.params.deviceId || '');
+    const channelId = String(req.params.channelId || '');
+    if (typeof options.liveGenerations.canEnqueue === 'function' &&
+      !options.liveGenerations.canEnqueue(source, deviceId, channelId)) {
+      return queueCapacityResponse(res);
+    }
+    const requestedGeneration = requestedLiveGeneration(req);
+    const legacyGeneration = requestedGeneration ? null : options.liveGenerations.current(source, deviceId, channelId);
+    let outcome;
+    try {
+      outcome = await options.liveGenerations.enqueue(source, deviceId, channelId, async function () {
+        if (requestedGeneration) {
+          const currentGeneration = options.liveGenerations.current(source, deviceId, channelId);
+          if (currentGeneration && currentGeneration !== requestedGeneration) return { stale: true };
+        }
+        const did = encodeURIComponent(deviceId);
+        const cid = encodeURIComponent(channelId);
+        const r = await options.callWithAuth('GET', '/api/play/stop/' + did + '/' + cid, null);
+        const ok = Boolean(r.ok && r.data && r.data.code === 0);
+        if (ok && requestedGeneration) {
+          options.liveGenerations.clearIfCurrent(source, deviceId, channelId, requestedGeneration);
+        } else if (ok && legacyGeneration) {
+          options.liveGenerations.clearIfCurrent(source, deviceId, channelId, legacyGeneration);
+        }
+        return { result: r };
+      });
+    } catch (error) {
+      if (isQueueFullError(error)) return queueCapacityResponse(res);
+      return res.status(502).json({ ok: false, status: 502, message: error.message || '上游停流失败' });
+    }
+    if (outcome.stale) return res.json({ ok: true, stale: true, message: '' });
+    const r = outcome.result;
+    const ok = Boolean(r.ok && r.data && r.data.code === 0);
+    return res.json({ ok: ok, message: (r.data && r.data.msg) || r.message || '' });
+  });
+}
+
+const liveStreamGenerations = createLiveStreamGenerationRegistry();
+
+function registerDcimVideoConnectionRoutes(app, deps) {
+  const options = deps || {};
+  if (!app || typeof app.get !== 'function' || typeof app.put !== 'function' || typeof app.post !== 'function') {
+    throw new Error('Express app is required');
+  }
+  if (typeof options.getConfig !== 'function') throw new Error('getConfig is required');
+  if (typeof options.setConfig !== 'function') throw new Error('setConfig is required');
+  if (typeof options.writeConfig !== 'function') throw new Error('writeConfig is required');
+  if (typeof options.resetSession !== 'function') throw new Error('resetSession is required');
+  if (typeof options.isAuthed !== 'function') throw new Error('isAuthed is required');
+  if (typeof options.loginDcim !== 'function') throw new Error('loginDcim is required');
+  if (!options.wvpUtils || typeof options.wvpUtils.publicDcimVideoConfig !== 'function' ||
+    typeof options.wvpUtils.mergeDcimVideoConfig !== 'function') {
+    throw new Error('dcim WVP config utilities are required');
+  }
+
+  app.get('/api/dcim-video/connection-config', function (req, res) {
+    if (!options.isAuthed(req)) return res.status(401).json({ ok: false, message: '请先登录' });
+    res.json({ ok: true, config: options.wvpUtils.publicDcimVideoConfig(options.getConfig()) });
+  });
+
+  app.put('/api/dcim-video/connection-config', function (req, res) {
+    if (!options.isAuthed(req)) return res.status(401).json({ ok: false, message: '请先登录' });
+    const previousConfig = options.getConfig();
+    let nextConfig;
+    try {
+      nextConfig = options.wvpUtils.mergeDcimVideoConfig(req.body || {}, previousConfig);
+    } catch (_e) {
+      return res.status(400).json({ ok: false, message: '连接配置无效' });
+    }
+    try {
+      options.setConfig(nextConfig);
+      options.writeConfig();
+    } catch (_e) {
+      options.setConfig(previousConfig);
+      return res.status(500).json({ ok: false, message: '无法保存连接配置' });
+    }
+    options.resetSession();
+    res.json({ ok: true, config: options.wvpUtils.publicDcimVideoConfig(nextConfig) });
+  });
+
+  app.post('/api/dcim-video/test-login', async function (req, res) {
+    if (!options.isAuthed(req)) return res.status(401).json({ ok: false, message: '请先登录' });
+    let ok = false;
+    try {
+      ok = await options.loginDcim();
+    } catch (_e) {}
+    res.status(ok ? 200 : 502).json({
+      ok: ok,
+      status: ok ? 200 : 502,
+      message: ok ? 'WVP 登录成功' : 'WVP 登录失败，请检查账号或密码',
+    });
+  });
+}
 
 const app = express();
 const server = http.createServer(app);
@@ -855,38 +1383,7 @@ function buildTimeInfoResponse(stdout, clientEpochMs) {
 }
 
 function sshExecCommand(cfg, cmd, callback) {
-  const client = new Client();
-  let finished = false;
-  function done(err, result) {
-    if (finished) return;
-    finished = true;
-    try { client.end(); } catch (_e) {}
-    callback(err, result);
-  }
-  client.on('ready', function () {
-    client.exec(cmd, function (err, stream) {
-      if (err) { done(err); return; }
-      let stdout = '';
-      let stderr = '';
-      stream.on('data', function (data) { stdout += data.toString('utf8'); });
-      stream.stderr.on('data', function (data) { stderr += data.toString('utf8'); });
-      stream.on('close', function (code, signal) {
-        done(null, { code: typeof code === 'number' ? code : -1, signal: signal || null, stdout: stdout.trim(), stderr: stderr.trim() });
-      });
-      stream.on('error', done);
-    });
-  });
-  client.on('error', done);
-  client.on('end', function () {
-    if (!finished) done(new Error('SSH connection ended prematurely'));
-  });
-  client.connect({
-    host: cfg.host,
-    port: cfg.port,
-    username: cfg.username,
-    password: cfg.password,
-    readyTimeout: 10000,
-  });
+  return runSshCommand(cfg, cmd, callback);
 }
 
 function remoteJoin(basePath, name) {
@@ -8822,14 +9319,7 @@ wssTcp.on('connection', function (ws) {
   // 录像机回放通常需要约 10 秒完成 SIP INVITE、RTP 收流与媒体流注册。
   const DEFAULT_TIMEOUT_MS = 30000;
 
-  const defaults = {
-    apiBase: 'https://127.0.0.1:18080',
-    username: 'admin',
-    // dcim 库里 wvp_user.password 字段是已经做了一层 hash 的值，登录时直接用它当
-    // password 提交即可（wvp 前端是 md5(明文) 然后等于这个 hash）
-    passwordHash: '551c76780e34e1c1fab9ff85dfc79947',
-    timeoutMs: DEFAULT_TIMEOUT_MS,
-  };
+  const defaults = createDcimVideoDefaults();
 
   let cfg = JSON.parse(JSON.stringify(defaults));
   function readCfg() {
@@ -8840,10 +9330,11 @@ wssTcp.on('connection', function (ws) {
   }
   function writeCfg() {
     try {
-      fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
-      fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
-      try { fs.chmodSync(CONFIG_PATH, 0o600); } catch (_e) {}
-    } catch (e) { console.error('[dcim-video] 写配置失败:', e.message); }
+      writeDcimVideoConfig(CONFIG_PATH, cfg, fs, path);
+    } catch (e) {
+      console.error('[dcim-video] 写配置失败:', e.message);
+      throw e;
+    }
   }
   readCfg();
 
@@ -8863,14 +9354,14 @@ wssTcp.on('connection', function (ws) {
   // dcim wvp 自签证书 + keepAlive
   const dcimAgent = new https.Agent({ keepAlive: true, rejectUnauthorized: false });
 
-  let cachedToken = '';
-  let lastLoginAt = 0;
-  let lastError = '';
+  const session = createDcimVideoSession();
 
-  function dcimRequest(method, urlPath, headers, body) {
+  function dcimRequest(method, urlPath, headers, body, requestGeneration, requestConfig) {
     return new Promise(function (resolve) {
+      const activeGeneration = requestGeneration == null ? session.generation() : requestGeneration;
+      const activeConfig = requestConfig || cfg;
       let urlObj;
-      try { urlObj = new URL(urlPath, cfg.apiBase); }
+      try { urlObj = new URL(urlPath, activeConfig.apiBase); }
       catch (e) { return resolve({ ok: false, status: 0, message: 'URL 构造失败：' + e.message }); }
       const buf = body ? Buffer.from(body, 'utf8') : Buffer.alloc(0);
       const reqOptions = {
@@ -8879,7 +9370,7 @@ wssTcp.on('connection', function (ws) {
         port: urlObj.port || 443,
         path: urlObj.pathname + (urlObj.search || ''),
         agent: dcimAgent,
-        timeout: cfg.timeoutMs || DEFAULT_TIMEOUT_MS,
+        timeout: activeConfig.timeoutMs || DEFAULT_TIMEOUT_MS,
         headers: Object.assign({}, headers || {}),
       };
       if (buf.length) {
@@ -8897,10 +9388,10 @@ wssTcp.on('connection', function (ws) {
         });
       });
       req.on('timeout', function () {
-        try { req.destroy(new Error('timeout ' + (cfg.timeoutMs || DEFAULT_TIMEOUT_MS) + 'ms')); } catch (_e) {}
+        try { req.destroy(new Error('timeout ' + (activeConfig.timeoutMs || DEFAULT_TIMEOUT_MS) + 'ms')); } catch (_e) {}
       });
       req.on('error', function (err) {
-        lastError = method + ' ' + urlPath + ': ' + err.message;
+        session.setError(activeGeneration, dcimVideoRequestLabel(method, urlPath) + ': ' + err.message);
         resolve({ ok: false, status: 0, message: err.message });
       });
       if (buf.length) req.write(buf);
@@ -8909,28 +9400,50 @@ wssTcp.on('connection', function (ws) {
   }
 
   async function loginDcim() {
-    const u = '/api/user/login?username=' + encodeURIComponent(cfg.username)
-      + '&password=' + encodeURIComponent(cfg.passwordHash);
-    const r = await dcimRequest('GET', u, {}, null);
+    const loginGeneration = session.generation();
+    const loginConfig = cfg;
+    const u = '/api/user/login?username=' + encodeURIComponent(loginConfig.username)
+      + '&password=' + encodeURIComponent(loginConfig.passwordHash);
+    const r = await dcimRequest('GET', u, {}, null, loginGeneration, loginConfig);
+    if (!session.isCurrent(loginGeneration)) return false;
     if (r.ok && r.data && r.data.code === 0 && r.data.data && r.data.data.accessToken) {
-      cachedToken = r.data.data.accessToken;
-      lastLoginAt = Date.now();
-      appendLog('login ok, token len=' + cachedToken.length);
-      return true;
+      const token = r.data.data.accessToken;
+      if (session.acceptLogin(loginGeneration, token, Date.now())) {
+        appendLog('login ok, token len=' + String(token).length);
+        return true;
+      }
+      return false;
     }
-    lastError = 'login failed: status=' + r.status + ' code=' + (r.data && r.data.code);
-    appendLog(lastError);
-    cachedToken = '';
+    const errorMessage = 'login failed: status=' + r.status + ' code=' + (r.data && r.data.code);
+    if (session.rejectLogin(loginGeneration, errorMessage)) appendLog(errorMessage);
     return false;
   }
 
+  registerDcimVideoConnectionRoutes(app, {
+    getConfig: function () { return cfg; },
+    setConfig: function (nextConfig) { cfg = nextConfig; },
+    writeConfig: writeCfg,
+    resetSession: session.reset,
+    isAuthed: isAuthed,
+    loginDcim: loginDcim,
+    wvpUtils: wvpUtils,
+  });
+
   async function callWithAuth(method, urlPath, body) {
-    if (!cachedToken) { await loginDcim(); }
-    let r = await dcimRequest(method, urlPath, { 'access-token': cachedToken }, body);
+    const requestGeneration = session.generation();
+    const requestConfig = cfg;
+    if (!session.token()) { await loginDcim(); }
+    if (!session.isCurrent(requestGeneration)) {
+      return { ok: false, status: 409, message: '连接配置已更新' };
+    }
+    let r = await dcimRequest(method, urlPath, { 'access-token': session.token() }, body, requestGeneration, requestConfig);
+    if (!session.isCurrent(requestGeneration)) return r;
     // 401 自动续登一次
     if (r.status === 401 || (r.data && r.data.code === -1) || (r.data && r.data.code === -2)) {
       const ok = await loginDcim();
-      if (ok) r = await dcimRequest(method, urlPath, { 'access-token': cachedToken }, body);
+      if (ok && session.isCurrent(requestGeneration)) {
+        r = await dcimRequest(method, urlPath, { 'access-token': session.token() }, body, requestGeneration, requestConfig);
+      }
     }
     appendLog(method + ' ' + urlPath + ' -> status=' + r.status);
     return r;
@@ -8948,17 +9461,17 @@ wssTcp.on('connection', function (ws) {
       reachable: r.ok,
       status: r.status,
       version: (r.ok && r.data && r.data.data && r.data.data.version) || '',
-      hasToken: !!cachedToken,
-      lastLoginAt: lastLoginAt,
-      lastError: lastError,
+      hasToken: !!session.token(),
+      lastLoginAt: session.lastLoginAt(),
+      lastError: session.lastError(),
       config: cfgInfo,
     });
   });
 
-  app.get('/api/dcim-video/config', async function (_req, res) {
-    const r = await callWithAuth('GET', '/api/server/system/configInfo', null);
-    if (!r.ok) return res.json({ ok: false, message: r.message || ('上游返回 ' + r.status), data: r.data });
-    res.json({ ok: true, data: (r.data && r.data.data) || r.data });
+  registerVideoSystemConfigRoute(app, {
+    path: '/api/dcim-video/config',
+    callWithAuth: callWithAuth,
+    sanitizeSystemConfig: sanitizeDcimVideoSystemConfig,
   });
 
   app.get('/api/dcim-video/devices', async function (req, res) {
@@ -9000,28 +9513,12 @@ wssTcp.on('connection', function (ws) {
     return String(url).replace(/^(https?:)?\/\/[^/]+/, '/media-dcim');
   }
 
-  app.post('/api/dcim-video/play/:deviceId/:channelId', async function (req, res) {
-    const did = encodeURIComponent(req.params.deviceId || '');
-    const cid = encodeURIComponent(req.params.channelId || '');
-    const r = await callWithAuth('GET', '/api/play/start/' + did + '/' + cid, null);
-    if (!r.ok || !r.data || r.data.code !== 0) {
-      return res.json({ ok: false, status: r.status, message: (r.data && r.data.msg) || r.message || ('上游返回 ' + r.status), raw: r.data });
-    }
-    const d = r.data.data || {};
-    res.json({
-      ok: true,
-      streamKey: (d.app || 'rtp') + '/' + (d.stream || ''),
-      flvUrl: rewriteToDcimProxy(d.flv),
-      hlsUrl: rewriteToDcimProxy(d.hls),
-      ssrc: d.ssrc || '', app: d.app || 'rtp', stream: d.stream || '',
-    });
-  });
-
-  app.post('/api/dcim-video/play/stop/:deviceId/:channelId', async function (req, res) {
-    const did = encodeURIComponent(req.params.deviceId || '');
-    const cid = encodeURIComponent(req.params.channelId || '');
-    const r = await callWithAuth('GET', '/api/play/stop/' + did + '/' + cid, null);
-    res.json({ ok: r.ok && r.data && r.data.code === 0, message: (r.data && r.data.msg) || r.message || '' });
+  registerLivePlaybackRoutes(app, {
+    source: 'dcim',
+    pathPrefix: '/api/dcim-video',
+    liveGenerations: liveStreamGenerations,
+    callWithAuth: callWithAuth,
+    rewriteToProxy: rewriteToDcimProxy,
   });
 
   app.post('/api/dcim-video/playback/start/:deviceId/:channelId', async function (req, res) {
@@ -9230,10 +9727,10 @@ wssTcp.on('connection', function (ws) {
     });
   });
 
-  app.get('/api/webssh-video/config', async function (_req, res) {
-    const r = await callWithAuth('GET', '/api/server/system/configInfo', null);
-    if (!r.ok) return res.json({ ok: false, message: r.message || ('上游返回 ' + r.status), data: r.data });
-    res.json({ ok: true, data: (r.data && r.data.data) || r.data });
+  registerVideoSystemConfigRoute(app, {
+    path: '/api/webssh-video/config',
+    callWithAuth: callWithAuth,
+    sanitizeSystemConfig: sanitizeDcimVideoSystemConfig,
   });
 
   app.get('/api/webssh-video/devices', async function (req, res) {
@@ -9266,31 +9763,13 @@ wssTcp.on('connection', function (ws) {
     return String(url).replace(/^(https?:)?\/\/[^/]+/, '/media-webssh');
   }
 
-  app.post('/api/webssh-video/play/:deviceId/:channelId', async function (req, res) {
-    const did = encodeURIComponent(req.params.deviceId || '');
-    const cid = encodeURIComponent(req.params.channelId || '');
-    const r = await callWithAuth('GET', '/api/play/start/' + did + '/' + cid, null);
-    if (!r.ok || !r.data || r.data.code !== 0) {
-      return res.json({ ok: false, status: r.status, message: (r.data && r.data.msg) || r.message || ('上游返回 ' + r.status), raw: r.data });
-    }
-    const d = r.data.data || {};
-    res.json({
-      ok: true,
-      streamKey: (d.app || 'rtp') + '/' + (d.stream || ''),
-      flvUrl: rewriteToProxy(d.flv),
-      hlsUrl: rewriteToProxy(d.hls),
-      ssrc: d.ssrc || '',
-      app: d.app || 'rtp',
-      stream: d.stream || '',
-      mediaServerId: d.mediaServerId || '',
-    });
-  });
-
-  app.post('/api/webssh-video/play/stop/:deviceId/:channelId', async function (req, res) {
-    const did = encodeURIComponent(req.params.deviceId || '');
-    const cid = encodeURIComponent(req.params.channelId || '');
-    const r = await callWithAuth('GET', '/api/play/stop/' + did + '/' + cid, null);
-    res.json({ ok: r.ok && r.data && r.data.code === 0, message: (r.data && r.data.msg) || r.message || '' });
+  registerLivePlaybackRoutes(app, {
+    source: 'webssh',
+    pathPrefix: '/api/webssh-video',
+    liveGenerations: liveStreamGenerations,
+    callWithAuth: callWithAuth,
+    rewriteToProxy: rewriteToProxy,
+    includeMediaServerId: true,
   });
 
   app.post('/api/webssh-video/playback/start/:deviceId/:channelId', async function (req, res) {
@@ -10243,6 +10722,8 @@ wssTcp.on('connection', function (ws) {
   const path = require('path');
   const { spawn } = require('child_process');
   const accessRules = require('./lib/opengauss-access-rules');
+  const wvpUtils = require('./lib/dcim-wvp');
+  const { createWvpRuntimeOperations } = require('./lib/dcim-wvp-runtime');
   let mysql2, pgLib, dmdbLib;
   try { mysql2 = require('mysql2/promise'); } catch (_e) { mysql2 = null; }
   try { pgLib = require('pg'); } catch (_e) { pgLib = null; }
@@ -10367,16 +10848,21 @@ wssTcp.on('connection', function (ws) {
       ' -c ' + shellEscape(command);
   }
   // SSH -> 目标机 -> 命令
-  function sshRun(cmd) {
+  function sshRun(cmd, options) {
     return new Promise((resolve) => {
       const sshCfg = cfg.ssh || {};
+      const timeoutMs = Number(options && options.timeoutMs);
       if (!sshCfg.host || !sshCfg.username || !sshCfg.password) {
         return resolve({ code: -1, stdout: '', stderr: 'SSH 未配置（host/username/password 缺失）' });
       }
       sshExecCommand({
         host: sshCfg.host, port: Number(sshCfg.port) || 22,
         username: sshCfg.username, password: sshCfg.password,
+        commandTimeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : undefined,
       }, cmd, (err, r) => {
+        if (err && err.code === 'SSH_COMMAND_TIMEOUT') {
+          return resolve({ code: -1, stdout: '', stderr: 'SSH command timed out', timedOut: true });
+        }
         if (err) return resolve({ code: -1, stdout: '', stderr: err.message || String(err) });
         resolve(r || { code: -1, stdout: '', stderr: '空结果' });
       });
@@ -11795,6 +12281,37 @@ echo json_encode(array(
         expectedList: WVP_TABLES });
     } catch (e) { res.status(400).json({ ok: false, message: e.message }); }
   });
+
+  function wvpRuntimeSummary(runtime) {
+    const status = runtime.status || {};
+    return 'ssh=' + runtime.sshCode + ' ready=' + Boolean(status.ready) +
+      ' restartAllowed=' + Boolean(status.restartAllowed);
+  }
+  async function collectWvpRuntimeStatus(options) {
+    try {
+      const probe = 'timeout 10s sh -c ' + shellEscape(wvpUtils.wvpRuntimeProbeCommand());
+      const result = await sshRun(runInContainerCmd(cfg.container, probe), options);
+      const runtime = wvpUtils.wvpRuntimeStatusFromSshResult(result);
+      if (result.code === 124 || result.timedOut) runtime.timedOut = true;
+      return runtime;
+    } catch (_e) {
+      return wvpUtils.wvpRuntimeStatusFromSshResult({ code: -1, stdout: '' });
+    }
+  }
+  const wvpRuntimeOperations = createWvpRuntimeOperations({
+    collect: collectWvpRuntimeStatus,
+    restartService: (command, options) => sshRun(runInContainerCmd(cfg.container,
+      'timeout 10s sh -c ' + shellEscape(command)), options),
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  });
+
+  registerWvpRuntimeRoutes(app, {
+    runtimeOperations: wvpRuntimeOperations,
+    isAuthed: isAuthed,
+    appendLog: appendLog,
+    runtimeSummary: wvpRuntimeSummary,
+  });
+
   // POST /api/db-manager/opengauss/wvp/init - 一键建 WVP 表
   //   body: { database?: 'dcim', dropExisting?: false }
   app.post('/api/db-manager/opengauss/wvp/init', async (req, res) => {
