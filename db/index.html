@@ -926,14 +926,18 @@ SHOW DATABASES;"></textarea>
         dot.className = 'dot off'; kv.innerHTML = '<div class="kv-row"><span class="k">状态</span><span class="v">未探测</span><span></span></div>';
         actions.innerHTML = ''; return;
       }
-      dot.className = 'dot ' + (info.running ? 'on' : 'err');
+      const health = info.health || (info.running ? 'online' : 'offline');
+      dot.className = 'dot ' + (health === 'online' ? 'on' : 'err');
+      const statusText = health === 'online'
+        ? '<span class="pill ok">运行中</span>'
+        : '<span class="pill err">已停</span>';
       const items = [
-        ['状态', info.running ? '<span class="pill ok">运行中</span>' : '<span class="pill err">已停</span>'],
+        ['状态', statusText],
         ['版本', info.version || '—'],
         ['库数', info.databases != null ? String(info.databases) : '—'],
         ['表数', info.tables != null ? String(info.tables) : '—'],
-        ['systemd', '<span class="v mono">' + esc(info.unit) + '</span>'],
       ];
+      if (info.probeError) items.push(['探测', '<span class="v err">' + esc(info.probeError) + '</span>']);
       kv.innerHTML = items.map(([k, v]) => '<div class="kv-row"><span class="k">' + k + '</span><span class="v">' + v + '</span><span></span></div>').join('');
       const dbId = info.id;
       let btns = '';

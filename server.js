@@ -10318,8 +10318,13 @@ wssTcp.on('connection', function (ws) {
   // 以 root 身份在容器内执行；su - <user> -c '<cmd>' 场景
   function runInContainerAs(container, user, innerCmd) {
     if (!user || user === 'root') return runInContainerCmd(container, innerCmd);
+    // openGauss 的 GAUSSHOME / LD_LIBRARY_PATH 在 omm 的 .bashrc 中，
+    // 仅 su - 不会读取它，gsql 和 gs_dump 会因此找不到动态库。
+    const command = user === 'omm'
+      ? 'source /home/omm/.bashrc && ' + innerCmd
+      : innerCmd;
     return 'docker exec ' + shellEscape(container) + ' su - ' + shellEscape(user) +
-      ' -c ' + shellEscape(innerCmd);
+      ' -c ' + shellEscape(command);
   }
   // SSH -> 目标机 -> 命令
   function sshRun(cmd) {
@@ -10340,6 +10345,12 @@ wssTcp.on('connection', function (ws) {
   // 校验 dbId 合法性（mysql / opengauss / dm）
   function validDbId(id) { return id === 'mysql' || id === 'opengauss' || id === 'dm'; }
   function getDbCfg(id) { return validDbId(id) ? cfg.databases[id] : null; }
+  function buildDmConnectUrl(db) {
+    db = db || {};
+    return 'dm://' + encodeURIComponent(db.username || 'SYSDBA') + ':' +
+      encodeURIComponent(db.password || '') + '@' + (db.host || '127.0.0.1') + ':' +
+      (Number(db.port) || 5236);
+  }
   // 连接池：MySQL / openGauss / DM 各一个 pool，配置变更时销毁重建
   const pools = { mysql: null, opengauss: null, dm: null };
   async function getMysqlPool() {
@@ -10371,8 +10382,7 @@ wssTcp.on('connection', function (ws) {
     if (pools.dm) return pools.dm;
     const db = cfg.databases.dm;
     pools.dm = await dmdbLib.createPool({
-      connectString: 'dm://' + encodeURIComponent(db.username) + ':' +
-        encodeURIComponent(db.password || '') + '@' + db.host + ':' + (Number(db.port) || 5236),
+      connectString: buildDmConnectUrl(db),
       poolMax: 3, poolMin: 0, poolTimeout: 30,
     });
     return pools.dm;
@@ -10430,7 +10440,8 @@ wssTcp.on('connection', function (ws) {
     }
     throw new Error('未知的 dbId: ' + dbId);
   }
-  // 三库状态探测：SSH 通 + 各服务 systemctl 状态 + 端口探活 + 直连版本
+  // 三库状态探测：数据库实际连接决定在线状态；systemd 仅作为服务管理诊断。
+  const DB_HEALTH_TIMEOUT_MS = 6000;
   async function probeSsh() {
     const r = await sshRun('echo ok');
     return { ok: r.code === 0 && r.stdout.indexOf('ok') !== -1, message: r.stderr || (r.stdout || '') };
@@ -10441,6 +10452,76 @@ wssTcp.on('connection', function (ws) {
     const r = await sshRun(cmd);
     return { running: r.stdout.trim() === 'active', raw: r.stdout.trim() || r.stderr };
   }
+  function withProbeTimeout(promise, dbId) {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        reject(new Error(dbId + ' 连接超时（' + DB_HEALTH_TIMEOUT_MS + 'ms）'));
+      }, DB_HEALTH_TIMEOUT_MS);
+      Promise.resolve(promise).then((value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      }, (err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(err);
+      });
+    });
+  }
+  // openGauss 的 pg 协议兼容性受服务端版本/认证配置影响。状态探测在 pg 驱动被
+  // 服务端主动断开时，回退到容器内同环境的官方 gsql。这里不带 -h/-W，使用 omm
+  // 运行环境中的 Unix socket 与 local trust 规则，避免过期的页面连接地址或密码误报离线。
+  async function runOpenGaussGsql(sql) {
+    const db = getDbCfg('opengauss');
+    if (!db) throw new Error('openGauss 未配置');
+    const command = [
+      '/opt/software/openGauss/app/bin/gsql',
+      '-d ' + shellEscape(db.database || 'dcim'),
+      '-A -t -F ' + shellEscape('|'),
+      '-c ' + shellEscape(sql),
+      '2>&1',
+    ].join(' ');
+    const result = await sshRun(runInContainerAs(cfg.container, 'omm', command));
+    if (result.code !== 0) {
+      throw new Error(String(result.stderr || result.stdout || 'gsql 执行失败').trim().slice(0, 300));
+    }
+    return String(result.stdout || '').trim();
+  }
+  async function probeDbConnection(dbId) {
+    const startedAt = Date.now();
+    const sql = dbId === 'dm' ? 'SELECT 1 FROM DUAL' : 'SELECT 1';
+    try {
+      await withProbeTimeout(runQuery(dbId, sql, 1), dbId);
+      return { ok: true, elapsedMs: Date.now() - startedAt, error: '', transport: 'driver' };
+    } catch (err) {
+      if (dbId === 'opengauss') {
+        try {
+          await withProbeTimeout(runOpenGaussGsql('SELECT 1;'), dbId);
+          return { ok: true, elapsedMs: Date.now() - startedAt, error: '', transport: 'gsql' };
+        } catch (fallbackErr) {
+          err = fallbackErr;
+        }
+      }
+      return {
+        ok: false,
+        elapsedMs: Date.now() - startedAt,
+        error: String((err && err.message) || err || '数据库连接失败').slice(0, 300),
+        transport: '',
+      };
+    }
+  }
+  async function probeOptional(task, dbId, fallback) {
+    try {
+      return await withProbeTimeout(Promise.resolve().then(task), dbId);
+    } catch (_e) {
+      return fallback;
+    }
+  }
   async function probeVersion(dbId) {
     try {
       if (dbId === 'mysql') {
@@ -10448,8 +10529,8 @@ wssTcp.on('connection', function (ws) {
         return r.rows[0] ? r.rows[0].v : '';
       }
       if (dbId === 'opengauss') {
-        const r = await runQuery('opengauss', 'SELECT version() AS v', 1);
-        return r.rows[0] ? String(r.rows[0].v).split(' ')[0] : '';
+        const value = await runOpenGaussGsql('SELECT version();');
+        return String(value).split(' ')[0] || '';
       }
       if (dbId === 'dm') {
         const r = await runQuery('dm', 'SELECT * FROM V$VERSION', 10);
@@ -10468,10 +10549,11 @@ wssTcp.on('connection', function (ws) {
         return { databases: Number(r.rows[0].dbs), tables: Number(r.rows[0].tbls) };
       }
       if (dbId === 'opengauss') {
-        const r = await runQuery('opengauss',
-          "SELECT (SELECT COUNT(*) FROM pg_database WHERE datistemplate=false)::text AS dbs, " +
-          "(SELECT COUNT(*) FROM pg_class WHERE relkind='r')::text AS tbls", 1);
-        return { databases: Number(r.rows[0].dbs), tables: Number(r.rows[0].tbls) };
+        const value = await runOpenGaussGsql(
+          "SELECT (SELECT COUNT(*) FROM pg_database WHERE datistemplate=false), " +
+          "(SELECT COUNT(*) FROM pg_class WHERE relkind='r');");
+        const values = String(value).split('|');
+        return { databases: Number(values[0]) || 0, tables: Number(values[1]) || 0 };
       }
       if (dbId === 'dm') {
         const r = await runQuery('dm',
@@ -10482,29 +10564,38 @@ wssTcp.on('connection', function (ws) {
     return { databases: 0, tables: 0 };
   }
   async function probeAll() {
-    const [ssh, mysqlSvc, gaussSvc, dmSvc] = await Promise.all([
+    const [ssh, mysqlSvc, gaussSvc, dmSvc, mysqlConn, gaussConn, dmConn] = await Promise.all([
       probeSsh(), probeServiceRunning('mysql'),
       probeServiceRunning('opengauss'), probeServiceRunning('dm'),
+      probeDbConnection('mysql'), probeDbConnection('opengauss'), probeDbConnection('dm'),
     ]);
-    // 各库 version 与 counts 并行，但只在 ssh + service 都在时探
+    // 版本与统计由真实连接成功触发，不能被 systemd 的错误状态阻断。
     const [mv, gv, dv, mc, gc, dc] = await Promise.all([
-      mysqlSvc.running ? probeVersion('mysql')   : Promise.resolve(''),
-      gaussSvc.running  ? probeVersion('opengauss') : Promise.resolve(''),
-      dmSvc.running     ? probeVersion('dm')     : Promise.resolve(''),
-      mysqlSvc.running ? probeDbCounts('mysql')  : Promise.resolve({ databases: 0, tables: 0 }),
-      gaussSvc.running  ? probeDbCounts('opengauss') : Promise.resolve({ databases: 0, tables: 0 }),
-      dmSvc.running     ? probeDbCounts('dm')    : Promise.resolve({ databases: 0, tables: 0 }),
+      mysqlConn.ok ? probeOptional(() => probeVersion('mysql'), 'mysql', '') : Promise.resolve(''),
+      gaussConn.ok ? probeOptional(() => probeVersion('opengauss'), 'opengauss', '') : Promise.resolve(''),
+      dmConn.ok ? probeOptional(() => probeVersion('dm'), 'dm', '') : Promise.resolve(''),
+      mysqlConn.ok ? probeOptional(() => probeDbCounts('mysql'), 'mysql', { databases: 0, tables: 0 }) : Promise.resolve({ databases: 0, tables: 0 }),
+      gaussConn.ok ? probeOptional(() => probeDbCounts('opengauss'), 'opengauss', { databases: 0, tables: 0 }) : Promise.resolve({ databases: 0, tables: 0 }),
+      dmConn.ok ? probeOptional(() => probeDbCounts('dm'), 'dm', { databases: 0, tables: 0 }) : Promise.resolve({ databases: 0, tables: 0 }),
     ]);
+    function buildDbStatus(id, label, service, connection, version, counts) {
+      const health = connection.ok ? 'online' : 'offline';
+      return {
+        id: id, label: label, running: connection.ok, health: health,
+        serviceRunning: service.running, systemdState: service.raw || 'unknown',
+        probeError: connection.error || '', probeElapsedMs: connection.elapsedMs,
+        probeTransport: connection.transport || '',
+        version: version, databases: counts.databases, tables: counts.tables,
+        unit: cfg.databases[id].systemdUnit,
+      };
+    }
     return {
       ssh: ssh,
       container: cfg.container,
       databases: {
-        mysql: { id: 'mysql', label: 'MySQL', running: mysqlSvc.running,
-          version: mv, databases: mc.databases, tables: mc.tables, unit: cfg.databases.mysql.systemdUnit },
-        opengauss: { id: 'opengauss', label: 'openGauss', running: gaussSvc.running,
-          version: gv, databases: gc.databases, tables: gc.tables, unit: cfg.databases.opengauss.systemdUnit },
-        dm: { id: 'dm', label: '达梦 DM', running: dmSvc.running,
-          version: dv, databases: dc.databases, tables: dc.tables, unit: cfg.databases.dm.systemdUnit },
+        mysql: buildDbStatus('mysql', 'MySQL', mysqlSvc, mysqlConn, mv, mc),
+        opengauss: buildDbStatus('opengauss', 'openGauss', gaussSvc, gaussConn, gv, gc),
+        dm: buildDbStatus('dm', '达梦 DM', dmSvc, dmConn, dv, dc),
       },
     };
   }
@@ -10769,14 +10860,19 @@ wssTcp.on('connection', function (ws) {
           try { await c2.connect(); await c2.query('SELECT 1'); } finally { try { await c2.end(); } catch(_e){} }
         } else if (target === 'dm') {
           if (!dmdbLib) throw new Error('dmdb 未安装');
-          const conn = await dmdbLib.getConnection({
-            connectString: 'dm://' + encodeURIComponent(inline.username) + ':' +
-              encodeURIComponent(inline.password || '') + '@' + inline.host + ':' + (Number(inline.port) || 5236),
-          });
+          const conn = await dmdbLib.getConnection(buildDmConnectUrl({
+            username: inline.username, password: inline.password,
+            host: inline.host, port: inline.port,
+          }));
           try { await conn.execute('SELECT 1 FROM DUAL'); } finally { try { await conn.close(); } catch(_e){} }
         }
       } else {
-        await runQuery(target, target === 'dm' ? 'SELECT 1 FROM DUAL' : 'SELECT 1', 1);
+        if (target === 'opengauss') {
+          const probe = await probeDbConnection(target);
+          if (!probe.ok) throw new Error(probe.error || 'openGauss 不可用');
+        } else {
+          await runQuery(target, target === 'dm' ? 'SELECT 1 FROM DUAL' : 'SELECT 1', 1);
+        }
       }
       res.json({ ok: true, message: target + ' 连通' });
     } catch (e) {
