@@ -1609,48 +1609,6 @@
             </div>
           </section>
 
-          <section class="settings-section" data-pane="update">
-            <h3 class="settings-section-title">更新</h3>
-            <div class="settings-section-desc">8081src 更新（连接服务器后，上传一个 tar.gz 包覆盖远端 src 目录）</div>
-            <div class="settings-card">
-              <div class="field">
-                <span>SSH 连接状态</span>
-                <div id="updateConnState" style="font-size:13px;color:#cbd5e1;padding:8px 10px;background:#0b1220;border:1px solid #1f2937;border-radius:10px;min-height:20px">未连接</div>
-              </div>
-              <div class="field" style="margin-top:12px">
-                <span>目标路径（已锁定）</span>
-                <div style="font-size:13px;color:#cbd5e1;padding:8px 10px;background:#0b1220;border:1px solid #1f2937;border-radius:10px;font-family:monospace;word-break:break-all">/dcim/admin/localhost_8081/wwwroot/src</div>
-              </div>
-              <div class="field" style="margin-top:12px">
-                <span>选择 src 包（仅支持 .tar.gz / .tgz，最大 200MB）</span>
-                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-                  <input id="updateFileInput" type="file" accept=".tar.gz,.tgz,.gz" style="flex:1;min-width:240px;color:#cbd5e1" />
-                  <button class="btn" id="updateResetBtn" type="button">重选</button>
-                </div>
-                <div id="updateFileMeta" style="font-size:12px;color:#94a3b8;margin-top:6px">未选择文件</div>
-              </div>
-              <div class="field" style="margin-top:12px">
-                <span>当前状态</span>
-                <div id="updateStatus" style="font-size:13px;color:#cbd5e1;padding:8px 10px;background:#0b1220;border:1px solid #1f2937;border-radius:10px;min-height:20px">空闲</div>
-              </div>
-              <div class="field">
-                <span>执行日志</span>
-                <pre id="updateLog" style="font-size:12px;color:#94a3b8;padding:8px 10px;background:#0b1220;border:1px solid #1f2937;border-radius:10px;min-height:60px;max-height:240px;overflow:auto;white-space:pre-wrap;word-break:break-all;margin:0">无</pre>
-              </div>
-              <div style="display:flex;justify-content:flex-end;gap:10px;padding-top:10px;flex-wrap:wrap">
-                <button class="btn primary" id="updateApplyBtn" type="button" disabled title="请先在主界面连接一台 SSH 主机">上传并覆盖更新</button>
-              </div>
-            </div>
-            <div class="settings-placeholder" style="margin-top:14px">
-              <h4>说明</h4>
-              <ul>
-                <li>每次更新会先把 <code>src/</code> 备份为 <code>src.bak-&lt;时间戳&gt;</code>，再解压新包</li>
-                <li>解压失败会自动回滚到刚才的备份；备份目录保留以便人工排查</li>
-                <li>包内根目录会被解压到 <code>src/</code> 内，请确认打包结构（建议 <code>tar -czf x.tar.gz -C src-dir .</code>）</li>
-              </ul>
-            </div>
-          </section>
-
           <section class="settings-section" data-pane="about">
             <h3 class="settings-section-title">关于</h3>
             <div class="settings-card">
@@ -2175,13 +2133,6 @@
       drSave: document.getElementById('drSave'),
       drTopDot: document.getElementById('drTopDot'),
       drTopState: document.getElementById('drTopState'),
-      updateConnState: document.getElementById('updateConnState'),
-      updateFileInput: document.getElementById('updateFileInput'),
-      updateResetBtn: document.getElementById('updateResetBtn'),
-      updateFileMeta: document.getElementById('updateFileMeta'),
-      updateStatus: document.getElementById('updateStatus'),
-      updateLog: document.getElementById('updateLog'),
-      updateApplyBtn: document.getElementById('updateApplyBtn'),
       closeModal: document.getElementById('closeModal'),
       saveModal: document.getElementById('saveModal'),
       rememberModal: document.getElementById('rememberModal'),
@@ -2967,7 +2918,6 @@
       { id: 'time', label: '时间' },
       { id: 'ip', label: 'IP 管理' },
       { id: 'firewall', label: '防火墙' },
-      { id: 'update', label: '更新' },
       { id: 'about', label: '关于' },
     ];
     state.settingsTab = 'ops';
@@ -2988,13 +2938,6 @@
       document.querySelectorAll('.settings-section').forEach((node) => {
         node.classList.toggle('active', node.dataset.pane === id);
       });
-      // 切到「更新」分页时主动兜底：已连接但 SFTP 没就绪就触发一次 init
-      if (id === 'update') {
-        if (state.connected && !state.sftpReady) {
-          initSftp(state.fileCwd);
-        }
-        refreshUpdatePane();
-      }
       if (id === 'firewall') {
         refreshFirewallAll();
       }
@@ -3014,7 +2957,6 @@
       el.settingsMask.classList.add('open');
       el.settingsMask.setAttribute('aria-hidden', 'false');
       refreshDockerRestart(false);
-      refreshUpdatePane();
       if (drRefreshTimer) clearInterval(drRefreshTimer);
       drRefreshTimer = setInterval(() => refreshDockerRestart(true), 1000);
     }
@@ -4016,164 +3958,6 @@
       if (helpMask) helpMask.addEventListener('click', (e) => { if (e.target === helpMask) closeHelp(); });
     }
 
-    // ===== 8081src 更新（设置 → 更新 分页） =====
-    const UPDATE_MAX_BYTES = 200 * 1024 * 1024; // 200MB
-    const UPDATE_TARGET_DIR = '/dcim/admin/localhost_8081/wwwroot/src';
-    let updateBusy = false;
-    let updateSelectedFile = null;
-
-    function formatBytes(n) {
-      if (!Number.isFinite(n) || n <= 0) return '0 B';
-      const units = ['B', 'KB', 'MB', 'GB'];
-      let i = 0;
-      while (n >= 1024 && i < units.length - 1) { n /= 1024; i += 1; }
-      return n.toFixed(i === 0 ? 0 : 2) + ' ' + units[i];
-    }
-
-    function isValidUpdateName(name) {
-      const lower = String(name || '').toLowerCase();
-      return lower.endsWith('.tar.gz') || lower.endsWith('.tgz');
-    }
-
-    function refreshUpdatePane() {
-      if (el.updateConnState) {
-        if (state.connected && state.sftpReady) {
-          el.updateConnState.textContent = '已连接（SFTP 就绪）';
-          el.updateConnState.style.color = '#86efac';
-        } else if (state.connected) {
-          el.updateConnState.textContent = '已连接，等待 SFTP 初始化…';
-          el.updateConnState.style.color = '#fde68a';
-        } else {
-          el.updateConnState.textContent = '未连接';
-          el.updateConnState.style.color = '#fca5a5';
-        }
-      }
-      if (el.updateApplyBtn) {
-        const ok = !!(state.connected && state.sftpReady) && !!updateSelectedFile && !updateBusy;
-        el.updateApplyBtn.disabled = !ok;
-        // 在 disabled 时给一个原因 title，避免再出现「点了没反应」的迷惑
-        let reason = '';
-        if (updateBusy) {
-          reason = '正在上传/解压中，请稍候…';
-        } else if (!state.connected) {
-          reason = '请先在主界面连接一台 SSH 主机';
-        } else if (!state.sftpReady) {
-          reason = '已连接，正在初始化 SFTP，请稍候（通常 1-2 秒）';
-        } else if (!updateSelectedFile) {
-          reason = '请先选择 .tar.gz / .tgz 包';
-        }
-        if (reason) {
-          el.updateApplyBtn.title = reason;
-          el.updateApplyBtn.setAttribute('aria-disabled', 'true');
-        } else {
-          el.updateApplyBtn.title = '上传到目标路径并覆盖远端 src';
-          el.updateApplyBtn.removeAttribute('aria-disabled');
-        }
-      }
-    }
-
-    function appendUpdateLog(line) {
-      if (!el.updateLog) return;
-      const ts = new Date().toLocaleTimeString();
-      const prev = el.updateLog.textContent === '无' ? '' : el.updateLog.textContent;
-      el.updateLog.textContent = (prev ? prev + '\n' : '') + '[' + ts + '] ' + String(line || '');
-      el.updateLog.scrollTop = el.updateLog.scrollHeight;
-    }
-
-    function setUpdateStatus(text) {
-      if (el.updateStatus) el.updateStatus.textContent = text || '空闲';
-    }
-
-    function setUpdateBusy(busy) {
-      updateBusy = !!busy;
-      refreshUpdatePane();
-    }
-
-    function resetUpdateFile() {
-      updateSelectedFile = null;
-      if (el.updateFileInput) el.updateFileInput.value = '';
-      if (el.updateFileMeta) el.updateFileMeta.textContent = '未选择文件';
-      refreshUpdatePane();
-    }
-
-    function onUpdateFilePicked() {
-      const file = el.updateFileInput?.files?.[0] || null;
-      if (!file) { resetUpdateFile(); return; }
-      if (!isValidUpdateName(file.name)) {
-        updateSelectedFile = null;
-        if (el.updateFileMeta) el.updateFileMeta.textContent = '不支持的格式（仅 .tar.gz / .tgz）';
-        refreshUpdatePane();
-        return;
-      }
-      if (file.size > UPDATE_MAX_BYTES) {
-        updateSelectedFile = null;
-        if (el.updateFileMeta) el.updateFileMeta.textContent = `文件过大（${formatBytes(file.size)} > 200 MB）`;
-        refreshUpdatePane();
-        return;
-      }
-      updateSelectedFile = file;
-      if (el.updateFileMeta) el.updateFileMeta.textContent = `已选择：${file.name}（${formatBytes(file.size)}）`;
-      refreshUpdatePane();
-    }
-
-    function applyUpdatePackage() {
-      if (updateBusy) return;
-      if (!state.connected || !state.sftpReady) {
-        alert('请先连接 SSH，并等待 SFTP 初始化完成');
-        return;
-      }
-      const file = updateSelectedFile;
-      if (!file) { alert('请先选择 .tar.gz / .tgz 包'); return; }
-      if (!isValidUpdateName(file.name)) { alert('仅支持 .tar.gz / .tgz 包'); return; }
-      if (file.size > UPDATE_MAX_BYTES) { alert('包大小超过 200MB 上限'); return; }
-
-      setUpdateBusy(true);
-      setUpdateStatus('读取本地文件…');
-      if (el.updateLog) el.updateLog.textContent = '无';
-      appendUpdateLog(`开始更新：${file.name}（${formatBytes(file.size)}）`);
-
-      const reader = new FileReader();
-      reader.onerror = () => {
-        appendUpdateLog('读取本地文件失败');
-        setUpdateStatus('失败：读取本地文件失败');
-        setUpdateBusy(false);
-      };
-      reader.onload = () => {
-        const requestId = nextFileRequestId();
-        const handler = (event) => {
-          let msg;
-          try { msg = JSON.parse(event.data); } catch { return; }
-          if (msg?.payload?.requestId !== requestId) return;
-          if (msg.type === 'update:progress') {
-            appendUpdateLog(msg.payload.line || '');
-            if (msg.payload.status) setUpdateStatus(msg.payload.status);
-          } else if (msg.type === 'update:result') {
-            appendUpdateLog(`完成。目标：${msg.payload.targetDir}`);
-            if (msg.payload.backupDir) appendUpdateLog(`备份：${msg.payload.backupDir}`);
-            setUpdateStatus('成功');
-            state.ws?.removeEventListener('message', handler);
-            setUpdateBusy(false);
-          } else if (msg.type === 'update:error') {
-            appendUpdateLog('失败：' + (msg.payload.message || '未知错误'));
-            setUpdateStatus('失败：' + (msg.payload.message || '未知错误'));
-            state.ws?.removeEventListener('message', handler);
-            setUpdateBusy(false);
-          }
-        };
-        state.ws?.addEventListener('message', handler);
-        setUpdateStatus('上传中…');
-        sendWs({
-          type: 'update:apply',
-          payload: {
-            requestId,
-            fileName: file.name,
-            content: reader.result,
-          },
-        });
-      };
-      reader.readAsDataURL(file);
-    }
-
     function sendWs(message) {
       if (state.ws && state.ws.readyState === WebSocket.OPEN) {
         state.ws.send(JSON.stringify(message));
@@ -4184,7 +3968,7 @@
       if (!state.connected) return;
       // 已就绪就别再发了
       if (state.sftpReady) return;
-      // 在途请求去重，避免「更新页」「文件管理」「连接回调」三处都触发
+      // 在途请求去重，避免多个通用入口重复触发
       if (sftpInitInflight) return;
       sftpInitInflight = true;
       state.pendingFilePath = path;
@@ -4614,8 +4398,7 @@
                   state.lines.push({ kind: 'system', text: `记住连接失败：${err.message}` });
                 }
               }
-              // 不论侧边栏在哪个面板，连接一成功就发起 SFTP 初始化
-              // 否则用户从「设置 → 更新」直接进来时，按钮永远是 disabled
+              // 连接成功后发起 SFTP 初始化，供通用文件管理使用。
               if (!state.sftpReady) {
                 initSftp(state.fileCwd);
               }
@@ -4630,7 +4413,6 @@
             renderTerminal();
             renderSidePanel();
             bindDynamicEvents();
-            refreshUpdatePane();
             return;
           }
 
@@ -4674,7 +4456,6 @@
             renderTerminal();
             renderHosts();
             bindDynamicEvents();
-            refreshUpdatePane();
             return;
           }
 
@@ -4684,7 +4465,6 @@
             state.fileError = '';
             renderSidePanel();
             bindDynamicEvents();
-            refreshUpdatePane();
             // 仅在侧边栏停留在「文件管理」时才主动拉目录；否则等用户切过去再拉
             if (state.sidePanel === 'files') {
               loadFileList(state.pendingFilePath || state.fileCwd || '/');
@@ -4801,7 +4581,6 @@
             if (msg.payload?.action === 'init') {
               sftpInitInflight = false;
               state.sftpReady = false;
-              refreshUpdatePane();
             }
             state.fileLoading = false;
             state.uploadPending = false;
@@ -4839,7 +4618,6 @@
           renderMeta();
           renderSidePanel();
           bindDynamicEvents();
-          refreshUpdatePane();
         });
 
         ws.addEventListener('error', () => {
@@ -4858,7 +4636,6 @@
           renderHosts();
           renderSidePanel();
           bindDynamicEvents();
-          refreshUpdatePane();
         });
       } catch (err) {
         state.ws = null;
@@ -4880,12 +4657,6 @@
     el.drSave?.addEventListener('click', () => saveDockerRestart());
     el.drCancel?.addEventListener('click', () => postDockerRestart('/api/docker-restart/cancel'));
     el.drRestartCountdown?.addEventListener('click', () => postDockerRestart('/api/docker-restart/restart-countdown'));
-    el.updateFileInput?.addEventListener('change', onUpdateFilePicked);
-    el.updateResetBtn?.addEventListener('click', () => {
-      if (updateBusy) return;
-      resetUpdateFile();
-    });
-    el.updateApplyBtn?.addEventListener('click', applyUpdatePackage);
     el.drTrigger?.addEventListener('click', async () => {
       if (!confirm('将立即执行 systemctl restart docker，docker 会短暂重启，确认继续？')) return;
       const btn = el.drTrigger;
