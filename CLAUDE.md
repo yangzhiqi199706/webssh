@@ -90,8 +90,6 @@ scripts/                      # 部署 / 安装 / 打包脚本
   deploy-protocol.js          # ★ 协议助手一键部署：本地打包 → SSH 推送 → install → 同步主壳代码 → 双服务探活
   build-fullstack-on-server.js # ★ 在服务器上组装全栈离线包并拉回本地 dist/（推荐打包方式）
 
-  pack-8081-src.bat           # Windows 辅助：打包 8081 src 配合主壳"在线更新"使用
-
 systemd/                      # systemd unit 模板
   webssh.service.template
   webssh-protocol.service.template  # ★ 协议助手 unit（含 PartOf=webssh.service 联动）

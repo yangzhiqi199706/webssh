@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "test": "node tests/dcim-wvp-opengauss.test.js"
+    "test": "node tests/settings-update-removal.test.js && node tests/dcim-wvp-opengauss.test.js"
   },
   "dependencies": {
     "@xterm/addon-fit": "0.10.0",
