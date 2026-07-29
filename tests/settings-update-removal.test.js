@@ -13,12 +13,25 @@ const claudeSource = fs.readFileSync(path.join(rootDir, 'CLAUDE.md'), 'utf8');
 assert.doesNotMatch(indexSource, /data-pane="update"/);
 assert.doesNotMatch(indexSource, /id: 'update', label: '更新'/);
 
-[
+const requiredReviewIdentifiers = [
+  'isValidUpdateName', 'formatBytes', 'UPDATE_MAX_BYTES',
+  'UPDATE_TARGET_DIR', 'updateBusy', 'updateSelectedFile',
+];
+
+const forbiddenIndexIdentifiers = [
   'updateConnState', 'updateFileInput', 'updateResetBtn', 'updateFileMeta',
   'updateStatus', 'updateLog', 'updateApplyBtn', 'refreshUpdatePane',
   'appendUpdateLog', 'setUpdateStatus', 'setUpdateBusy', 'resetUpdateFile',
   'onUpdateFilePicked', 'applyUpdatePackage',
-].forEach((identifier) => assert.doesNotMatch(indexSource, new RegExp(identifier)));
+  'isValidUpdateName', 'formatBytes', 'UPDATE_MAX_BYTES',
+  'UPDATE_TARGET_DIR', 'updateBusy', 'updateSelectedFile',
+];
+
+requiredReviewIdentifiers.forEach((identifier) => assert.ok(
+  forbiddenIndexIdentifiers.includes(identifier),
+  `禁用标识清单必须包含 ${identifier}`,
+));
+forbiddenIndexIdentifiers.forEach((identifier) => assert.doesNotMatch(indexSource, new RegExp(identifier)));
 
 ['update:apply', 'update:progress', 'update:result', 'update:error'].forEach((messageType) => {
   assert.doesNotMatch(indexSource, new RegExp(messageType));
