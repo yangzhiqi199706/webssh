@@ -613,6 +613,7 @@ const OPS_SETTINGS_PATH = process.env.WEBSSH_OPS_SETTINGS_CONFIG
 const WEBSSH_LOG_DIR = process.env.WEBSSH_LOG_DIR || path.join(__dirname, '..', 'logs');
 const AUTH_USER = accessControl.USERNAME;
 const authTokens = new Map(); // token -> expireAtMs
+const sshIdleSessionReconfigurers = new Set();
 
 function readJsonConfig(configPath, fallback) {
   try {
@@ -623,15 +624,25 @@ function readJsonConfig(configPath, fallback) {
   }
 }
 
-let accessConfig = readJsonConfig(ACCESS_CONTROL_PATH, { username: AUTH_USER });
+const accessConfigLoad = accessControl.loadConfig(fs, ACCESS_CONTROL_PATH);
+let accessConfig = accessConfigLoad.config;
+let accessConfigLoadError = accessConfigLoad.error;
+if (accessConfigLoadError) {
+  console.error('[access-control] 配置读取失败，已拒绝页面登录:', accessConfigLoadError.message);
+}
 let currentOpsSettings = opsSettings.normalize(readJsonConfig(OPS_SETTINGS_PATH, null));
 
-function saveAccessConfig() {
-  opsSettings.writeJsonAtomic(fs, ACCESS_CONTROL_PATH, accessConfig);
+function saveAccessConfig(nextAccessConfig) {
+  return opsSettings.writeJsonThenCommit(fs, ACCESS_CONTROL_PATH, nextAccessConfig, function (savedConfig) {
+    accessConfig = savedConfig;
+    accessConfigLoadError = null;
+  });
 }
 
-function saveOpsSettings() {
-  opsSettings.writeJsonAtomic(fs, OPS_SETTINGS_PATH, currentOpsSettings);
+function saveOpsSettings(nextOpsSettings) {
+  return opsSettings.writeJsonThenCommit(fs, OPS_SETTINGS_PATH, nextOpsSettings, function (savedSettings) {
+    currentOpsSettings = savedSettings;
+  });
 }
 
 function todayPassword() {
@@ -673,7 +684,7 @@ app.post('/api/auth/login', function (req, res) {
   let hours = Number(body.timeoutHours);
   if (!Number.isFinite(hours)) hours = 12;
   hours = Math.max(1, Math.min(720, Math.floor(hours))); // 1h ~ 30 天
-  if (!accessControl.authenticate(accessConfig, user, pwd, todayPassword())) {
+  if (accessConfigLoadError || !accessControl.authenticate(accessConfig, user, pwd, todayPassword())) {
     res.status(401).json({ ok: false, message: '用户名或密码错误' });
     return;
   }
@@ -717,12 +728,22 @@ function publicOpsState() {
   return currentOpsSettings;
 }
 
+function refreshSshIdleTimers() {
+  sshIdleSessionReconfigurers.forEach(function (reconfigure) {
+    try { reconfigure(); } catch (error) {
+      console.error('[ssh-idle] 重配闲置计时器失败:', error.message);
+    }
+  });
+}
+
 let activeLogRotation = null;
 
 function runManagedLogRotation(force) {
   if (activeLogRotation) return activeLogRotation;
   activeLogRotation = (async function () {
     const now = new Date();
+    const rotationDate = opsSettings.localDateKey(now);
+    let rotationResult;
     try {
       const result = await rotateLogs({
         logDir: WEBSSH_LOG_DIR,
@@ -730,22 +751,31 @@ function runManagedLogRotation(force) {
         retentionDays: currentOpsSettings.logRotation.retentionDays,
         force: Boolean(force),
       });
-      currentOpsSettings.logRotation.lastRotationDate = opsSettings.localDateKey(now);
-      currentOpsSettings.logRotation.lastResult = {
+      rotationResult = {
         ok: true,
         rotated: result.rotated,
         deleted: result.deleted,
         finishedAt: result.finishedAt,
       };
     } catch (error) {
-      currentOpsSettings.logRotation.lastResult = {
+      rotationResult = {
         ok: false,
         message: error && error.message ? error.message : String(error),
         finishedAt: now.toISOString(),
       };
     }
-    saveOpsSettings();
-    return currentOpsSettings.logRotation.lastResult;
+    const nextOpsSettings = opsSettings.recordLogRotation(currentOpsSettings,
+      rotationDate, rotationResult);
+    try {
+      saveOpsSettings(nextOpsSettings);
+      return rotationResult;
+    } catch (error) {
+      return {
+        ok: false,
+        message: '轮转状态保存失败：' + (error && error.message ? error.message : String(error)),
+        finishedAt: now.toISOString(),
+      };
+    }
   })();
 
   return activeLogRotation.then(function (result) {
@@ -791,8 +821,15 @@ app.put('/api/ops-settings', function (req, res) {
         ? requestedIdle.timeoutMinutes : currentOpsSettings.idleDisconnect.timeoutMinutes,
     },
   };
-  currentOpsSettings = opsSettings.normalize(next);
-  saveOpsSettings();
+  const normalized = opsSettings.normalize(next);
+  const idleDisconnectChanged = normalized.idleDisconnect.enabled !== currentOpsSettings.idleDisconnect.enabled
+    || normalized.idleDisconnect.timeoutMinutes !== currentOpsSettings.idleDisconnect.timeoutMinutes;
+  try {
+    saveOpsSettings(normalized);
+  } catch (error) {
+    return res.status(500).json({ ok: false, message: '运维设置保存失败：' + error.message });
+  }
+  if (idleDisconnectChanged) refreshSshIdleTimers();
   res.json({ ok: true, config: publicOpsState() });
 });
 
@@ -822,11 +859,15 @@ app.put('/api/access-control/password', function (req, res) {
   if (!accessControl.authenticate(accessConfig, AUTH_USER, currentPassword, todayPassword())) {
     return res.status(401).json({ ok: false, message: '当前密码错误' });
   }
-  accessConfig = {
+  const nextAccessConfig = {
     username: AUTH_USER,
     password: accessControl.createPasswordRecord(newPassword),
   };
-  saveAccessConfig();
+  try {
+    saveAccessConfig(nextAccessConfig);
+  } catch (error) {
+    return res.status(500).json({ ok: false, message: '访问密码保存失败：' + error.message });
+  }
   res.json({ ok: true, config: accessControl.publicConfig(accessConfig) });
 });
 
@@ -1863,6 +1904,23 @@ wss.on('connection', function (ws) {
     }
   }
 
+  function reconfigureIdleTimer() {
+    clearIdleTimer();
+    const idleConfig = currentOpsSettings.idleDisconnect;
+    if (!sshReady || !idleConfig.enabled) return;
+    idleTimer = createIdleTimer({
+      timeoutMs: idleConfig.timeoutMinutes * 60 * 1000,
+      onIdle: function () {
+        send('error', { message: 'SSH 会话闲置超时，已自动断开', code: 'idle_timeout' });
+        try { ssh.end(); } catch (_e) {}
+        try { ws.close(); } catch (_e) {}
+      },
+    });
+    touchIdleTimer();
+  }
+
+  sshIdleSessionReconfigurers.add(reconfigureIdleTimer);
+
   function ensureSftp(callback) {
     if (!sshReady) {
       callback(new Error('SSH 尚未就绪'));
@@ -1885,18 +1943,7 @@ wss.on('connection', function (ws) {
   ssh.on('ready', function () {
     sshReady = true;
     send('status', { state: 'connected' });
-    const idleConfig = currentOpsSettings.idleDisconnect;
-    if (idleConfig.enabled) {
-      idleTimer = createIdleTimer({
-        timeoutMs: idleConfig.timeoutMinutes * 60 * 1000,
-        onIdle: function () {
-          send('error', { message: 'SSH 会话闲置超时，已自动断开', code: 'idle_timeout' });
-          try { ssh.end(); } catch (_e) {}
-          try { ws.close(); } catch (_e) {}
-        },
-      });
-      touchIdleTimer();
-    }
+    reconfigureIdleTimer();
     // 连接时长上限：到期后由服务端主动断开，前端会清掉密码强制重输
     if (connectionHours > 0) {
       const ms = Math.min(connectionHours * 3600 * 1000, 0x7fffffff);
@@ -2435,6 +2482,7 @@ wss.on('connection', function (ws) {
 
   ws.on('close', function () {
     clearIdleTimer();
+    sshIdleSessionReconfigurers.delete(reconfigureIdleTimer);
     sftp = null;
     sshReady = false;
     try {

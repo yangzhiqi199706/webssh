@@ -20,9 +20,21 @@ const packageConfig = JSON.parse(fs.readFileSync(path.join(root, 'package.json')
   "app.get('/api/access-control'",
   "app.put('/api/access-control/password'",
   "code: 'idle_timeout'",
+  'opsSettings.writeJsonThenCommit',
+  'const sshIdleSessionReconfigurers = new Set();',
+  'function refreshSshIdleTimers()',
+  'sshIdleSessionReconfigurers.add(reconfigureIdleTimer);',
+  'refreshSshIdleTimers();',
+  'const accessConfigLoad = accessControl.loadConfig(fs, ACCESS_CONTROL_PATH);',
+  'if (accessConfigLoadError || !accessControl.authenticate(accessConfig, user, pwd, todayPassword()))',
 ].forEach(function (needle) {
   assert.ok(server.includes(needle), '缺少服务端接入：' + needle);
 });
+
+const rotationStart = server.indexOf('const result = await rotateLogs(');
+const rotationMerge = server.indexOf('const nextOpsSettings = opsSettings.recordLogRotation(currentOpsSettings,', rotationStart);
+assert.ok(rotationStart >= 0 && rotationMerge > rotationStart,
+  '日志轮转完成后必须基于最新运维设置合并轮转状态');
 
 [
   'opsLogRotateEnabled',
