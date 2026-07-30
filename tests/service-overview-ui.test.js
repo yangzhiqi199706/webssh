@@ -12,6 +12,7 @@ const read = function (relativePath) {
 
 const mainHtml = read('index.html');
 const overviewHtml = read('overview/index.html');
+const overviewCss = read('overview/assets/css/style.css');
 const overviewJs = read('overview/assets/js/overview.js');
 
 assert.ok(mainHtml.includes("id: 'overview'"), '主壳菜单必须含服务总览');
@@ -30,6 +31,30 @@ assert.ok(/function showView\(view\)[\s\S]*?isOverview/.test(mainHtml), 'showVie
   assert.ok(overviewHtml.includes('id="' + id + '"'), '服务总览缺少 #' + id);
 });
 assert.ok(overviewHtml.includes('<h1>服务总览</h1>'), '服务总览页面必须使用“服务总览”标题');
+assert.ok(overviewHtml.includes('class="top-bar"'), '服务总览必须使用统一的顶栏基元');
+assert.ok(overviewHtml.includes('class="btn primary refresh-button"'), '服务总览刷新按钮必须使用统一按钮基元');
+[
+  '--bg:#020617',
+  '--panel:#0f172a',
+  '--panel-2:#111827',
+  '--border:#1f2937',
+  '.top-bar {',
+  'height:44px',
+  '.btn {',
+  'border-radius:8px',
+  '.overview-card {',
+  'border-radius:12px',
+  '@media (prefers-reduced-motion:reduce)',
+].forEach(function (expected) {
+  assert.ok(overviewCss.includes(expected), '服务总览样式缺少统一基元：' + expected);
+});
+[
+  'font:13px/1.45 Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;',
+  '.service-item:nth-child(3n) { border-right:0; }',
+  '.service-item:nth-child(-n+9) { border-bottom:1px solid var(--border); }',
+].forEach(function (expected) {
+  assert.ok(overviewCss.includes(expected), '服务总览缺少响应式一致性规则：' + expected);
+});
 
 assert.ok(overviewJs.includes('/api/service-overview'), '服务总览必须读取只读快照');
 assert.ok(overviewJs.includes('/api/service-overview/refresh'), '服务总览必须支持手动刷新');
