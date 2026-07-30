@@ -2,10 +2,15 @@ const express = require('express');
 const fs = require('fs');
 const http = require('http');
 const net = require('net');
+const path = require('path');
 const WebSocket = require('ws');
 const { Client } = require('ssh2');
 const { createSshCommandRunner, registerWvpRuntimeRoutes } = require('./lib/dcim-wvp-runtime');
 const wvpUtils = require('./lib/dcim-wvp');
+const accessControl = require('./lib/access-control');
+const opsSettings = require('./lib/ops-settings');
+const { rotateLogs } = require('./lib/log-rotation');
+const { createIdleTimer } = require('./lib/ssh-idle-timer');
 const { spawn } = require('child_process');
 const httpProxy = require('http-proxy');
 
@@ -598,10 +603,36 @@ protocolProxy.on('error', function (err, _req, res) {
 // 仅拦截浏览器对 / 与 /index.html 的访问；/api/*、/ws*、/protocol/*、/health 全部放行，
 // 这样外部自动化脚本和已经在调 API 的程序不受影响。
 //
-// 密码 = 服务器当天日期 YYYYMMDD（用服务器时间，避免客户端改时间绕过）
+// 未配置固定密码时，兼容服务器当天日期 YYYYMMDD；首次设置后仅接受固定密码。
 // 登录成功后发 token，token 在内存里维护过期时间。服务重启会丢失，需重登一次。
-const AUTH_USER = 'admin';
+const CONFIG_DIR = path.join(__dirname, '..', 'config');
+const ACCESS_CONTROL_PATH = process.env.WEBSSH_ACCESS_CONTROL_CONFIG
+  || path.join(CONFIG_DIR, 'access-control.json');
+const OPS_SETTINGS_PATH = process.env.WEBSSH_OPS_SETTINGS_CONFIG
+  || path.join(CONFIG_DIR, 'ops-settings.json');
+const WEBSSH_LOG_DIR = process.env.WEBSSH_LOG_DIR || path.join(__dirname, '..', 'logs');
+const AUTH_USER = accessControl.USERNAME;
 const authTokens = new Map(); // token -> expireAtMs
+
+function readJsonConfig(configPath, fallback) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    return parsed && typeof parsed === 'object' ? parsed : fallback;
+  } catch (_err) {
+    return fallback;
+  }
+}
+
+let accessConfig = readJsonConfig(ACCESS_CONTROL_PATH, { username: AUTH_USER });
+let currentOpsSettings = opsSettings.normalize(readJsonConfig(OPS_SETTINGS_PATH, null));
+
+function saveAccessConfig() {
+  opsSettings.writeJsonAtomic(fs, ACCESS_CONTROL_PATH, accessConfig);
+}
+
+function saveOpsSettings() {
+  opsSettings.writeJsonAtomic(fs, OPS_SETTINGS_PATH, currentOpsSettings);
+}
 
 function todayPassword() {
   const d = new Date();
@@ -642,7 +673,7 @@ app.post('/api/auth/login', function (req, res) {
   let hours = Number(body.timeoutHours);
   if (!Number.isFinite(hours)) hours = 12;
   hours = Math.max(1, Math.min(720, Math.floor(hours))); // 1h ~ 30 天
-  if (user !== AUTH_USER || pwd !== todayPassword()) {
+  if (!accessControl.authenticate(accessConfig, user, pwd, todayPassword())) {
     res.status(401).json({ ok: false, message: '用户名或密码错误' });
     return;
   }
@@ -675,6 +706,133 @@ app.post('/api/auth/logout', function (req, res) {
     'webssh_auth=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=Lax');
   res.json({ ok: true });
 });
+
+function requireSettingsAuth(req, res) {
+  if (isAuthed(req)) return true;
+  res.status(401).json({ ok: false, message: '登录已失效' });
+  return false;
+}
+
+function publicOpsState() {
+  return currentOpsSettings;
+}
+
+let activeLogRotation = null;
+
+function runManagedLogRotation(force) {
+  if (activeLogRotation) return activeLogRotation;
+  activeLogRotation = (async function () {
+    const now = new Date();
+    try {
+      const result = await rotateLogs({
+        logDir: WEBSSH_LOG_DIR,
+        now: now,
+        retentionDays: currentOpsSettings.logRotation.retentionDays,
+        force: Boolean(force),
+      });
+      currentOpsSettings.logRotation.lastRotationDate = opsSettings.localDateKey(now);
+      currentOpsSettings.logRotation.lastResult = {
+        ok: true,
+        rotated: result.rotated,
+        deleted: result.deleted,
+        finishedAt: result.finishedAt,
+      };
+    } catch (error) {
+      currentOpsSettings.logRotation.lastResult = {
+        ok: false,
+        message: error && error.message ? error.message : String(error),
+        finishedAt: now.toISOString(),
+      };
+    }
+    saveOpsSettings();
+    return currentOpsSettings.logRotation.lastResult;
+  })();
+
+  return activeLogRotation.then(function (result) {
+    activeLogRotation = null;
+    return result;
+  }, function (error) {
+    activeLogRotation = null;
+    throw error;
+  });
+}
+
+function runScheduledLogRotation() {
+  const rotation = currentOpsSettings.logRotation;
+  if (!rotation.enabled || rotation.lastRotationDate === opsSettings.localDateKey()) return;
+  runManagedLogRotation(false).catch(function (error) {
+    console.error('[log-rotation] 自动轮转失败:', error.message);
+  });
+}
+
+app.get('/api/ops-settings', function (req, res) {
+  if (!requireSettingsAuth(req, res)) return;
+  res.json({ ok: true, config: publicOpsState() });
+});
+
+app.put('/api/ops-settings', function (req, res) {
+  if (!requireSettingsAuth(req, res)) return;
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const requestedRotation = body.logRotation && typeof body.logRotation === 'object' ? body.logRotation : {};
+  const requestedIdle = body.idleDisconnect && typeof body.idleDisconnect === 'object' ? body.idleDisconnect : {};
+  const next = {
+    logRotation: {
+      enabled: Object.prototype.hasOwnProperty.call(requestedRotation, 'enabled')
+        ? requestedRotation.enabled : currentOpsSettings.logRotation.enabled,
+      retentionDays: Object.prototype.hasOwnProperty.call(requestedRotation, 'retentionDays')
+        ? requestedRotation.retentionDays : currentOpsSettings.logRotation.retentionDays,
+      lastRotationDate: currentOpsSettings.logRotation.lastRotationDate,
+      lastResult: currentOpsSettings.logRotation.lastResult,
+    },
+    idleDisconnect: {
+      enabled: Object.prototype.hasOwnProperty.call(requestedIdle, 'enabled')
+        ? requestedIdle.enabled : currentOpsSettings.idleDisconnect.enabled,
+      timeoutMinutes: Object.prototype.hasOwnProperty.call(requestedIdle, 'timeoutMinutes')
+        ? requestedIdle.timeoutMinutes : currentOpsSettings.idleDisconnect.timeoutMinutes,
+    },
+  };
+  currentOpsSettings = opsSettings.normalize(next);
+  saveOpsSettings();
+  res.json({ ok: true, config: publicOpsState() });
+});
+
+app.post('/api/ops-settings/rotate-logs', async function (req, res) {
+  if (!requireSettingsAuth(req, res)) return;
+  const result = await runManagedLogRotation(true);
+  res.status(result.ok ? 200 : 500).json({ ok: result.ok, result: result, config: publicOpsState() });
+});
+
+app.get('/api/access-control', function (req, res) {
+  if (!requireSettingsAuth(req, res)) return;
+  res.json({ ok: true, config: accessControl.publicConfig(accessConfig) });
+});
+
+app.put('/api/access-control/password', function (req, res) {
+  if (!requireSettingsAuth(req, res)) return;
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const currentPassword = String(body.currentPassword || '');
+  const newPassword = String(body.newPassword || '');
+  const confirmPassword = String(body.confirmPassword || '');
+  if (newPassword.length < 8) {
+    return res.status(400).json({ ok: false, message: '新密码至少需要 8 个字符' });
+  }
+  if (newPassword !== confirmPassword) {
+    return res.status(400).json({ ok: false, message: '两次输入的新密码不一致' });
+  }
+  if (!accessControl.authenticate(accessConfig, AUTH_USER, currentPassword, todayPassword())) {
+    return res.status(401).json({ ok: false, message: '当前密码错误' });
+  }
+  accessConfig = {
+    username: AUTH_USER,
+    password: accessControl.createPasswordRecord(newPassword),
+  };
+  saveAccessConfig();
+  res.json({ ok: true, config: accessControl.publicConfig(accessConfig) });
+});
+
+runScheduledLogRotation();
+const logRotationInterval = setInterval(runScheduledLogRotation, 60 * 60 * 1000);
+if (logRotationInterval && typeof logRotationInterval.unref === 'function') logRotationInterval.unref();
 
 // 注意：必须在 express.static 之前注册，否则 /protocol/static/... 会被本目录静态命中
 // 用 app.all + 通配，而不是 app.use('/protocol', ...)。
@@ -1684,6 +1842,17 @@ wss.on('connection', function (ws) {
   let sshReady = false;
   let lifetimeTimer = null; // 连接时长上限：到期后服务端主动断开
   let connectionHours = 0;
+  let idleTimer = null;
+
+  function touchIdleTimer() {
+    if (idleTimer) idleTimer.touch();
+  }
+
+  function clearIdleTimer() {
+    if (!idleTimer) return;
+    idleTimer.cancel();
+    idleTimer = null;
+  }
 
   function send(type, payload) {
     if (ws.readyState !== WebSocket.OPEN) return;
@@ -1716,11 +1885,24 @@ wss.on('connection', function (ws) {
   ssh.on('ready', function () {
     sshReady = true;
     send('status', { state: 'connected' });
+    const idleConfig = currentOpsSettings.idleDisconnect;
+    if (idleConfig.enabled) {
+      idleTimer = createIdleTimer({
+        timeoutMs: idleConfig.timeoutMinutes * 60 * 1000,
+        onIdle: function () {
+          send('error', { message: 'SSH 会话闲置超时，已自动断开', code: 'idle_timeout' });
+          try { ssh.end(); } catch (_e) {}
+          try { ws.close(); } catch (_e) {}
+        },
+      });
+      touchIdleTimer();
+    }
     // 连接时长上限：到期后由服务端主动断开，前端会清掉密码强制重输
     if (connectionHours > 0) {
       const ms = Math.min(connectionHours * 3600 * 1000, 0x7fffffff);
       lifetimeTimer = setTimeout(function () {
         send('error', { message: '连接时长已达 ' + connectionHours + ' 小时，已自动断开，请重新输入密码登录', code: 'lifetime_expired' });
+        clearIdleTimer();
         try { ssh.end(); } catch (_e) {}
         try { ws.close(); } catch (_e) {}
       }, ms);
@@ -1752,6 +1934,7 @@ wss.on('connection', function (ws) {
       });
 
       shellStream.on('data', function (data) {
+        touchIdleTimer();
         send('output', { data: data.toString('utf8') });
         if (!paused && ws.bufferedAmount >= BACKPRESSURE_HIGH) {
           paused = true;
@@ -1760,6 +1943,7 @@ wss.on('connection', function (ws) {
       });
 
       shellStream.on('close', function () {
+        clearIdleTimer();
         send('status', { state: 'closed' });
         ws.close();
       });
@@ -1767,6 +1951,7 @@ wss.on('connection', function (ws) {
   });
 
   ssh.on('error', function (err) {
+    clearIdleTimer();
     send('error', { message: err.message });
     ws.close();
   });
@@ -1780,6 +1965,7 @@ wss.on('connection', function (ws) {
     }
 
     const payload = msg && msg.payload ? msg.payload : {};
+    if (sshReady) touchIdleTimer();
 
     if (msg.type === 'connect') {
       const cfg = {
@@ -2248,6 +2434,7 @@ wss.on('connection', function (ws) {
   });
 
   ws.on('close', function () {
+    clearIdleTimer();
     sftp = null;
     sshReady = false;
     try {
