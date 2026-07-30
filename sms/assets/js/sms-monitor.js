@@ -49,9 +49,6 @@
   }
   el.btnOpenMon && el.btnOpenMon.addEventListener('click', openMonModal);
   el.btnCloseMon && el.btnCloseMon.addEventListener('click', closeMonModal);
-  el.monModal && el.monModal.addEventListener('click', function (e) {
-    if (e.target === el.monModal) closeMonModal();
-  });
 
   function hint(text, color) {
     el.monSaveHint.textContent = text || '';
@@ -223,9 +220,6 @@
     detailModal.setAttribute('aria-hidden', 'true');
   }
   btnCloseDetail && btnCloseDetail.addEventListener('click', closeDetailModal);
-  detailModal && detailModal.addEventListener('click', function (e) {
-    if (e.target === detailModal) closeDetailModal();
-  });
 
   function renderItems(opts) {
     // opts: { items, listEl, emptyEl, seenSet, timeField, cancelled }

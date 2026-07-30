@@ -4188,9 +4188,6 @@
       const sp = document.getElementById('fwSearchPort'); if (sp) sp.oninput = renderFwPorts;
       const sf = document.getElementById('fwSearchForward'); if (sf) sf.oninput = renderFwForwards;
       const sa = document.getElementById('fwSearchAddress'); if (sa) sa.oninput = renderFwAddresses;
-      // 弹窗背景点击关闭
-      const mask = document.getElementById('fwModalMask');
-      if (mask) mask.addEventListener('click', (e) => { if (e.target === mask) fwCloseModal(); });
       // 帮助弹窗
       const helpMask = document.getElementById('fwHelpMask');
       const helpBtn = document.getElementById('fwHelp');
@@ -4207,7 +4204,6 @@
       }
       if (helpBtn) helpBtn.onclick = openHelp;
       if (helpClose) helpClose.onclick = closeHelp;
-      if (helpMask) helpMask.addEventListener('click', (e) => { if (e.target === helpMask) closeHelp(); });
     }
 
     function sendWs(message) {
@@ -4903,9 +4899,6 @@
     el.openSettings?.addEventListener('click', () => openSettings('appearance'));
     el.openDocker?.addEventListener('click', () => openSettings('ops'));
     el.closeSettings?.addEventListener('click', () => closeSettings());
-    el.settingsMask?.addEventListener('click', (event) => {
-      if (event.target === el.settingsMask) closeSettings();
-    });
     el.drSave?.addEventListener('click', () => saveDockerRestart());
     el.opsSaveSettings?.addEventListener('click', () => saveOpsSettings());
     el.opsRotateNow?.addEventListener('click', () => rotateLogsNow());
@@ -4977,9 +4970,6 @@
       }
       applyModalAndConnect({ remember: true });
     });
-    el.modalMask.onclick = (event) => {
-      if (event.target === el.modalMask) setModal(false);
-    };
 
     el.clearBtn?.addEventListener('click', () => {
       state.lines = [{ kind: 'system', text: `已清屏 · ${state.currentHost.user}@${state.currentHost.name}` }];
@@ -5008,9 +4998,6 @@
     el.saveEditor?.addEventListener('click', () => saveEditorContent());
     el.editorTextarea?.addEventListener('input', (event) => {
       state.editorContent = event.target.value;
-    });
-    el.editorMask?.addEventListener('click', (event) => {
-      if (event.target === el.editorMask) closeEditor();
     });
     el.terminal.addEventListener('click', () => el.cmdInput.focus());
     el.terminal.addEventListener('keydown', (e) => {

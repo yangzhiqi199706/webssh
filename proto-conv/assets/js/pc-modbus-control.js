@@ -458,7 +458,6 @@
   // ---- 事件绑定 ----
   el.btnOpen.addEventListener('click', open);
   el.btnClose.addEventListener('click', close);
-  el.modal.addEventListener('click', function (e) { if (e.target === el.modal) close(); });
   el.btnScan.addEventListener('click', scanCommands);
   el.btnSelectAll.addEventListener('click', selectAll);
   el.btnSelectNone.addEventListener('click', selectNone);

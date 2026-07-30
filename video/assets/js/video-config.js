@@ -115,7 +115,6 @@
 
   el.btnOpen && el.btnOpen.addEventListener('click', open);
   el.btnClose && el.btnClose.addEventListener('click', close);
-  el.modal && el.modal.addEventListener('click', function (e) { if (e.target === el.modal) close(); });
   el.btnSave && el.btnSave.addEventListener('click', doSave);
   el.btnReload && el.btnReload.addEventListener('click', loadConfig);
 

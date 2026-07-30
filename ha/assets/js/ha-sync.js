@@ -145,9 +145,6 @@
   }
   infoBtn && infoBtn.addEventListener('click', openInfo);
   infoClose && infoClose.addEventListener('click', closeInfo);
-  infoModal && infoModal.addEventListener('click', function (e) {
-    if (e.target === infoModal) closeInfo();
-  });
   window.addEventListener('keydown', function (e) {
     if (e.key === 'Escape' && infoModal && infoModal.classList.contains('open')) closeInfo();
   });
@@ -324,9 +321,6 @@
   }
   schEl.btnInfo && schEl.btnInfo.addEventListener('click', openCronInfo);
   schEl.btnCloseCron && schEl.btnCloseCron.addEventListener('click', closeCronInfo);
-  schEl.cronModal && schEl.cronModal.addEventListener('click', function (e) {
-    if (e.target === schEl.cronModal) closeCronInfo();
-  });
   window.addEventListener('keydown', function (e) {
     if (e.key === 'Escape' && schEl.cronModal && schEl.cronModal.classList.contains('open')) closeCronInfo();
   });

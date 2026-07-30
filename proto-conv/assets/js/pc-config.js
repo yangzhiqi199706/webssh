@@ -307,9 +307,6 @@
   el.btnTest && el.btnTest.addEventListener('click', doTest);
   el.btnToggleProtocol && el.btnToggleProtocol.addEventListener('click', toggleProtocol);
   // ESC 关闭
-  el.modal && el.modal.addEventListener('click', function (e) {
-    if (e.target === el.modal) close();
-  });
 
   window.PcConfig = {
     open: open,

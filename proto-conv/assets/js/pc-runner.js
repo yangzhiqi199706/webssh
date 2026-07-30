@@ -341,9 +341,6 @@
   el.btnFillSample && el.btnFillSample.addEventListener('click', fillSample);
   el.btnCancelParam && el.btnCancelParam.addEventListener('click', closeParamModal);
   el.btnCloseParam && el.btnCloseParam.addEventListener('click', closeParamModal);
-  el.paramModal && el.paramModal.addEventListener('click', function (e) {
-    if (e.target === el.paramModal) closeParamModal();
-  });
 
   el.btnExpandAll && el.btnExpandAll.addEventListener('click', function () {
     el.container.querySelectorAll('.card').forEach(function (n) { n.classList.remove('collapsed'); });

@@ -86,18 +86,9 @@
 
   el.btnOpenPushModal && el.btnOpenPushModal.addEventListener('click', function () { openModal(el.pushModal); });
   el.btnClosePushModal && el.btnClosePushModal.addEventListener('click', function () { closeModal(el.pushModal); });
-  el.pushModal && el.pushModal.addEventListener('click', function (e) {
-    if (e.target === el.pushModal) closeModal(el.pushModal);
-  });
   el.btnOpenSendModal && el.btnOpenSendModal.addEventListener('click', function () { openModal(el.sendModal); });
   el.btnCloseSendModal && el.btnCloseSendModal.addEventListener('click', function () { closeModal(el.sendModal); });
-  el.sendModal && el.sendModal.addEventListener('click', function (e) {
-    if (e.target === el.sendModal) closeModal(el.sendModal);
-  });
   el.btnCloseHistoryDetail && el.btnCloseHistoryDetail.addEventListener('click', function () { closeModal(el.historyDetailModal); });
-  el.historyDetailModal && el.historyDetailModal.addEventListener('click', function (e) {
-    if (e.target === el.historyDetailModal) closeModal(el.historyDetailModal);
-  });
 
   // 收件人弹窗（只读）：打开时按需加载列表，不再有勾选/保存动作
   el.btnOpenRecipientsModal && el.btnOpenRecipientsModal.addEventListener('click', function () {
@@ -106,9 +97,6 @@
     else renderPersonsList();
   });
   el.btnCloseRecipientsModal && el.btnCloseRecipientsModal.addEventListener('click', function () { closeModal(el.recipientsModal); });
-  el.recipientsModal && el.recipientsModal.addEventListener('click', function (e) {
-    if (e.target === el.recipientsModal) closeModal(el.recipientsModal);
-  });
   el.btnReloadPersons && el.btnReloadPersons.addEventListener('click', function () { loadPersons(); });
   el.personFilter && el.personFilter.addEventListener('input', renderPersonsList);
   el.btnPreviewMode && el.btnPreviewMode.addEventListener('click', previewMode);

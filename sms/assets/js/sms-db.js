@@ -34,9 +34,6 @@
   }
   el.btnOpen && el.btnOpen.addEventListener('click', openModal);
   el.btnClose && el.btnClose.addEventListener('click', closeModal);
-  el.modal && el.modal.addEventListener('click', function (e) {
-    if (e.target === el.modal) closeModal();
-  });
 
   var userEditedPassword = false;
   var formInitialized = false;

@@ -281,9 +281,6 @@
   }
   el.btnInfo && el.btnInfo.addEventListener('click', openInfo);
   el.btnCloseInfo && el.btnCloseInfo.addEventListener('click', closeInfo);
-  el.infoModal && el.infoModal.addEventListener('click', function (e) {
-    if (e.target === el.infoModal) closeInfo();
-  });
   window.addEventListener('keydown', function (e) {
     if (e.key === 'Escape' && el.infoModal && el.infoModal.classList.contains('open')) closeInfo();
   });

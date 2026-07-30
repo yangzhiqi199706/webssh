@@ -210,7 +210,6 @@
   // ---- 事件 ----
   el.btnOpen.addEventListener('click', open);
   el.btnClose.addEventListener('click', close);
-  el.modal.addEventListener('click', function (e) { if (e.target === el.modal) close(); });
   el.btnSave.addEventListener('click', function () { saveAndApply(); });
   el.btnEnable.addEventListener('click', doEnable);
   el.btnDisable.addEventListener('click', doDisable);

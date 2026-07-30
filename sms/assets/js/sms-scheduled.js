@@ -33,9 +33,6 @@
   }
   el.btnOpen && el.btnOpen.addEventListener('click', openModal);
   el.btnClose && el.btnClose.addEventListener('click', closeModal);
-  el.modal && el.modal.addEventListener('click', function (e) {
-    if (e.target === el.modal) closeModal();
-  });
 
   function esc(v) {
     return String(v == null ? '' : v)

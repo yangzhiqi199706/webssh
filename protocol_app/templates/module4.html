@@ -620,9 +620,6 @@
 
     closeModal.addEventListener("click", closeParamPreview);
     confirmBtn.addEventListener("click", closeParamPreview);
-    previewModal.addEventListener("click", (e) => {
-      if (e.target === previewModal) closeParamPreview();
-    });
 
     loadRules();
   </script>
