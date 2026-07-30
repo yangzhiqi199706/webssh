@@ -1301,13 +1301,72 @@
                 <button class="btn primary" id="drSave" type="button">保存</button>
               </div>
             </div>
-            <div class="settings-placeholder" style="margin-top:14px">
-              <h4>规划中 <span class="soon">Soon</span></h4>
-              <ul>
-                <li>webssh 服务日志保留天数 / 自动轮转</li>
-                <li>页面访问密码</li>
-                <li>闲置自动断开</li>
-              </ul>
+            <div class="settings-card" style="margin-top:14px">
+              <div style="font-size:13px;font-weight:600;color:#e2e8f0;margin-bottom:10px">服务日志管理</div>
+              <div class="grid2">
+                <label class="field">
+                  <span>每日自动轮转</span>
+                  <select id="opsLogRotateEnabled">
+                    <option value="1">开启</option>
+                    <option value="0">关闭</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>日志保留天数（1-3650）</span>
+                  <input id="opsLogRetentionDays" type="number" min="1" max="3650" step="1" value="30" />
+                </label>
+              </div>
+              <div class="field" style="margin-top:12px">
+                <span>轮转状态</span>
+                <div id="opsLogRotateStatus" role="status" aria-live="polite" style="font-size:13px;color:#cbd5e1;padding:8px 10px;background:#0b1220;border:1px solid #1f2937;border-radius:10px;min-height:20px">未加载</div>
+              </div>
+              <div class="field">
+                <span>上次轮转结果</span>
+                <div id="opsLogRotateResult" role="status" aria-live="polite" style="font-size:12px;color:#94a3b8;padding:8px 10px;background:#0b1220;border:1px solid #1f2937;border-radius:10px;min-height:20px;white-space:pre-wrap;word-break:break-all">无</div>
+              </div>
+              <div style="display:flex;justify-content:space-between;gap:10px;padding-top:10px;flex-wrap:wrap">
+                <button class="btn" id="opsRotateNow" type="button">立即轮转</button>
+                <button class="btn primary" id="opsSaveSettings" type="button">保存运维设置</button>
+              </div>
+            </div>
+            <div class="settings-card">
+              <div style="font-size:13px;font-weight:600;color:#e2e8f0;margin-bottom:6px">SSH 闲置自动断开</div>
+              <div style="font-size:12px;color:var(--muted);margin-bottom:10px">仅断开闲置 SSH 会话，不退出当前页面登录。</div>
+              <div class="grid2">
+                <label class="field">
+                  <span>闲置自动断开</span>
+                  <select id="opsIdleEnabled">
+                    <option value="0">关闭</option>
+                    <option value="1">开启</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>闲置分钟（1-1440）</span>
+                  <input id="opsIdleMinutes" type="number" min="1" max="1440" step="1" value="30" />
+                </label>
+              </div>
+            </div>
+            <div class="settings-card">
+              <div style="font-size:13px;font-weight:600;color:#e2e8f0;margin-bottom:6px">页面访问密码</div>
+              <div id="accessPasswordHint" style="font-size:12px;color:var(--muted);margin-bottom:10px">首次设置前，请使用当前服务器日期作为当前密码。</div>
+              <div class="grid2">
+                <label class="field">
+                  <span>当前密码</span>
+                  <input id="accessCurrentPassword" type="password" autocomplete="current-password" />
+                </label>
+                <label class="field">
+                  <span>新密码（至少 8 个字符）</span>
+                  <input id="accessNewPassword" type="password" autocomplete="new-password" />
+                </label>
+              </div>
+              <label class="field" style="margin-top:10px">
+                <span>确认新密码</span>
+                <input id="accessConfirmPassword" type="password" autocomplete="new-password" />
+              </label>
+              <div id="accessPasswordStatus" role="status" aria-live="polite" style="font-size:12px;color:#94a3b8;padding-top:8px;min-height:20px">未加载</div>
+              <div style="display:flex;justify-content:flex-end;padding-top:4px">
+                <button class="btn primary" id="accessPasswordSave" type="button">保存访问密码</button>
+              </div>
             </div>
           </section>
 
@@ -2133,6 +2192,20 @@
       drSave: document.getElementById('drSave'),
       drTopDot: document.getElementById('drTopDot'),
       drTopState: document.getElementById('drTopState'),
+      opsLogRotateEnabled: document.getElementById('opsLogRotateEnabled'),
+      opsLogRetentionDays: document.getElementById('opsLogRetentionDays'),
+      opsLogRotateStatus: document.getElementById('opsLogRotateStatus'),
+      opsLogRotateResult: document.getElementById('opsLogRotateResult'),
+      opsRotateNow: document.getElementById('opsRotateNow'),
+      opsSaveSettings: document.getElementById('opsSaveSettings'),
+      opsIdleEnabled: document.getElementById('opsIdleEnabled'),
+      opsIdleMinutes: document.getElementById('opsIdleMinutes'),
+      accessPasswordHint: document.getElementById('accessPasswordHint'),
+      accessCurrentPassword: document.getElementById('accessCurrentPassword'),
+      accessNewPassword: document.getElementById('accessNewPassword'),
+      accessConfirmPassword: document.getElementById('accessConfirmPassword'),
+      accessPasswordStatus: document.getElementById('accessPasswordStatus'),
+      accessPasswordSave: document.getElementById('accessPasswordSave'),
       closeModal: document.getElementById('closeModal'),
       saveModal: document.getElementById('saveModal'),
       rememberModal: document.getElementById('rememberModal'),
@@ -2957,6 +3030,8 @@
       el.settingsMask.classList.add('open');
       el.settingsMask.setAttribute('aria-hidden', 'false');
       refreshDockerRestart(false);
+      refreshOpsSettings(false);
+      refreshAccessControl();
       if (drRefreshTimer) clearInterval(drRefreshTimer);
       drRefreshTimer = setInterval(() => refreshDockerRestart(true), 1000);
     }
@@ -3593,6 +3668,183 @@
         renderDockerRestart(data, true);
       } catch (err) {
         alert('操作失败：' + err.message);
+      }
+    }
+
+    function setOpsLogStatus(text, isError) {
+      if (!el.opsLogRotateStatus) return;
+      el.opsLogRotateStatus.textContent = text || '';
+      el.opsLogRotateStatus.style.color = isError ? '#fca5a5' : '#cbd5e1';
+    }
+
+    function renderOpsSettings(data, preserveInputs) {
+      const config = data && data.config ? data.config : (data || {});
+      const rotation = config.logRotation || {};
+      const idle = config.idleDisconnect || {};
+      if (!preserveInputs) {
+        if (el.opsLogRotateEnabled) el.opsLogRotateEnabled.value = rotation.enabled ? '1' : '0';
+        if (el.opsLogRetentionDays) el.opsLogRetentionDays.value = String(rotation.retentionDays || 30);
+        if (el.opsIdleEnabled) el.opsIdleEnabled.value = idle.enabled ? '1' : '0';
+        if (el.opsIdleMinutes) el.opsIdleMinutes.value = String(idle.timeoutMinutes || 30);
+      }
+      const dateText = rotation.lastRotationDate ? ('上次自动轮转日期：' + rotation.lastRotationDate) : '尚未执行过自动轮转';
+      setOpsLogStatus((rotation.enabled ? '自动轮转已开启' : '自动轮转已关闭') + ' · ' + dateText, false);
+      if (el.opsLogRotateResult) {
+        const result = rotation.lastResult;
+        if (!result) {
+          el.opsLogRotateResult.textContent = '无';
+        } else {
+          const lines = [result.ok ? '成功' : '失败'];
+          if (result.finishedAt) lines.push('完成：' + result.finishedAt);
+          if (Array.isArray(result.rotated)) lines.push('已轮转：' + (result.rotated.length ? result.rotated.join('、') : '无非空日志'));
+          if (Array.isArray(result.deleted)) lines.push('已清理：' + (result.deleted.length ? result.deleted.join('、') : '无'));
+          if (result.message) lines.push('错误：' + result.message);
+          el.opsLogRotateResult.textContent = lines.join('\n');
+        }
+      }
+    }
+
+    async function readJsonResponse(response) {
+      const data = await response.json().catch(function () { return {}; });
+      if (!response.ok || !data.ok) {
+        throw new Error(data.message || ('HTTP ' + response.status));
+      }
+      return data;
+    }
+
+    async function refreshOpsSettings(preserveInputs) {
+      try {
+        const response = await fetch('/api/ops-settings', { credentials: 'same-origin' });
+        renderOpsSettings(await readJsonResponse(response), preserveInputs);
+      } catch (error) {
+        setOpsLogStatus('加载失败：' + error.message, true);
+      }
+    }
+
+    async function saveOpsSettings() {
+      const retentionDays = Number(el.opsLogRetentionDays && el.opsLogRetentionDays.value);
+      const idleMinutes = Number(el.opsIdleMinutes && el.opsIdleMinutes.value);
+      if (!Number.isFinite(retentionDays) || retentionDays < 1 || retentionDays > 3650) {
+        alert('日志保留天数必须是 1-3650 之间的整数');
+        return;
+      }
+      if (!Number.isFinite(idleMinutes) || idleMinutes < 1 || idleMinutes > 1440) {
+        alert('闲置分钟必须是 1-1440 之间的整数');
+        return;
+      }
+      const button = el.opsSaveSettings;
+      const oldText = button ? button.textContent : '';
+      if (button) { button.disabled = true; button.textContent = '保存中...'; }
+      try {
+        const response = await fetch('/api/ops-settings', {
+          method: 'PUT',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            logRotation: {
+              enabled: el.opsLogRotateEnabled && el.opsLogRotateEnabled.value === '1',
+              retentionDays: retentionDays,
+            },
+            idleDisconnect: {
+              enabled: el.opsIdleEnabled && el.opsIdleEnabled.value === '1',
+              timeoutMinutes: idleMinutes,
+            },
+          }),
+        });
+        renderOpsSettings(await readJsonResponse(response), false);
+        if (button) {
+          button.textContent = '已保存';
+          setTimeout(function () { button.textContent = oldText; button.disabled = false; }, 1200);
+        }
+      } catch (error) {
+        if (button) { button.textContent = oldText; button.disabled = false; }
+        setOpsLogStatus('保存失败：' + error.message, true);
+      }
+    }
+
+    async function rotateLogsNow() {
+      const button = el.opsRotateNow;
+      const oldText = button ? button.textContent : '';
+      if (button) { button.disabled = true; button.textContent = '轮转中...'; }
+      try {
+        const response = await fetch('/api/ops-settings/rotate-logs', {
+          method: 'POST',
+          credentials: 'same-origin',
+        });
+        const data = await response.json().catch(function () { return {}; });
+        if (data.config) renderOpsSettings(data.config, false);
+        if (!response.ok || !data.ok) throw new Error(data.message || (data.result && data.result.message) || ('HTTP ' + response.status));
+      } catch (error) {
+        setOpsLogStatus('轮转失败：' + error.message, true);
+      } finally {
+        if (button) { button.textContent = oldText; button.disabled = false; }
+      }
+    }
+
+    function renderAccessControl(data) {
+      const config = data && data.config ? data.config : (data || {});
+      const configured = Boolean(config.hasPassword);
+      if (el.accessPasswordHint) {
+        el.accessPasswordHint.textContent = configured
+          ? '已设置固定访问密码。修改时请输入当前固定密码。'
+          : '首次设置前，请使用当前服务器日期（YYYYMMDD）作为当前密码。';
+      }
+      if (el.accessPasswordStatus) {
+        el.accessPasswordStatus.textContent = configured ? '固定访问密码已设置' : '当前仍使用服务器当天日期密码';
+        el.accessPasswordStatus.style.color = configured ? '#a7f3d0' : '#94a3b8';
+      }
+    }
+
+    async function refreshAccessControl() {
+      try {
+        const response = await fetch('/api/access-control', { credentials: 'same-origin' });
+        renderAccessControl(await readJsonResponse(response));
+      } catch (error) {
+        if (el.accessPasswordStatus) {
+          el.accessPasswordStatus.textContent = '加载失败：' + error.message;
+          el.accessPasswordStatus.style.color = '#fca5a5';
+        }
+      }
+    }
+
+    async function saveAccessPassword() {
+      const currentPassword = el.accessCurrentPassword ? el.accessCurrentPassword.value : '';
+      const newPassword = el.accessNewPassword ? el.accessNewPassword.value : '';
+      const confirmPassword = el.accessConfirmPassword ? el.accessConfirmPassword.value : '';
+      if (!currentPassword) {
+        if (el.accessPasswordStatus) el.accessPasswordStatus.textContent = '请先输入当前密码';
+        return;
+      }
+      if (newPassword.length < 8) {
+        if (el.accessPasswordStatus) el.accessPasswordStatus.textContent = '新密码至少需要 8 个字符';
+        return;
+      }
+      if (newPassword !== confirmPassword) {
+        if (el.accessPasswordStatus) el.accessPasswordStatus.textContent = '两次输入的新密码不一致';
+        return;
+      }
+      const button = el.accessPasswordSave;
+      const oldText = button ? button.textContent : '';
+      if (button) { button.disabled = true; button.textContent = '保存中...'; }
+      try {
+        const response = await fetch('/api/access-control/password', {
+          method: 'PUT',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ currentPassword: currentPassword, newPassword: newPassword, confirmPassword: confirmPassword }),
+        });
+        renderAccessControl(await readJsonResponse(response));
+        if (el.accessCurrentPassword) el.accessCurrentPassword.value = '';
+        if (el.accessNewPassword) el.accessNewPassword.value = '';
+        if (el.accessConfirmPassword) el.accessConfirmPassword.value = '';
+        if (el.accessPasswordStatus) el.accessPasswordStatus.textContent = '访问密码已保存，下次登录起使用新密码';
+      } catch (error) {
+        if (el.accessPasswordStatus) {
+          el.accessPasswordStatus.textContent = '保存失败：' + error.message;
+          el.accessPasswordStatus.style.color = '#fca5a5';
+        }
+      } finally {
+        if (button) { button.textContent = oldText; button.disabled = false; }
       }
     }
 
@@ -4655,6 +4907,9 @@
       if (event.target === el.settingsMask) closeSettings();
     });
     el.drSave?.addEventListener('click', () => saveDockerRestart());
+    el.opsSaveSettings?.addEventListener('click', () => saveOpsSettings());
+    el.opsRotateNow?.addEventListener('click', () => rotateLogsNow());
+    el.accessPasswordSave?.addEventListener('click', () => saveAccessPassword());
     el.drCancel?.addEventListener('click', () => postDockerRestart('/api/docker-restart/cancel'));
     el.drRestartCountdown?.addEventListener('click', () => postDockerRestart('/api/docker-restart/restart-countdown'));
     el.drTrigger?.addEventListener('click', async () => {
