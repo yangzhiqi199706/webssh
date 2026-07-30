@@ -128,6 +128,7 @@ async function main() {
 
     // ---------- 3. 主壳 ----------
     await exec(conn, `cp -a /opt/webssh/app/server.js /opt/webssh/app/index.html /opt/webssh/app/package.json /opt/webssh/app/package-lock.json ${STAGE_DIR}/app/`);
+    await exec(conn, `cp -a /opt/webssh/app/lib ${STAGE_DIR}/app/`);
     await exec(conn, `cp -a /opt/webssh/app/login.html ${STAGE_DIR}/app/ 2>/dev/null || true`);
     await exec(conn, `cp -a /opt/webssh/app/serial ${STAGE_DIR}/app/ 2>/dev/null || true`);
     await exec(conn, `cp -a /opt/webssh/app/sms ${STAGE_DIR}/app/ 2>/dev/null || true`);
@@ -250,7 +251,7 @@ async function main() {
     await exec(conn, `chmod +x ${STAGE_DIR}/install-all.sh ${STAGE_DIR}/uninstall-all.sh && chmod +x ${STAGE_DIR}/scripts/*.sh 2>/dev/null || true`);
 
     // ---------- 9. 结构验证 ----------
-    await exec(conn, `test -x ${STAGE_DIR}/runtime/node/bin/node && test -x ${STAGE_DIR}/protocol/runtime/python/bin/python3 && test -d ${STAGE_DIR}/app/node_modules && test -d ${STAGE_DIR}/protocol/runtime/site-packages && test -x ${STAGE_DIR}/install-all.sh && test -x ${STAGE_DIR}/uninstall-all.sh && test -f ${STAGE_DIR}/systemd/webssh.service.template && test -f ${STAGE_DIR}/systemd/webssh-protocol.service.template && test -f ${STAGE_DIR}/protocol/app/module4_config/j2k2_format_config.json && echo 结构验证通过`);
+    await exec(conn, `test -x ${STAGE_DIR}/runtime/node/bin/node && test -x ${STAGE_DIR}/protocol/runtime/python/bin/python3 && test -d ${STAGE_DIR}/app/node_modules && test -d ${STAGE_DIR}/app/lib && test -d ${STAGE_DIR}/protocol/runtime/site-packages && test -x ${STAGE_DIR}/install-all.sh && test -x ${STAGE_DIR}/uninstall-all.sh && test -f ${STAGE_DIR}/systemd/webssh.service.template && test -f ${STAGE_DIR}/systemd/webssh-protocol.service.template && test -f ${STAGE_DIR}/protocol/app/module4_config/j2k2_format_config.json && echo 结构验证通过`);
 
     // ---------- 10. 大小盘点 ----------
     log('--- stage 大小盘点 ---');
