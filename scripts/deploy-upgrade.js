@@ -46,6 +46,7 @@ function upgradePayloadEntries() {
     'serial',
     'sms',
     'ha',
+    'overview',
     'proto-conv',
     'video',
     'db',

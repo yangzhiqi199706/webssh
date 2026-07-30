@@ -133,6 +133,7 @@ async function main() {
     await exec(conn, `cp -a /opt/webssh/app/serial ${STAGE_DIR}/app/ 2>/dev/null || true`);
     await exec(conn, `cp -a /opt/webssh/app/sms ${STAGE_DIR}/app/ 2>/dev/null || true`);
     await exec(conn, `cp -a /opt/webssh/app/ha ${STAGE_DIR}/app/ 2>/dev/null || true`);
+    await exec(conn, `cp -a /opt/webssh/app/overview ${STAGE_DIR}/app/`);
     await exec(conn, `cp -a /opt/webssh/app/proto-conv ${STAGE_DIR}/app/ 2>/dev/null || true`);
     await exec(conn, `cp -a /opt/webssh/app/video ${STAGE_DIR}/app/ 2>/dev/null || true`);
     await exec(conn, `cp -a /opt/webssh/app/db ${STAGE_DIR}/app/ 2>/dev/null || true`);
@@ -251,7 +252,7 @@ async function main() {
     await exec(conn, `chmod +x ${STAGE_DIR}/install-all.sh ${STAGE_DIR}/uninstall-all.sh && chmod +x ${STAGE_DIR}/scripts/*.sh 2>/dev/null || true`);
 
     // ---------- 9. 结构验证 ----------
-    await exec(conn, `test -x ${STAGE_DIR}/runtime/node/bin/node && test -x ${STAGE_DIR}/protocol/runtime/python/bin/python3 && test -d ${STAGE_DIR}/app/lib && test -d ${STAGE_DIR}/app/node_modules && test -d ${STAGE_DIR}/protocol/runtime/site-packages && test -x ${STAGE_DIR}/install-all.sh && test -x ${STAGE_DIR}/uninstall-all.sh && test -f ${STAGE_DIR}/systemd/webssh.service.template && test -f ${STAGE_DIR}/systemd/webssh-protocol.service.template && test -f ${STAGE_DIR}/protocol/app/module4_config/j2k2_format_config.json && echo 结构验证通过`);
+    await exec(conn, `test -x ${STAGE_DIR}/runtime/node/bin/node && test -x ${STAGE_DIR}/protocol/runtime/python/bin/python3 && test -d ${STAGE_DIR}/app/lib && test -d ${STAGE_DIR}/app/node_modules && test -f ${STAGE_DIR}/app/overview/index.html && test -f ${STAGE_DIR}/app/overview/assets/js/overview.js && test -f ${STAGE_DIR}/app/overview/assets/css/style.css && test -d ${STAGE_DIR}/protocol/runtime/site-packages && test -x ${STAGE_DIR}/install-all.sh && test -x ${STAGE_DIR}/uninstall-all.sh && test -f ${STAGE_DIR}/systemd/webssh.service.template && test -f ${STAGE_DIR}/systemd/webssh-protocol.service.template && test -f ${STAGE_DIR}/protocol/app/module4_config/j2k2_format_config.json && echo 结构验证通过`);
 
     // ---------- 10. 大小盘点 ----------
     log('--- stage 大小盘点 ---');

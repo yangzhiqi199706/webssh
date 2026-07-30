@@ -957,6 +957,9 @@
     <div class="serial-view" id="haView">
       <iframe id="haFrame" title="双机热备" loading="lazy" src="about:blank"></iframe>
     </div>
+    <div class="serial-view" id="overviewView">
+      <iframe id="overviewFrame" title="服务总览" loading="lazy" src="about:blank"></iframe>
+    </div>
     <div class="serial-view" id="protoConvView">
       <iframe id="protoConvFrame" title="协议转换" loading="lazy" src="about:blank"></iframe>
     </div>
@@ -2238,6 +2241,8 @@
       protocolFrame: document.getElementById('protocolFrame'),
       haView: document.getElementById('haView'),
       haFrame: document.getElementById('haFrame'),
+      overviewView: document.getElementById('overviewView'),
+      overviewFrame: document.getElementById('overviewFrame'),
       protoConvView: document.getElementById('protoConvView'),
       protoConvFrame: document.getElementById('protoConvFrame'),
       videoView: document.getElementById('videoView'),
@@ -2289,6 +2294,7 @@
       { id: 'serial', label: '串口调试', icon: 'COM', title: '通过浏览器 WebSerial 连接本地串口设备' },
       { id: 'sms', label: '信创短信猫', icon: 'SMS', title: '数据库监测 + 短信猫推送' },
       { id: 'ha', label: '双机热备', icon: 'HA', title: '主备服务器心跳监测与告警' },
+      { id: 'overview', label: '服务总览', icon: 'OPS', title: '本机、双机热备与 dcim 的只读运行总览' },
       { id: 'proto-conv', label: '协议转换', icon: 'PC', title: '8082 接口可视化调用与协议转换' },
       { id: 'video', label: '视频监控', icon: 'VID', title: 'GB/T 28181 视频接入与 1/4/9/16 分屏' },
       { id: 'db', label: '数据库管理', icon: 'DB', title: 'MySQL / openGauss / 达梦 DM 三库统一管理' },
@@ -5133,6 +5139,7 @@
       const isSms = view === 'sms';
       const isProtocol = view === 'protocol';
       const isHa = view === 'ha';
+      const isOverview = view === 'overview';
       const isProtoConv = view === 'proto-conv';
       const isVideo = view === 'video';
       const isDb = view === 'db';
@@ -5141,6 +5148,7 @@
       el.smsView.classList.toggle('active', isSms);
       if (el.protocolView) el.protocolView.classList.toggle('active', isProtocol);
       if (el.haView) el.haView.classList.toggle('active', isHa);
+      if (el.overviewView) el.overviewView.classList.toggle('active', isOverview);
       if (el.protoConvView) el.protoConvView.classList.toggle('active', isProtoConv);
       if (el.videoView) el.videoView.classList.toggle('active', isVideo);
       if (el.dbView) el.dbView.classList.toggle('active', isDb);
@@ -5164,6 +5172,11 @@
         if (el.haFrame && !el.haFrame.dataset.loaded) {
           el.haFrame.src = './ha/index.html';
           el.haFrame.dataset.loaded = '1';
+        }
+      } else if (isOverview) {
+        if (el.overviewFrame && !el.overviewFrame.dataset.loaded) {
+          el.overviewFrame.src = './overview/index.html';
+          el.overviewFrame.dataset.loaded = '1';
         }
       } else if (isProtoConv) {
         if (el.protoConvFrame && !el.protoConvFrame.dataset.loaded) {

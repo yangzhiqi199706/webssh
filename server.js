@@ -11,6 +11,7 @@ const accessControl = require('./lib/access-control');
 const opsSettings = require('./lib/ops-settings');
 const { rotateLogs } = require('./lib/log-rotation');
 const { createIdleTimer } = require('./lib/ssh-idle-timer');
+const { createServiceOverview } = require('./lib/service-overview');
 const { spawn } = require('child_process');
 const httpProxy = require('http-proxy');
 
@@ -610,7 +611,21 @@ const ACCESS_CONTROL_PATH = process.env.WEBSSH_ACCESS_CONTROL_CONFIG
   || path.join(CONFIG_DIR, 'access-control.json');
 const OPS_SETTINGS_PATH = process.env.WEBSSH_OPS_SETTINGS_CONFIG
   || path.join(CONFIG_DIR, 'ops-settings.json');
+const SERVICE_OVERVIEW_HISTORY_PATH = process.env.WEBSSH_SERVICE_OVERVIEW_HISTORY
+  || path.join(CONFIG_DIR, 'service-overview-history.json');
+const SERVICE_OVERVIEW_HA_CONFIG_PATH = process.env.HA_CONFIG
+  || path.join(__dirname, 'config', 'ha.json');
 const WEBSSH_LOG_DIR = process.env.WEBSSH_LOG_DIR || path.join(__dirname, '..', 'logs');
+const serviceOverview = createServiceOverview({
+  fs: fs,
+  path: path,
+  Client: Client,
+  spawn: spawn,
+  historyPath: SERVICE_OVERVIEW_HISTORY_PATH,
+  haConfigPath: SERVICE_OVERVIEW_HA_CONFIG_PATH,
+  intervalMs: 60000,
+  retentionMs: 7 * 24 * 60 * 60 * 1000,
+});
 const AUTH_USER = accessControl.USERNAME;
 const authTokens = new Map(); // token -> expireAtMs
 const sshIdleSessionReconfigurers = new Set();
@@ -676,6 +691,29 @@ function isAuthed(req) {
 }
 
 app.use(express.json({ limit: '16mb' }));
+
+app.get('/api/service-overview', function (req, res) {
+  if (!requireSettingsAuth(req, res)) return;
+  res.json({
+    ok: true,
+    snapshot: serviceOverview.getSnapshot(),
+    history: serviceOverview.getHistory(),
+  });
+});
+
+app.post('/api/service-overview/refresh', async function (req, res) {
+  if (!requireSettingsAuth(req, res)) return;
+  try {
+    await serviceOverview.refresh();
+    res.json({
+      ok: true,
+      snapshot: serviceOverview.getSnapshot(),
+      history: serviceOverview.getHistory(),
+    });
+  } catch (_err) {
+    res.status(502).json({ ok: false, message: '服务总览刷新失败' });
+  }
+});
 
 app.post('/api/auth/login', function (req, res) {
   const body = req.body || {};
@@ -13573,5 +13611,26 @@ echo json_encode(array(
 
 const port = Number(process.env.PORT || 3000);
 server.listen(port, function () {
+  serviceOverview.start();
   console.log('Web SSH running at http://0.0.0.0:' + port);
 });
+
+let serviceOverviewShuttingDown = false;
+function shutdownServiceOverview() {
+  if (serviceOverviewShuttingDown) return;
+  serviceOverviewShuttingDown = true;
+  serviceOverview.stop();
+
+  const shutdownTimeout = setTimeout(function () {
+    process.exit(1);
+  }, 5000);
+  shutdownTimeout.unref();
+
+  server.close(function () {
+    clearTimeout(shutdownTimeout);
+    process.exit(0);
+  });
+}
+
+process.once('SIGINT', shutdownServiceOverview);
+process.once('SIGTERM', shutdownServiceOverview);

@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>运维指挥台</title>
+  <link rel="stylesheet" href="./assets/css/style.css">
+</head>
+<body>
+  <main class="command-center">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">运维指挥台</p>
+        <h1>服务总览</h1>
+      </div>
+      <div class="topbar-actions">
+        <div class="updated-at" id="overviewUpdatedAt">最后采样：暂无数据</div>
+        <button class="refresh-button" id="overviewRefresh" type="button" title="刷新服务总览">刷新</button>
+      </div>
+    </header>
+    <p class="request-error" id="overviewRequestError" role="status" hidden></p>
+
+    <section class="summary-strip" aria-label="总览状态">
+      <div class="summary-item"><span class="label">采样状态</span><strong id="overviewHealth" class="unknown">暂无数据</strong></div>
+      <div class="summary-item"><span class="label">当前角色</span><strong id="overviewRole">--</strong></div>
+      <div class="summary-item"><span class="label">历史保留</span><strong>7 天 / 1 分钟</strong></div>
+    </section>
+
+    <section class="section" aria-labelledby="resourceTitle">
+      <div class="section-heading"><h2 id="resourceTitle">主机资源</h2></div>
+      <div class="host-grid" id="overviewHosts">
+        <article class="host-panel" data-host="local"><div class="host-panel-head"><h3>本机</h3><span class="status unknown">暂无数据</span></div><div class="resource-grid"></div></article>
+        <article class="host-panel" data-host="peer"><div class="host-panel-head"><h3>HA 对端</h3><span class="status unknown">暂无数据</span></div><div class="resource-grid"></div></article>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="serviceTitle">
+      <div class="section-heading"><h2 id="serviceTitle">服务矩阵</h2></div>
+      <div class="service-grid" id="overviewServices"><p class="empty-state">暂无数据</p></div>
+    </section>
+
+    <section class="section" aria-labelledby="alertTitle">
+      <div class="section-heading"><h2 id="alertTitle">异常列表</h2></div>
+      <div class="alert-list" id="overviewAlerts"><p class="empty-state">暂无数据</p></div>
+    </section>
+
+    <section class="section" aria-labelledby="trendTitle">
+      <div class="section-heading"><h2 id="trendTitle">7 天趋势</h2><span class="legend"><i class="legend-local"></i>本机 <i class="legend-peer"></i>HA 对端</span></div>
+      <div class="trend-grid" id="overviewTrend">
+        <article class="trend-panel"><h3>CPU 使用率</h3><canvas data-metric="cpu" aria-label="CPU 使用率趋势"></canvas><p class="canvas-empty">暂无数据</p></article>
+        <article class="trend-panel"><h3>内存使用率</h3><canvas data-metric="memory" aria-label="内存使用率趋势"></canvas><p class="canvas-empty">暂无数据</p></article>
+        <article class="trend-panel"><h3>磁盘使用率</h3><canvas data-metric="disk" aria-label="磁盘使用率趋势"></canvas><p class="canvas-empty">暂无数据</p></article>
+      </div>
+    </section>
+  </main>
+  <script src="./assets/js/overview.js"></script>
+</body>
+</html>

@@ -100,6 +100,7 @@ function protocolMainSyncEntries() {
     'package-lock.json',
     'lib',
     'video',
+    'overview',
   ];
 }
 
@@ -110,6 +111,8 @@ function createMainSyncDirectorySwap(mainSync, appDir, entry, stamp) {
     ? ['dcim-wvp.js', 'dcim-wvp-runtime.js']
     : entry === 'video'
       ? ['index.html', 'assets/js/video-runtime.js', 'assets/css/style.css']
+      : entry === 'overview'
+        ? ['index.html', 'assets/js/overview.js', 'assets/css/style.css']
       : null;
   if (!requiredFiles) throw new Error('不支持的主壳目录切换: ' + entry);
   const source = `${mainSync}/${entry}`;
@@ -131,7 +134,7 @@ function createMainSyncDirectorySwap(mainSync, appDir, entry, stamp) {
 function createMainSyncReleasePlan(appDir, stamp, service, httpPort) {
   const entries = [
     'server.js', 'index.html', 'login.html', 'package.json', 'package-lock.json',
-    'node_modules', 'lib', 'video', 'snmp-bundle', 'proto-conv', 'db',
+    'node_modules', 'lib', 'video', 'overview', 'snmp-bundle', 'proto-conv', 'db',
   ];
   const backup = `${appDir}/.main-sync-backup-${stamp}`;
   const backupSteps = entries.map((entry) => {
@@ -142,7 +145,7 @@ function createMainSyncReleasePlan(appDir, stamp, service, httpPort) {
     const target = `${appDir}/${entry}`;
     return `if [ -e ${backup}/.${entry}.exists ]; then rm -rf ${target}; cp -a ${backup}/${entry} ${target}; else rm -rf ${target}; fi`;
   });
-  restoreSteps.push(`rm -rf ${appDir}/.lib.stage-${stamp} ${appDir}/.lib.backup-${stamp} ${appDir}/.video.stage-${stamp} ${appDir}/.video.backup-${stamp}`);
+  restoreSteps.push(`rm -rf ${appDir}/.lib.stage-${stamp} ${appDir}/.lib.backup-${stamp} ${appDir}/.video.stage-${stamp} ${appDir}/.video.backup-${stamp} ${appDir}/.overview.stage-${stamp} ${appDir}/.overview.backup-${stamp}`);
   return {
     backup: backup,
     backupCommand: `set -e; rm -rf ${backup}; mkdir -p ${backup}; ${backupSteps.join('; ')}`,
@@ -516,7 +519,7 @@ async function main() {
       await exec(conn, `cp -a ${INSTALL_DIR}/app/server.js ${INSTALL_DIR}/app/server.js.bak-${stamp}`);
       await exec(conn, `cp -a ${INSTALL_DIR}/app/index.html ${INSTALL_DIR}/app/index.html.bak-${stamp}`);
 
-      for (const entry of ['lib', 'video']) {
+      for (const entry of ['lib', 'video', 'overview']) {
         const swap = createMainSyncDirectorySwap(mainSync, `${INSTALL_DIR}/app`, entry, stamp);
         await exec(conn, swap.stage);
         await exec(conn, swap.switch);
@@ -525,7 +528,7 @@ async function main() {
       for (const entry of MAIN_SYNC_ENTRIES) {
         const source = `${mainSync}/${entry}`;
         const target = `${INSTALL_DIR}/app/${entry}`;
-        if (entry !== 'lib' && entry !== 'video') await exec(conn, `cp -f ${source} ${target}`);
+        if (entry !== 'lib' && entry !== 'video' && entry !== 'overview') await exec(conn, `cp -f ${source} ${target}`);
       }
       // 拷 http-proxy + 它的依赖到 app/node_modules
       await exec(conn, `cp -a ${mainSync}/node_modules/. ${INSTALL_DIR}/app/node_modules/`);
