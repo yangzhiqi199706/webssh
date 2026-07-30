@@ -3,6 +3,7 @@
   'use strict';
   var $ = function (id) { return document.getElementById(id); };
   var Mon = window.PcMonitor || { append: function () {}, info: function () {}, warn: function () {}, error: function () {} };
+  var AreaUtils = window.PcAreaUtils;
 
   var el = {
     btnOpen: $('btnOpenModbus'),
@@ -133,13 +134,8 @@
           if (rDb.source === 'db') Mon.info('Modbus → 区域名从 dcim-area 表拿到 ' + rDb.count + ' 个');
         }
       } catch (_e) {}
-      var rArea = await invokePc('GetNewAllAreasKey', { UserLsh: '1' });
-      var rawAreas = ((rArea && rArea.data && rArea.data.data) || []);
-      rawAreas.forEach(function (a) {
-        if (a && a.Zonesubno != null && !areaMap[String(a.Zonesubno)]) {
-          areaMap[String(a.Zonesubno)] = String(a.Zonesubname || '');
-        }
-      });
+      var rArea = await invokePc('GetNewAllAreasKey', { UserLsh: '' });
+      AreaUtils.mergeAreaRecords(areaMap, rArea && rArea.data && rArea.data.data);
       // 2) 穷举 Zonesubno=1..30 拿所有分组（dcim GetNewAllAreasKey 不可靠 + GroupId 分布在不同 zone，必须穷举）
       var ZONE_MAX = 30, EMPTY_STOP = 5;
       var groupMap = {}; // GroupId -> {GroupId, GroupName}
@@ -150,9 +146,9 @@
           el.treeBox.innerHTML = '<div class="hint">扫描中…穷举区域 ' + z + '/' + ZONE_MAX + '</div>';
         }
         var rG = await invokePc('GetGroupByZonesubnoKey', {
-          UserLsh: '1', serverCode: '1', Zonesubno: String(z),
+          UserLsh: '', serverCode: '1', Zonesubno: String(z),
         });
-        var gs = ((rG && rG.data && rG.data.data) || []);
+        var gs = AreaUtils.normalizeRecords(rG && rG.data && rG.data.data);
         if (gs.length === 0) {
           emptyStreak += 1;
           if (emptyStreak >= EMPTY_STOP) break;
@@ -191,20 +187,34 @@
 
       for (var j = 0; j < groupList.length; j++) {
         var g = groupList[j];
-        var rDev = await invokePc('GetDeviceByGroupKey', { UserLsh: '1', GroupId: g.GroupId });
-        var devs = ((rDev && rDev.data && rDev.data.data) || []);
-        devs.forEach(function (d) {
-          if (!d || d.DeviceId == null) return;
-          var zNode = getZoneNode(d.Zonesubno);
+        var rDev = await invokePc('GetDeviceByGroupKey', { UserLsh: '', GroupId: g.GroupId });
+        var devs = AreaUtils.normalizeRecords(rDev && rDev.data && rDev.data.data);
+        for (var k = 0; k < devs.length; k++) {
+          var d = devs[k];
+          if (!AreaUtils.belongsToGroup(d, g.GroupId)) continue;
+          var deviceId = AreaUtils.getDeviceId(d);
+          if (!deviceId) continue;
+          var params = AreaUtils.normalizeRecords(d.ParaList);
+          if (!params.length) {
+            try {
+              var rParas = await invokePc('GetDeviceParasKey', {
+                UserLsh: '', DeviceId: deviceId, serverCode: '1',
+              });
+              params = AreaUtils.normalizeRecords(rParas && rParas.data && rParas.data.data);
+            } catch (paramErr) {
+              Mon.warn('Modbus → 设备 ' + deviceId + ' 参数读取失败：' + paramErr.message);
+            }
+          }
+          var zNode = getZoneNode(AreaUtils.getZoneNo(d));
           var grpNode = getGroupNode(zNode, g.GroupId, g.GroupName);
           var dev = {
-            deviceId: String(d.DeviceId),
+            deviceId: deviceId,
             deviceName: String(d.DeviceName || ''),
             groupId: String(g.GroupId),
             groupName: String(g.GroupName || ''),
-            zonesubno: String(d.Zonesubno == null ? '' : d.Zonesubno),
+            zonesubno: AreaUtils.getZoneNo(d),
             zonesubname: zNode.zonesubname,
-            params: (d.ParaList || []).map(function (p) {
+            params: params.map(function (p) {
               return {
                 paraName: String(p.ParaName == null ? '' : p.ParaName),
                 unit: String(p.Unit == null ? '' : p.Unit),
@@ -214,7 +224,7 @@
           };
           grpNode.devices.push(dev);
           deviceMeta[dev.deviceId] = dev;
-        });
+        }
       }
 
       // 4) zoneNodes (Map) → treeData (Array)，按 Zonesubno 数字排序

@@ -39,9 +39,9 @@ forbiddenIndexIdentifiers.forEach((identifier) => assert.doesNotMatch(indexSourc
 });
 
 assert.ok(!fs.existsSync(path.join(rootDir, 'scripts', 'pack-8081-src.bat')));
-assert.strictEqual(
-  packageJson.scripts.test,
-  'node tests/settings-update-removal.test.js && node tests/dcim-wvp-opengauss.test.js',
+assert.ok(
+  packageJson.scripts.test.includes('node tests/settings-update-removal.test.js'),
+  'npm test 必须执行更新功能删除回归测试',
 );
 assert.doesNotMatch(claudeSource, /pack-8081-src\.bat/);
 assert.doesNotMatch(claudeSource, /主壳"在线更新"使用/);

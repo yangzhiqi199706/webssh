@@ -18,17 +18,25 @@
     userLsh: $('cfgUserLsh'),
     timeoutMs: $('cfgTimeoutMs'),
     pathMap: $('cfgPathMap'),
+    dbType: $('cfgDbType'),
     dbHost: $('cfgDbHost'),
     dbPort: $('cfgDbPort'),
     dbUser: $('cfgDbUser'),
     dbPwd: $('cfgDbPwd'),
     dbName: $('cfgDbName'),
     btnSave: $('btnCfgSave'),
+    btnDbTest: $('btnCfgDbTest'),
     btnReload: $('btnCfgReload'),
     saveHint: $('cfgSaveHint'),
   };
 
   var current = null; // 最近一次从后端拿到的 config（password 字段为 ***）
+
+  function defaultDbPort(type) {
+    if (type === 'opengauss') return 5432;
+    if (type === 'dm') return 5236;
+    return 3333;
+  }
 
   function setHint(node, text, cls) {
     if (!node) return;
@@ -64,8 +72,13 @@
       el.pathMap.value = JSON.stringify(current.pathMap || {}, null, 2);
     } catch (_e) { el.pathMap.value = '{}'; }
     var db = current.dcimDb || {};
+    var dbType = db.type || 'mysql';
+    if (el.dbType) el.dbType.value = dbType;
     if (el.dbHost) el.dbHost.value = db.host || '';
-    if (el.dbPort) el.dbPort.value = db.port || 3333;
+    if (el.dbPort) {
+      el.dbPort.value = db.port || defaultDbPort(dbType);
+      el.dbPort.dataset.dbType = dbType;
+    }
     if (el.dbUser) el.dbUser.value = db.user || '';
     if (el.dbPwd) {
       el.dbPwd.value = '';
@@ -169,12 +182,7 @@
     var pwd = el.passWord.value;
     if (pwd && pwd !== '') body.passWord = pwd;
     // dcimDb 可选
-    var db = {
-      host: (el.dbHost && el.dbHost.value || '').trim(),
-      port: Number(el.dbPort && el.dbPort.value) || 3333,
-      user: (el.dbUser && el.dbUser.value || '').trim(),
-      database: (el.dbName && el.dbName.value || '').trim() || 'dcim',
-    };
+    var db = readDbForm();
     var dbPwd = el.dbPwd && el.dbPwd.value;
     if (dbPwd && dbPwd !== '') db.password = dbPwd;
     body.dcimDb = db;
@@ -200,6 +208,40 @@
       Mon.error('保存连接信息失败：' + err.message);
     } finally {
       el.btnSave.disabled = false;
+    }
+  }
+
+  function readDbForm() {
+    return {
+      type: (el.dbType && el.dbType.value) || 'mysql',
+      host: (el.dbHost && el.dbHost.value || '').trim(),
+      port: Number(el.dbPort && el.dbPort.value) || defaultDbPort((el.dbType && el.dbType.value) || 'mysql'),
+      user: (el.dbUser && el.dbUser.value || '').trim(),
+      database: (el.dbName && el.dbName.value || '').trim() || 'dcim',
+    };
+  }
+
+  async function testDbConnection() {
+    var db = readDbForm();
+    var dbPwd = el.dbPwd && el.dbPwd.value;
+    if (dbPwd && dbPwd !== '') db.password = dbPwd;
+    el.btnDbTest.disabled = true;
+    setHint(el.saveHint, '数据库连接测试中…');
+    Mon.info('→ 测试 ' + db.type + ' 数据库连接 ' + db.host + ':' + db.port + '/' + db.database);
+    try {
+      var r = await fetch('/api/proto-conv/test-dcim-db', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ dcimDb: db }),
+      }).then(function (r) { return r.json(); });
+      if (!r.ok) throw new Error(r.message || '连接失败');
+      setHint(el.saveHint, r.message || '数据库连接成功', 'ok');
+      Mon.info('← ' + (r.message || '数据库连接成功'));
+    } catch (err) {
+      setHint(el.saveHint, '数据库连接失败：' + err.message, 'err');
+      Mon.error('× 数据库连接失败：' + err.message);
+    } finally {
+      el.btnDbTest.disabled = false;
     }
   }
 
@@ -248,7 +290,18 @@
 
   el.btnOpen && el.btnOpen.addEventListener('click', open);
   el.btnClose && el.btnClose.addEventListener('click', close);
+  el.dbType && el.dbType.addEventListener('change', function () {
+    if (!el.dbPort) return;
+    var previousType = el.dbPort.dataset.dbType || 'mysql';
+    var nextType = el.dbType.value || 'mysql';
+    var currentPort = Number(el.dbPort.value);
+    if (!currentPort || currentPort === defaultDbPort(previousType)) {
+      el.dbPort.value = defaultDbPort(nextType);
+    }
+    el.dbPort.dataset.dbType = nextType;
+  });
   el.btnSave && el.btnSave.addEventListener('click', doSave);
+  el.btnDbTest && el.btnDbTest.addEventListener('click', testDbConnection);
   el.btnReload && el.btnReload.addEventListener('click', loadConfig);
   el.btnLogin && el.btnLogin.addEventListener('click', doLogin);
   el.btnTest && el.btnTest.addEventListener('click', doTest);

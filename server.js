@@ -6855,8 +6855,12 @@ wssTcp.on('connection', function (ws) {
   const path = require('path');
   const https = require('https');
   const httpMod = require('http');
-  let mysql2;
+  const sessionUtils = require('./proto-conv/proto-conv-session');
+  const dcimAreaDb = require('./proto-conv/dcim-area-db');
+  let mysql2, pgLib, dmdbLib;
   try { mysql2 = require('mysql2/promise'); } catch (_e) { mysql2 = null; }
+  try { pgLib = require('pg'); } catch (_e) { pgLib = null; }
+  try { dmdbLib = require('dmdb'); } catch (_e) { dmdbLib = null; }
 
   const CONFIG_PATH = process.env.PROTOCONV_CONFIG || path.join(__dirname, 'config', 'proto-conv.json');
   const LOG_PATH = process.env.PROTOCONV_LOG || path.join(__dirname, 'logs', 'proto-conv.log');
@@ -6870,7 +6874,7 @@ wssTcp.on('connection', function (ws) {
     pathMap: {},
     // 可选：dcim 数据库直查区域名（兜底，因 GetNewAllAreasKey 接口在某些 dcim 版本返回不全）
     dcimDb: {
-      host: '', port: 3333, user: '', password: '', database: 'dcim',
+      type: 'mysql', host: '', port: 3333, user: '', password: '', database: 'dcim',
     },
   };
 
@@ -6906,6 +6910,7 @@ wssTcp.on('connection', function (ws) {
   }
   function redactCfg() {
     const db = cfg.dcimDb || {};
+    const dbType = dcimAreaDb.normalizeType(db.type);
     return {
       baseUrl: cfg.baseUrl,
       userName: cfg.userName,
@@ -6915,8 +6920,9 @@ wssTcp.on('connection', function (ws) {
       timeoutMs: cfg.timeoutMs,
       pathMap: cfg.pathMap || {},
       dcimDb: {
+        type: dbType,
         host: db.host || '',
-        port: db.port || 3333,
+        port: db.port || dcimAreaDb.defaultPort(dbType),
         user: db.user || '',
         password: '***',
         hasPassword: !!(db.password && db.password !== ''),
@@ -6941,6 +6947,8 @@ wssTcp.on('connection', function (ws) {
 
   // cookie jar：baseUrl -> "k=v; k2=v2"
   const cookieJar = new Map();
+  // 会话 token 仅驻留在进程内，按目标服务隔离，不写入配置文件。
+  const sessionByBaseUrl = new Map();
   const httpsAgent = new https.Agent({ keepAlive: true, rejectUnauthorized: false });
   const httpAgent = new httpMod.Agent({ keepAlive: true });
 
@@ -6970,6 +6978,20 @@ wssTcp.on('connection', function (ws) {
     cookieJar.set(baseUrl, merged);
   }
 
+  function rememberLoginSession(data) {
+    const session = sessionUtils.extractLoginSession(data);
+    if (session.token) sessionByBaseUrl.set(cfg.baseUrl, session);
+    if (session.userLsh && cfg.userLsh !== session.userLsh) {
+      cfg.userLsh = session.userLsh;
+      writeCfg();
+    }
+    return session;
+  }
+
+  function clearLoginSession(baseUrl) {
+    sessionByBaseUrl.delete(baseUrl);
+  }
+
   function callUpstream(opts) {
     // opts: { key, method, body, query, pathOverride, retried }
     return new Promise(function (resolve) {
@@ -6993,6 +7015,12 @@ wssTcp.on('connection', function (ws) {
         : Buffer.from(JSON.stringify(opts.body || {}), 'utf8');
 
       const headers = { 'cookie': cookieJar.get(cfg.baseUrl) || '' };
+      if (opts.key !== 'LoginKey') {
+        const session = sessionByBaseUrl.get(cfg.baseUrl);
+        if (session && session.token) {
+          Object.assign(headers, sessionUtils.buildSessionHeaders(session.token));
+        }
+      }
       if (opts.method !== 'GET') {
         headers['content-type'] = 'application/json;charset=utf-8';
         headers['content-length'] = buf.length;
@@ -7017,11 +7045,31 @@ wssTcp.on('connection', function (ws) {
           const text = Buffer.concat(chunks).toString('utf8');
           let data;
           try { data = JSON.parse(text); } catch (_e) { data = text; }
+          if (opts.key === 'LoginKey' && res.statusCode >= 200 && res.statusCode < 400) {
+            rememberLoginSession(data);
+          }
           // 401 自动续登一次（LoginKey 自身不重试）
           if (res.statusCode === 401 && !opts.retried && opts.key !== 'LoginKey') {
             appendLog('401 重试，先调 LoginKey 续登 key=' + opts.key);
             await loginUpstream();
             return resolve(await callUpstream(Object.assign({}, opts, { retried: true })));
+          }
+          // 8086 使用 HTTP 200 + code=300 表示会话失效，语义等同 401。
+          if (opts.key !== 'LoginKey' && sessionUtils.isSessionExpired(data)) {
+            clearLoginSession(cfg.baseUrl);
+            if (!opts.retried) {
+              appendLog('业务码 300 重试，先调 LoginKey 续登 key=' + opts.key);
+              const login = await loginUpstream();
+              if (login.ok) {
+                return resolve(await callUpstream(Object.assign({}, opts, { retried: true })));
+              }
+            }
+            return resolve({
+              ok: false,
+              status: res.statusCode,
+              data: data,
+              message: '8086 会话失效，请重新登录',
+            });
           }
           appendLog(opts.method + ' ' + opts.key + ' status=' + res.statusCode +
             ' bodyLen=' + (text ? text.length : 0));
@@ -7041,11 +7089,20 @@ wssTcp.on('connection', function (ws) {
   }
 
   async function loginUpstream() {
-    const body = {
+    const encodedBody = {
       userName: Buffer.from(cfg.userName || '', 'utf8').toString('base64'),
       passWord: Buffer.from(cfg.passWord || '', 'utf8').toString('base64'),
     };
-    const r = await callUpstream({ key: 'LoginKey', method: 'POST', body: body, retried: true });
+    let r = await callUpstream({ key: 'LoginKey', method: 'POST', body: encodedBody, retried: true });
+    // 8082 约定 Base64，8086 使用明文。仅在前者被业务码拒绝时重试一次。
+    if (sessionUtils.shouldRetryLoginWithPlain(r.data)) {
+      appendLog('[login] Base64 登录被拒绝，改用明文重试');
+      r = await callUpstream({
+        key: 'LoginKey', method: 'POST',
+        body: { userName: cfg.userName || '', passWord: cfg.passWord || '' },
+        retried: true,
+      });
+    }
     appendLog('[login] ok=' + r.ok + ' status=' + r.status);
     return r;
   }
@@ -7071,8 +7128,14 @@ wssTcp.on('connection', function (ws) {
     // dcimDb 可选配置
     if (b.dcimDb && typeof b.dcimDb === 'object') {
       next.dcimDb = next.dcimDb || {};
+      if (typeof b.dcimDb.type === 'string') {
+        if (!dcimAreaDb.isSupportedType(b.dcimDb.type)) {
+          return res.status(400).json({ ok: false, message: 'dcim 数据库类型仅支持 mysql、opengauss、dm' });
+        }
+        next.dcimDb.type = dcimAreaDb.normalizeType(b.dcimDb.type);
+      }
       if (typeof b.dcimDb.host === 'string')     next.dcimDb.host = b.dcimDb.host.trim();
-      if (b.dcimDb.port != null)                 next.dcimDb.port = Math.max(1, Math.min(65535, Number(b.dcimDb.port) || 3333));
+      if (b.dcimDb.port != null)                 next.dcimDb.port = Math.max(1, Math.min(65535, Number(b.dcimDb.port) || dcimAreaDb.defaultPort(next.dcimDb.type)));
       if (typeof b.dcimDb.user === 'string')     next.dcimDb.user = b.dcimDb.user.trim();
       if (typeof b.dcimDb.database === 'string') next.dcimDb.database = b.dcimDb.database.trim() || 'dcim';
       if (typeof b.dcimDb.password === 'string' && b.dcimDb.password !== '' && b.dcimDb.password !== '***') {
@@ -7084,9 +7147,13 @@ wssTcp.on('connection', function (ws) {
     try { new URL(next.baseUrl); }
     catch (e) { return res.status(400).json({ ok: false, message: 'baseUrl 非法：' + e.message }); }
 
+    const oldBaseUrl = cfg.baseUrl;
     cfg = next;
     writeCfg();
-    cookieJar.delete(cfg.baseUrl); // 配置变更，旧 cookie 作废
+    cookieJar.delete(oldBaseUrl); // 配置变更，旧 cookie 作废
+    cookieJar.delete(cfg.baseUrl);
+    clearLoginSession(oldBaseUrl);
+    clearLoginSession(cfg.baseUrl);
     appendLog('配置已更新 baseUrl=' + cfg.baseUrl + ' user=' + cfg.userName);
     res.json({ ok: true, config: redactCfg() });
   });
@@ -7094,15 +7161,8 @@ wssTcp.on('connection', function (ws) {
   app.post('/api/proto-conv/login', async function (_req, res) {
     try {
       const r = await loginUpstream();
-      // dcim 后端登录成功通常返回 true / { ok:true } / { UserLsh:... } 等几种
-      let userLsh = null;
-      if (r.data && typeof r.data === 'object') {
-        userLsh = r.data.UserLsh || r.data.userLsh || r.data.userlsh || null;
-        if (userLsh != null) {
-          cfg.userLsh = String(userLsh);
-          writeCfg();
-        }
-      }
+      const session = sessionByBaseUrl.get(cfg.baseUrl);
+      const userLsh = session && session.userLsh ? session.userLsh : null;
       res.json({ ok: r.ok, status: r.status, data: r.data, message: r.message || '', userLsh: userLsh });
     } catch (err) {
       res.status(500).json({ ok: false, message: err.message });
@@ -7128,33 +7188,105 @@ wssTcp.on('connection', function (ws) {
     sock.on('error', function (err) { finish(false, urlObj.hostname + ':' + port + ' ' + err.message); });
   });
 
+  app.post('/api/proto-conv/test-dcim-db', async function (req, res) {
+    const input = req.body && req.body.dcimDb;
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      return res.status(400).json({ ok: false, message: 'dcimDb 参数必填' });
+    }
+    if (typeof input.type === 'string' && !dcimAreaDb.isSupportedType(input.type)) {
+      return res.status(400).json({ ok: false, message: 'dcim 数据库类型仅支持 mysql、opengauss、dm' });
+    }
+    const db = dcimAreaDb.mergeConnectionConfig(input, cfg.dcimDb);
+    if (!db.host || !db.user || !db.password) {
+      return res.status(400).json({ ok: false, message: '主机、账号、密码必填；密码留空仅能沿用已保存密码' });
+    }
+
+    let conn;
+    try {
+      if (db.type === 'mysql') {
+        if (!mysql2) throw new Error('mysql2 模块未安装');
+        conn = await mysql2.createConnection({
+          host: db.host, port: db.port, user: db.user, password: db.password,
+          database: db.database, connectTimeout: 5000,
+        });
+      } else if (db.type === 'opengauss') {
+        if (!pgLib) throw new Error('pg 模块未安装');
+        conn = new pgLib.Client({
+          host: db.host, port: db.port, user: db.user, password: db.password,
+          database: db.database, connectionTimeoutMillis: 5000,
+        });
+        await conn.connect();
+      } else {
+        if (!dmdbLib) throw new Error('dmdb 模块未安装');
+        const connString = 'dm://' + encodeURIComponent(db.user) + ':' +
+          encodeURIComponent(db.password) + '@' + db.host + ':' + db.port;
+        conn = await dmdbLib.getConnection(connString);
+      }
+      appendLog('db-test: type=' + db.type + ' host=' + db.host + ' port=' + db.port + ' database=' + db.database + ' ok');
+      res.json({ ok: true, message: db.type + ' ' + db.host + ':' + db.port + '/' + db.database + ' 连接成功' });
+    } catch (e) {
+      appendLog('db-test: type=' + db.type + ' host=' + db.host + ' port=' + db.port + ' failed ' + e.message);
+      res.status(400).json({ ok: false, message: '连接失败：' + e.message });
+    } finally {
+      try {
+        if (conn && db.type === 'dm') await conn.close();
+        else if (conn) await conn.end();
+      } catch (_e) {}
+    }
+  });
+
   // 直连 dcim 数据库读 dcim-area 表，作为 Zonesubno → Zonesubname 的兜底（GetNewAllAreasKey 接口在某些 dcim 版本返回不全）
   app.get('/api/proto-conv/area-map', async function (_req, res) {
     const db = cfg.dcimDb || {};
+    const dbType = dcimAreaDb.normalizeType(db.type);
     if (!db.host || !db.user || !db.password) {
       return res.json({ ok: true, source: 'none', map: {}, message: 'dcim 数据库未配置' });
     }
-    if (!mysql2) {
-      return res.json({ ok: false, source: 'none', map: {}, message: 'mysql2 模块未安装' });
-    }
     let conn;
     try {
-      conn = await mysql2.createConnection({
-        host: db.host, port: Number(db.port) || 3333,
-        user: db.user, password: db.password,
-        database: db.database || 'dcim',
-        connectTimeout: 5000,
-      });
-      const [rows] = await conn.query('SELECT id, AreaName FROM `dcim-area` WHERE status=1 ORDER BY id');
+      let rows;
+      if (dbType === 'mysql') {
+        if (!mysql2) throw new Error('mysql2 模块未安装');
+        conn = await mysql2.createConnection({
+          host: db.host, port: Number(db.port) || dcimAreaDb.defaultPort(dbType),
+          user: db.user, password: db.password,
+          database: db.database || 'dcim', connectTimeout: 5000,
+        });
+        const result = await conn.query(dcimAreaDb.areaQuery(dbType));
+        rows = result[0];
+      } else if (dbType === 'opengauss') {
+        if (!pgLib) throw new Error('pg 模块未安装');
+        conn = new pgLib.Client({
+          host: db.host, port: Number(db.port) || dcimAreaDb.defaultPort(dbType),
+          user: db.user, password: db.password, database: db.database || 'dcim',
+          connectionTimeoutMillis: 5000,
+        });
+        await conn.connect();
+        rows = (await conn.query(dcimAreaDb.areaQuery(dbType))).rows;
+      } else {
+        if (!dmdbLib) throw new Error('dmdb 模块未安装');
+        const connString = 'dm://' + encodeURIComponent(db.user) + ':' +
+          encodeURIComponent(db.password) + '@' + db.host + ':' +
+          (Number(db.port) || dcimAreaDb.defaultPort(dbType));
+        conn = await dmdbLib.getConnection(connString);
+        const result = await conn.execute(dcimAreaDb.areaQuery(dbType), [], {
+          outFormat: dmdbLib.OUT_FORMAT_OBJECT,
+        });
+        rows = result.rows || [];
+      }
+      const areas = dcimAreaDb.normalizeAreaRows(rows);
       const map = {};
-      rows.forEach(function (r) { map[String(r.id)] = String(r.AreaName == null ? '' : r.AreaName); });
-      appendLog('area-map: 从 dcim-area 表读到 ' + rows.length + ' 个区域');
-      res.json({ ok: true, source: 'db', map: map, count: rows.length });
+      areas.forEach(function (area) { map[area.id] = area.areaName; });
+      appendLog('area-map: type=' + dbType + ' 从 dcim-area 表读到 ' + areas.length + ' 个区域');
+      res.json({ ok: true, source: 'db', map: map, count: areas.length });
     } catch (e) {
-      appendLog('area-map: dcim 数据库查询失败 ' + e.message);
+      appendLog('area-map: type=' + dbType + ' dcim 数据库查询失败 ' + e.message);
       res.json({ ok: false, source: 'db', map: {}, message: e.message });
     } finally {
-      try { if (conn) await conn.end(); } catch (_e) {}
+      try {
+        if (conn && dbType === 'dm') await conn.close();
+        else if (conn) await conn.end();
+      } catch (_e) {}
     }
   });
 
@@ -7209,6 +7341,7 @@ wssTcp.on('connection', function (ws) {
 // 紧凑布局：每设备 1 + 3N 寄存器（DeviceStatus INT16 + 每参数 CurValue FLOAT32BE + Status INT16）
 (function setupModbusBridge() {
   const path = require('path');
+  const dcimRecords = require('./proto-conv/assets/js/pc-area-utils');
   let Modbus;
   try { Modbus = require('jsmodbus'); }
   catch (_e) { console.error('[modbus] jsmodbus 未安装，Modbus 转发功能不可用'); return; }
@@ -7486,17 +7619,18 @@ wssTcp.on('connection', function (ws) {
         appendLog('GroupId=' + gid + ' 响应异常 status=' + (r && r.status));
         continue;
       }
-      const list = (r.data && r.data.data) || [];
+      const list = dcimRecords.normalizeRecords(r.data && r.data.data);
       list.forEach(function (dev) {
-        if (dev && dev.DeviceId != null) {
-          fetchedById[String(dev.DeviceId)] = dev;
+        const deviceId = dcimRecords.getDeviceId(dev);
+        if (deviceId) {
+          fetchedById[deviceId] = dev;
         }
       });
     }
 
     // 按 mappingTable 写 holding buffer
     const missing = [];
-    (cfg.selectedDevices || []).forEach(function (selDev) {
+    for (const selDev of (cfg.selectedDevices || [])) {
       const did = String(selDev.deviceId);
       const upDev = fetchedById[did];
       const baseAddr = devBaseAddr(selDev.deviceId);
@@ -7512,9 +7646,24 @@ wssTcp.on('connection', function (ws) {
         return;
       }
       writeInt16(holding, baseAddr, parseDeviceStatus(upDev.DeviceStatus));
-      // 把上游 ParaList 按 paraName 索引
+      // 旧版设备直接带 ParaList；8086 需要额外调用 GetDeviceParasKey 获取实时参数。
+      let upstreamParas = dcimRecords.normalizeRecords(upDev.ParaList);
+      if (!upstreamParas.length) {
+        try {
+          const rParas = await helper.callUpstream({
+            key: 'GetDeviceParasKey', method: 'POST',
+            body: { UserLsh: userLsh, DeviceId: did, serverCode: '1' },
+          });
+          if (rParas && rParas.ok) {
+            upstreamParas = dcimRecords.normalizeRecords(rParas.data && rParas.data.data);
+          }
+        } catch (e) {
+          appendLog('DeviceId=' + did + ' 参数读取异常 ' + e.message);
+        }
+      }
+      // 把上游参数按 paraName 索引
       const upParas = {};
-      (upDev.ParaList || []).forEach(function (p) {
+      upstreamParas.forEach(function (p) {
         if (p && p.ParaName != null) upParas[String(p.ParaName)] = p;
       });
       let off = baseAddr + 1;
@@ -7523,7 +7672,7 @@ wssTcp.on('connection', function (ws) {
         const cur = up ? parseFloatLoose(up.CurValue) : NaN;
         writeFloat32BE(holding, off, cur); off += 2;
       });
-    });
+    }
     status.missingDevices = missing;
     // 通知 SNMP 模块把最新数据同步到 OID 树
     if (global.__snmp && global.__snmp.syncFromHolding) {

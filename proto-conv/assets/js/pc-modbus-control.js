@@ -3,6 +3,7 @@
   'use strict';
   var $ = function (id) { return document.getElementById(id); };
   var Mon = window.PcMonitor || { append: function () {}, info: function () {}, warn: function () {}, error: function () {} };
+  var AreaUtils = window.PcAreaUtils;
 
   var el = {
     btnOpen: $('btnOpenModbusControl'),
@@ -131,13 +132,8 @@
           if (rDb.source === 'db') Mon.info('Modbus 控制 → 区域名从 dcim-area 表拿到 ' + rDb.count + ' 个');
         }
       } catch (_e) {}
-      var rArea = await invokePc('GetNewAllAreasKey', { UserLsh: '1' });
-      var rawAreas = ((rArea && rArea.data && rArea.data.data) || []);
-      rawAreas.forEach(function (a) {
-        if (a && a.Zonesubno != null && !areaMap[String(a.Zonesubno)]) {
-          areaMap[String(a.Zonesubno)] = String(a.Zonesubname || '');
-        }
-      });
+      var rArea = await invokePc('GetNewAllAreasKey', { UserLsh: '' });
+      AreaUtils.mergeAreaRecords(areaMap, rArea && rArea.data && rArea.data.data);
       var ZONE_MAX = 30, EMPTY_STOP = 5;
       var groupMap = {};
       var emptyStreak = 0;
@@ -147,9 +143,9 @@
           el.treeBox.innerHTML = '<div class="hint">扫描中…穷举区域 ' + z + '/' + ZONE_MAX + '</div>';
         }
         var rG = await invokePc('GetGroupByZonesubnoKey', {
-          UserLsh: '1', serverCode: '1', Zonesubno: String(z),
+          UserLsh: '', serverCode: '1', Zonesubno: String(z),
         });
-        var gs = ((rG && rG.data && rG.data.data) || []);
+        var gs = AreaUtils.normalizeRecords(rG && rG.data && rG.data.data);
         if (gs.length === 0) {
           emptyStreak += 1;
           if (emptyStreak >= EMPTY_STOP) break;
@@ -188,22 +184,25 @@
       var totalDevs = 0, totalCmds = 0;
       for (var j = 0; j < groupList.length; j++) {
         var g = groupList[j];
-        var rDev = await invokePc('GetDeviceByGroupKey', { UserLsh: '1', GroupId: g.GroupId });
-        var devs = ((rDev && rDev.data && rDev.data.data) || []);
+        var rDev = await invokePc('GetDeviceByGroupKey', { UserLsh: '', GroupId: g.GroupId });
+        var devs = AreaUtils.normalizeRecords(rDev && rDev.data && rDev.data.data);
         for (var k = 0; k < devs.length; k++) {
           var dev = devs[k];
-          if (!dev || dev.DeviceId == null) continue;
-          var rCtrl = await invokePc('GetDeviceControlKey', { UserLsh: '1', DeviceId: String(dev.DeviceId) });
-          var ctrls = ((rCtrl && rCtrl.data && rCtrl.data.data) || []);
-          var zNode = getZoneNode(dev.Zonesubno);
+          if (!AreaUtils.belongsToGroup(dev, g.GroupId)) continue;
+          var deviceId = AreaUtils.getDeviceId(dev);
+          if (!deviceId) continue;
+          var rCtrl = await invokePc('GetDeviceControlKey', { UserLsh: '', DeviceId: deviceId });
+          var ctrls = AreaUtils.normalizeRecords(rCtrl && rCtrl.data && rCtrl.data.data);
+          var zoneNo = AreaUtils.getZoneNo(dev);
+          var zNode = getZoneNode(zoneNo);
           var grpNode = getGroupNode(zNode, g.GroupId, g.GroupName);
           var cmdList = ctrls.map(function (c) {
             return {
-              deviceId: String(dev.DeviceId), deviceName: String(dev.DeviceName || ''),
-              controlId: String(c.ControlId == null ? '' : c.ControlId),
-              commandName: String(c.CommandName == null ? '' : c.CommandName),
+              deviceId: deviceId, deviceName: String(dev.DeviceName || ''),
+              controlId: AreaUtils.getControlId(c),
+              commandName: AreaUtils.getControlName(c),
               groupId: String(g.GroupId), groupName: String(g.GroupName || ''),
-              zonesubno: String(dev.Zonesubno == null ? '' : dev.Zonesubno),
+              zonesubno: zoneNo,
               zonesubname: zNode.zonesubname,
             };
           }).filter(function (c) { return c.controlId; });

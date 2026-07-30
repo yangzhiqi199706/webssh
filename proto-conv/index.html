@@ -365,8 +365,9 @@
         </label>
 
         <div class="section-title">dcim 数据库（可选，用于补全区域名）</div>
-        <div class="hint" style="margin-bottom:6px">填写后扫描设备时会直接读 <code class="k">dcim-area</code> 表，避免 GetNewAllAreasKey 接口返回不全导致的「未知区域」。留空则仅使用接口返回。</div>
+        <div class="hint" style="margin-bottom:6px">填写后扫描设备时会直接读 <code class="k">dcim-area</code> 表，避免 GetNewAllAreasKey 接口返回不全导致的「未知区域」。支持 MySQL、openGauss、达梦；留空则仅使用接口返回。</div>
         <div class="form-grid">
+          <label class="field"><span>数据库类型</span><select id="cfgDbType"><option value="mysql">MySQL</option><option value="opengauss">openGauss</option><option value="dm">达梦 DM</option></select></label>
           <label class="field"><span>主机</span><input id="cfgDbHost" type="text" placeholder="192.168.10.110" /></label>
           <label class="field"><span>端口</span><input id="cfgDbPort" type="number" min="1" max="65535" placeholder="3333" /></label>
           <label class="field"><span>账号</span><input id="cfgDbUser" type="text" placeholder="root" autocomplete="off" /></label>
@@ -376,6 +377,7 @@
 
         <div class="actions">
           <button class="btn primary" id="btnCfgSave" type="button">保存并应用</button>
+          <button class="btn" id="btnCfgDbTest" type="button">测试连接</button>
           <button class="btn" id="btnCfgReload" type="button">重新加载</button>
           <span class="hint" id="cfgSaveHint" style="margin-left:auto;align-self:center"></span>
         </div>
@@ -677,6 +679,7 @@
   <script src="./assets/js/pc-config.js"></script>
   <script src="./assets/js/pc-endpoints.js"></script>
   <script src="./assets/js/pc-runner.js"></script>
+  <script src="./assets/js/pc-area-utils.js"></script>
   <script src="./assets/js/pc-modbus.js"></script>
   <script src="./assets/js/pc-modbus-control.js"></script>
   <script src="./assets/js/pc-snmp.js"></script>
