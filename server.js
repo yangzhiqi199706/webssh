@@ -692,6 +692,278 @@ function isAuthed(req) {
 
 app.use(express.json({ limit: '16mb' }));
 
+
+const accountSessions = new Map();
+
+function accountToken(req) {
+  const cookie = String(req.headers.cookie || '');
+  const match = /(?:^|;\s*)webssh_auth=([^;]+)/.exec(cookie);
+  try { return match ? decodeURIComponent(match[1]) : ''; } catch (_error) { return ''; }
+}
+
+function currentAccounts() {
+  return accessControl.normalizeConfig(accessConfig);
+}
+
+function accountById(config, id) {
+  return config.users.filter(function (user) { return user.id === String(id || ''); })[0] || null;
+}
+
+function accountSession(req) {
+  const token = accountToken(req);
+  const record = token && accountSessions.get(token);
+  if (!record || record.expireAt <= Date.now()) {
+    if (token) accountSessions.delete(token);
+    return null;
+  }
+  const config = currentAccounts();
+  const user = accountById(config, record.userId);
+  if (!user || !user.enabled || user.sessionVersion !== record.sessionVersion) {
+    accountSessions.delete(token);
+    authTokens.delete(token);
+    return null;
+  }
+  return { token: token, config: config, user: user, role: accessControl.effectiveRole(config, user), expireAt: record.expireAt };
+}
+
+function requireAccount(req, res) {
+  const session = accountSession(req);
+  if (session) return session;
+  res.status(401).json({ ok: false, message: '登录已失效' });
+  return null;
+}
+
+function requireAccountAdmin(req, res) {
+  const session = requireAccount(req, res);
+  if (!session) return null;
+  if (session.role === 'admin') return session;
+  res.status(403).json({ ok: false, message: '仅系统管理员可以管理账户与登录策略' });
+  return null;
+}
+
+function saveAccounts(config) {
+  const normalized = accessControl.normalizeConfig(config);
+  saveAccessConfig(normalized);
+  return normalized;
+}
+
+function invalidateAccount(userId) {
+  for (const item of accountSessions) {
+    if (item[1].userId === userId) {
+      accountSessions.delete(item[0]);
+      authTokens.delete(item[0]);
+    }
+  }
+}
+
+function accountId(prefix) {
+  return prefix + '-' + require('crypto').randomBytes(12).toString('hex');
+}
+
+function validRole(value) {
+  return Boolean(accessControl.roleLevel(value));
+}
+
+function validNewPassword(body) {
+  const password = String(body.newPassword || body.password || '');
+  const confirm = String(body.confirmPassword || password);
+  if (password.length < 8) return { error: '新密码至少需要 8 个字符' };
+  if (password !== confirm) return { error: '两次输入的新密码不一致' };
+  return { password: password };
+}
+
+function verifyAccountPassword(user, password) {
+  if (accessControl.hasPassword({ password: user.password })) return accessControl.verifyPassword(password, user.password);
+  return String(password || '') === todayPassword();
+}
+
+function accountProfile(session) {
+  return {
+    username: session.user.username,
+    baseRole: session.user.role,
+    role: session.role,
+    passwordChangedAt: session.user.passwordChangedAt || '',
+    passwordExpiresAt: accessControl.passwordExpiresAt(session.user, session.config.passwordPolicy),
+  };
+}
+
+function sendAuthCookie(res, token, expireAt) {
+  res.setHeader('Set-Cookie', 'webssh_auth=' + encodeURIComponent(token) + '; Path=/; Expires='
+    + new Date(expireAt).toUTCString() + '; HttpOnly; SameSite=Lax');
+}
+
+function isOnlyBaseAdmin(config, user, nextRole, nextEnabled) {
+  if (nextRole === 'admin' && nextEnabled) return false;
+  return !config.users.some(function (candidate) {
+    return candidate.id !== user.id && candidate.enabled && candidate.role === 'admin';
+  }) && user.enabled && user.role === 'admin';
+}
+
+app.use(function localAccountLogin(req, res, next) {
+  if (req.method !== 'POST' || req.path !== '/api/auth/login') return next();
+  const body = req.body || {};
+  let timeoutHours = Math.floor(Number(body.timeoutHours));
+  if (!Number.isFinite(timeoutHours)) timeoutHours = 12;
+  timeoutHours = Math.max(1, Math.min(720, timeoutHours));
+  if (accessConfigLoadError) return res.status(503).json({ ok: false, code: 'config_error', message: '登录配置不可用' });
+  const result = accessControl.evaluateLogin(accessConfig, String(body.user || '').trim(), String(body.password || ''),
+    req.socket && req.socket.remoteAddress, new Date(), todayPassword());
+  if (!result.ok) {
+    const message = result.code === 'password_expired' ? '密码已过期，请先更新密码'
+      : (result.code === 'ip_not_allowed' ? '当前登录 IP 未获授权' : '用户名或密码错误');
+    return res.status(result.code === 'invalid_credentials' ? 401 : 403).json({ ok: false, code: result.code, message: message });
+  }
+  const token = genToken();
+  const expireAt = Date.now() + timeoutHours * 3600000;
+  authTokens.set(token, expireAt);
+  accountSessions.set(token, { userId: result.user.id, sessionVersion: result.user.sessionVersion, expireAt: expireAt });
+  sendAuthCookie(res, token, expireAt);
+  return res.json({ ok: true, token: token, expireAt: expireAt, timeoutHours: timeoutHours, username: result.user.username, role: result.role });
+});
+
+app.post('/api/auth/password-expired', function (req, res) {
+  const body = req.body || {};
+  const config = currentAccounts();
+  const user = config.users.filter(function (item) { return item.username === String(body.user || '').trim(); })[0];
+  const validation = validNewPassword(body);
+  if (!user || !user.enabled || !verifyAccountPassword(user, body.currentPassword || body.password)) return res.status(401).json({ ok: false, message: '用户名或当前密码错误' });
+  if (validation.error) return res.status(400).json({ ok: false, message: validation.error });
+  user.password = accessControl.createPasswordRecord(validation.password);
+  user.passwordChangedAt = new Date().toISOString();
+  user.sessionVersion += 1;
+  try {
+    saveAccounts(config);
+    invalidateAccount(user.id);
+    return res.json({ ok: true, message: '密码已更新，请使用新密码登录' });
+  } catch (error) {
+    return res.status(500).json({ ok: false, message: '密码保存失败：' + error.message });
+  }
+});
+
+app.get('/api/local-accounts', function (req, res) {
+  const session = requireAccount(req, res);
+  if (!session) return;
+  const canManage = session.role === 'admin';
+  const result = { ok: true, profile: accountProfile(session), canManage: canManage };
+  if (canManage) result.config = accessControl.publicConfig(session.config);
+  res.json(result);
+});
+
+app.put('/api/local-accounts/self-password', function (req, res) {
+  const session = requireAccount(req, res);
+  if (!session) return;
+  const validation = validNewPassword(req.body || {});
+  if (!verifyAccountPassword(session.user, (req.body || {}).currentPassword)) return res.status(401).json({ ok: false, message: '当前密码错误' });
+  if (validation.error) return res.status(400).json({ ok: false, message: validation.error });
+  session.user.password = accessControl.createPasswordRecord(validation.password);
+  session.user.passwordChangedAt = new Date().toISOString();
+  session.user.sessionVersion += 1;
+  try {
+    saveAccounts(session.config);
+    invalidateAccount(session.user.id);
+    return res.json({ ok: true, message: '密码已更新，请重新登录' });
+  } catch (error) {
+    return res.status(500).json({ ok: false, message: '密码保存失败：' + error.message });
+  }
+});
+
+app.put('/api/local-accounts/policy', function (req, res) {
+  const session = requireAccountAdmin(req, res);
+  if (!session) return;
+  const body = req.body || {};
+  const maxAgeDays = Math.floor(Number(body.maxAgeDays));
+  if (!Number.isFinite(maxAgeDays) || maxAgeDays < 1 || maxAgeDays > 3650) return res.status(400).json({ ok: false, message: '密码有效期必须在 1 到 3650 天之间' });
+  session.config.passwordPolicy = { maxAgeDays: maxAgeDays };
+  session.config.loginIpAllowlist = accessControl.normalizeIpAllowlist(body.loginIpAllowlist);
+  try { return res.json({ ok: true, config: accessControl.publicConfig(saveAccounts(session.config)) }); }
+  catch (error) { return res.status(500).json({ ok: false, message: '策略保存失败：' + error.message }); }
+});
+
+app.post('/api/local-accounts/users', function (req, res) {
+  const session = requireAccountAdmin(req, res);
+  if (!session) return;
+  const body = req.body || {};
+  const username = String(body.username || '').trim();
+  const role = String(body.role || 'viewer').toLowerCase();
+  const validation = validNewPassword(body);
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{1,31}$/.test(username)) return res.status(400).json({ ok: false, message: '用户名需为 2-32 位字母、数字、点、下划线或短横线' });
+  if (!validRole(role)) return res.status(400).json({ ok: false, message: '角色无效' });
+  if (validation.error) return res.status(400).json({ ok: false, message: validation.error });
+  if (session.config.users.some(function (item) { return item.username === username; })) return res.status(409).json({ ok: false, message: '用户名已存在' });
+  session.config.users.push({
+    id: accountId('u'), username: username, role: role, enabled: true,
+    password: accessControl.createPasswordRecord(validation.password), passwordChangedAt: new Date().toISOString(),
+    sessionVersion: 1, loginIpAllowlist: accessControl.normalizeIpAllowlist(body.loginIpAllowlist),
+  });
+  try { return res.status(201).json({ ok: true, config: accessControl.publicConfig(saveAccounts(session.config)) }); }
+  catch (error) { return res.status(500).json({ ok: false, message: '账号创建失败：' + error.message }); }
+});
+
+app.put('/api/local-accounts/users/:id', function (req, res) {
+  const session = requireAccountAdmin(req, res);
+  if (!session) return;
+  const body = req.body || {};
+  const user = accountById(session.config, req.params.id);
+  const role = String(body.role || '').toLowerCase();
+  const enabled = body.enabled !== false;
+  if (!user) return res.status(404).json({ ok: false, message: '账号不存在' });
+  if (!validRole(role)) return res.status(400).json({ ok: false, message: '角色无效' });
+  if (isOnlyBaseAdmin(session.config, user, role, enabled)) return res.status(400).json({ ok: false, message: '至少必须保留一个启用的基础管理员账号' });
+  user.role = role;
+  user.enabled = enabled;
+  user.loginIpAllowlist = accessControl.normalizeIpAllowlist(body.loginIpAllowlist);
+  try {
+    const saved = saveAccounts(session.config);
+    if (!user.enabled) invalidateAccount(user.id);
+    return res.json({ ok: true, config: accessControl.publicConfig(saved) });
+  } catch (error) { return res.status(500).json({ ok: false, message: '账号更新失败：' + error.message }); }
+});
+
+app.put('/api/local-accounts/users/:id/password', function (req, res) {
+  const session = requireAccountAdmin(req, res);
+  if (!session) return;
+  const user = accountById(session.config, req.params.id);
+  const validation = validNewPassword(req.body || {});
+  if (!user) return res.status(404).json({ ok: false, message: '账号不存在' });
+  if (validation.error) return res.status(400).json({ ok: false, message: validation.error });
+  user.password = accessControl.createPasswordRecord(validation.password);
+  user.passwordChangedAt = new Date().toISOString();
+  user.sessionVersion += 1;
+  try {
+    const saved = saveAccounts(session.config);
+    invalidateAccount(user.id);
+    return res.json({ ok: true, config: accessControl.publicConfig(saved) });
+  } catch (error) { return res.status(500).json({ ok: false, message: '密码重置失败：' + error.message }); }
+});
+
+app.post('/api/local-accounts/temporary-grants', function (req, res) {
+  const session = requireAccountAdmin(req, res);
+  if (!session) return;
+  const body = req.body || {};
+  const user = accountById(session.config, body.userId);
+  const role = String(body.role || '').toLowerCase();
+  const startsAt = Date.parse(String(body.startsAt || ''));
+  const endsAt = Date.parse(String(body.endsAt || ''));
+  if (!user) return res.status(404).json({ ok: false, message: '授权账号不存在' });
+  if (!validRole(role)) return res.status(400).json({ ok: false, message: '临时角色无效' });
+  if (!Number.isFinite(startsAt) || !Number.isFinite(endsAt) || endsAt <= startsAt) return res.status(400).json({ ok: false, message: '临时授权结束时间必须晚于开始时间' });
+  session.config.temporaryGrants.push({
+    id: accountId('g'), userId: user.id, role: role, startsAt: new Date(startsAt).toISOString(), endsAt: new Date(endsAt).toISOString(),
+    createdAt: new Date().toISOString(), createdBy: session.user.username, note: String(body.note || '').trim().slice(0, 200),
+  });
+  try { return res.status(201).json({ ok: true, config: accessControl.publicConfig(saveAccounts(session.config)) }); }
+  catch (error) { return res.status(500).json({ ok: false, message: '临时授权保存失败：' + error.message }); }
+});
+
+app.delete('/api/local-accounts/temporary-grants/:id', function (req, res) {
+  const session = requireAccountAdmin(req, res);
+  if (!session) return;
+  const before = session.config.temporaryGrants.length;
+  session.config.temporaryGrants = session.config.temporaryGrants.filter(function (grant) { return grant.id !== req.params.id; });
+  if (session.config.temporaryGrants.length === before) return res.status(404).json({ ok: false, message: '临时授权不存在' });
+  try { return res.json({ ok: true, config: accessControl.publicConfig(saveAccounts(session.config)) }); }
+  catch (error) { return res.status(500).json({ ok: false, message: '临时授权撤销失败：' + error.message }); }
+});
 app.get('/api/service-overview', function (req, res) {
   if (!requireSettingsAuth(req, res)) return;
   res.json({

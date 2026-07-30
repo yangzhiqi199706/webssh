@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "test": "node tests/modal-backdrop.test.js && node tests/service-overview.test.js && node tests/service-overview-ui.test.js && node tests/service-overview-deploy.test.js && node tests/settings-update-removal.test.js && node tests/proto-conv-area-utils.test.js && node tests/proto-conv-session.test.js && node tests/proto-conv-db-type.test.js && node tests/dcim-wvp-opengauss.test.js && node tests/access-control.test.js && node tests/ops-settings.test.js && node tests/log-rotation.test.js && node tests/ssh-idle-timer.test.js && node tests/ops-settings-ui.test.js && node tests/shell-script-eol.test.js"
+    "test": "node tests/modal-backdrop.test.js && node tests/service-overview.test.js && node tests/service-overview-ui.test.js && node tests/service-overview-deploy.test.js && node tests/settings-update-removal.test.js && node tests/proto-conv-area-utils.test.js && node tests/proto-conv-session.test.js && node tests/proto-conv-db-type.test.js && node tests/dcim-wvp-opengauss.test.js && node tests/access-control.test.js && node tests/local-account-server.test.js && node tests/ops-settings.test.js && node tests/log-rotation.test.js && node tests/ssh-idle-timer.test.js && node tests/ops-settings-ui.test.js && node tests/shell-script-eol.test.js"
   },
   "dependencies": {
     "@xterm/addon-fit": "0.10.0",
