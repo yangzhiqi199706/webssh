@@ -1371,6 +1371,60 @@
                 <button class="btn primary" id="accessPasswordSave" type="button">保存访问密码</button>
               </div>
             </div>
+
+            <div class="settings-card" id="localAccountProfile" role="status" aria-live="polite">
+              <h4 style="margin-top:0">当前登录账号</h4>
+              <div id="localAccountProfileText" style="font-size:13px;color:var(--muted);min-height:20px">正在读取账号信息…</div>
+            </div>
+
+            <div class="settings-card access-admin-only" id="accessAdminPanel" hidden>
+              <h4 style="margin-top:0">账户与登录策略</h4>
+              <div class="settings-section-desc">仅控制网页登录和账户管理，不影响当前运行的服务、自动任务或既有外部接口。</div>
+              <div class="grid2">
+                <label class="field">
+                  <span>密码有效期（天）</span>
+                  <input id="accessPolicyDays" type="number" min="1" max="3650" value="90" />
+                </label>
+                <label class="field">
+                  <span>全局登录 IP 白名单</span>
+                  <input id="accessGlobalAllowlist" type="text" placeholder="192.168.0.0/24，留空不限制" />
+                </label>
+              </div>
+              <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px">
+                <button class="btn primary" id="accessPolicySave" type="button">保存登录策略</button>
+              </div>
+              <div id="accessAdminStatus" role="status" aria-live="polite" style="font-size:12px;color:var(--muted);padding-top:8px;min-height:20px"></div>
+            </div>
+
+            <div class="settings-card access-admin-only" id="accessUsersPanel" hidden>
+              <h4 style="margin-top:0">本地账号</h4>
+              <div class="grid2">
+                <label class="field"><span>用户名</span><input id="accessUserName" type="text" autocomplete="off" placeholder="2-32 位字母、数字、点、下划线或短横线" /></label>
+                <label class="field"><span>角色</span><select id="accessUserRole"><option value="viewer">查看者</option><option value="operator">运维人员</option><option value="admin">系统管理员</option></select></label>
+                <label class="field"><span>初始密码</span><input id="accessUserPassword" type="password" autocomplete="new-password" /></label>
+                <label class="field"><span>确认密码</span><input id="accessUserConfirm" type="password" autocomplete="new-password" /></label>
+                <label class="field"><span>账号登录 IP 白名单</span><input id="accessUserAllowlist" type="text" placeholder="可选，多个网段用逗号分隔" /></label>
+              </div>
+              <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px">
+                <button class="btn primary" id="accessUserCreate" type="button">创建本地账号</button>
+              </div>
+              <div id="accessUserList" style="margin-top:12px;overflow:auto"></div>
+            </div>
+
+            <div class="settings-card access-admin-only" id="accessGrantsPanel" hidden>
+              <h4 style="margin-top:0">临时授权</h4>
+              <div class="grid2">
+                <label class="field"><span>授权账号</span><select id="accessGrantUser"></select></label>
+                <label class="field"><span>临时角色</span><select id="accessGrantRole"><option value="viewer">查看者</option><option value="operator">运维人员</option><option value="admin">系统管理员</option></select></label>
+                <label class="field"><span>开始时间</span><input id="accessGrantStart" type="datetime-local" /></label>
+                <label class="field"><span>结束时间</span><input id="accessGrantEnd" type="datetime-local" /></label>
+                <label class="field"><span>备注</span><input id="accessGrantNote" type="text" maxlength="200" /></label>
+              </div>
+              <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px">
+                <button class="btn primary" id="accessGrantCreate" type="button">创建临时授权</button>
+              </div>
+              <div id="accessGrantList" style="margin-top:12px;overflow:auto"></div>
+            </div>
           </section>
 
           <section class="settings-section" data-pane="time">
@@ -4267,6 +4321,226 @@
       el.uploadInput.click();
     }
 
+
+    function localAccountNode(id) { return document.getElementById(id); }
+
+    function localAccountStatus(message, isError) {
+      const node = localAccountNode('accessAdminStatus');
+      if (!node) return;
+      node.textContent = message || '';
+      node.style.color = isError ? '#fca5a5' : '#a7f3d0';
+    }
+
+    function localRoleName(role) {
+      return role === 'admin' ? '系统管理员' : (role === 'operator' ? '运维人员' : '查看者');
+    }
+
+    function localDateTime(value) {
+      const time = Date.parse(String(value || ''));
+      return Number.isFinite(time) ? new Date(time).toLocaleString() : '未设置';
+    }
+
+    async function localAccountRequest(url, method, body) {
+      const response = await fetch(url, {
+        method: method || 'GET', credentials: 'same-origin',
+        headers: body ? { 'Content-Type': 'application/json' } : {},
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      const data = await response.json().catch(function () { return {}; });
+      if (!response.ok || !data.ok) throw new Error(data.message || ('HTTP ' + response.status));
+      return data;
+    }
+
+    function renderAccessControl(data) {
+      const profile = data && data.profile ? data.profile : {};
+      const canManage = Boolean(data && data.canManage);
+      const profileText = localAccountNode('localAccountProfileText');
+      if (profileText) {
+        profileText.textContent = profile.username
+          ? (profile.username + ' ｜ 基础角色：' + localRoleName(profile.baseRole) + ' ｜ 当前有效角色：' + localRoleName(profile.role)
+            + ' ｜ 密码到期：' + localDateTime(profile.passwordExpiresAt))
+          : '未能读取当前账号信息';
+      }
+      if (el.accessPasswordHint) el.accessPasswordHint.textContent = profile.username
+        ? '正在为 ' + profile.username + ' 修改登录密码。密码更新后将退出当前会话。'
+        : '请输入当前密码和新密码。';
+      if (el.accessPasswordStatus) {
+        el.accessPasswordStatus.textContent = profile.passwordExpiresAt ? ('密码有效至 ' + localDateTime(profile.passwordExpiresAt)) : '当前密码尚未设置有效期起点';
+        el.accessPasswordStatus.style.color = '#94a3b8';
+      }
+      ['accessAdminPanel', 'accessUsersPanel', 'accessGrantsPanel'].forEach(function (id) {
+        const node = localAccountNode(id);
+        if (node) node.hidden = !canManage;
+      });
+      if (!canManage) return;
+      const config = data.config || {};
+      const policyDays = localAccountNode('accessPolicyDays');
+      const globalAllowlist = localAccountNode('accessGlobalAllowlist');
+      if (policyDays) policyDays.value = (config.passwordPolicy && config.passwordPolicy.maxAgeDays) || 90;
+      if (globalAllowlist) globalAllowlist.value = (config.loginIpAllowlist || []).join(', ');
+      renderLocalAccountUsers(config.users || []);
+      renderLocalAccountGrants(config.temporaryGrants || [], config.users || []);
+      bindLocalAccountControls();
+    }
+
+    function renderLocalAccountUsers(users) {
+      const list = localAccountNode('accessUserList');
+      const grantUser = localAccountNode('accessGrantUser');
+      if (grantUser) grantUser.innerHTML = users.map(function (user) {
+        return '<option value="' + esc(user.id) + '">' + esc(user.username) + '（' + esc(localRoleName(user.role)) + '）</option>';
+      }).join('');
+      if (!list) return;
+      if (!users.length) { list.textContent = '暂无本地账号'; return; }
+      list.innerHTML = '<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr><th style="text-align:left;padding:6px">账号</th><th style="text-align:left;padding:6px">角色</th><th style="text-align:left;padding:6px">登录 IP</th><th style="text-align:left;padding:6px">密码重置</th><th style="padding:6px"></th></tr></thead><tbody>'
+        + users.map(function (user) {
+          const options = ['viewer', 'operator', 'admin'].map(function (role) {
+            return '<option value="' + role + '"' + (role === user.role ? ' selected' : '') + '>' + localRoleName(role) + '</option>';
+          }).join('');
+          return '<tr data-local-user="' + esc(user.id) + '"><td style="padding:6px;white-space:nowrap">' + esc(user.username) + '<br><span style="color:var(--muted)">' + (user.enabled ? '启用' : '已禁用') + '</span></td>'
+            + '<td style="padding:6px"><select data-local-role>' + options + '</select></td>'
+            + '<td style="padding:6px;min-width:180px"><input data-local-allowlist type="text" value="' + esc((user.loginIpAllowlist || []).join(', ')) + '" placeholder="留空不限制" /></td>'
+            + '<td style="padding:6px;min-width:150px"><input data-local-password type="password" placeholder="留空不重置" /></td>'
+            + '<td style="padding:6px;white-space:nowrap"><button type="button" class="btn" data-local-save>保存</button> <button type="button" class="btn" data-local-toggle>' + (user.enabled ? '禁用' : '启用') + '</button></td></tr>';
+        }).join('') + '</tbody></table>';
+      list.querySelectorAll('[data-local-save]').forEach(function (button) {
+        button.onclick = async function () {
+          const row = button.closest('[data-local-user]');
+          const id = row.getAttribute('data-local-user');
+          const password = row.querySelector('[data-local-password]').value;
+          button.disabled = true;
+          try {
+            await localAccountRequest('/api/local-accounts/users/' + encodeURIComponent(id), 'PUT', {
+              role: row.querySelector('[data-local-role]').value,
+              enabled: row.querySelector('[data-local-toggle]').textContent === '禁用',
+              loginIpAllowlist: row.querySelector('[data-local-allowlist]').value,
+            });
+            if (password) await localAccountRequest('/api/local-accounts/users/' + encodeURIComponent(id) + '/password', 'PUT', { newPassword: password, confirmPassword: password });
+            localAccountStatus('账号已保存');
+            refreshAccessControl();
+          } catch (error) { localAccountStatus('账号保存失败：' + error.message, true); }
+          finally { button.disabled = false; }
+        };
+      });
+      list.querySelectorAll('[data-local-toggle]').forEach(function (button) {
+        button.onclick = async function () {
+          const row = button.closest('[data-local-user]');
+          const id = row.getAttribute('data-local-user');
+          button.disabled = true;
+          try {
+            await localAccountRequest('/api/local-accounts/users/' + encodeURIComponent(id), 'PUT', {
+              role: row.querySelector('[data-local-role]').value,
+              enabled: button.textContent === '启用', loginIpAllowlist: row.querySelector('[data-local-allowlist]').value,
+            });
+            localAccountStatus('账号状态已更新');
+            refreshAccessControl();
+          } catch (error) { localAccountStatus('账号更新失败：' + error.message, true); }
+          finally { button.disabled = false; }
+        };
+      });
+    }
+
+    function renderLocalAccountGrants(grants, users) {
+      const list = localAccountNode('accessGrantList');
+      if (!list) return;
+      const names = {};
+      users.forEach(function (user) { names[user.id] = user.username; });
+      if (!grants.length) { list.textContent = '暂无临时授权'; return; }
+      list.innerHTML = '<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr><th style="text-align:left;padding:6px">账号</th><th style="text-align:left;padding:6px">角色</th><th style="text-align:left;padding:6px">有效期</th><th style="padding:6px"></th></tr></thead><tbody>'
+        + grants.map(function (grant) {
+          return '<tr><td style="padding:6px">' + esc(names[grant.userId] || grant.userId) + '</td><td style="padding:6px">' + esc(localRoleName(grant.role)) + '</td><td style="padding:6px">' + esc(localDateTime(grant.startsAt) + ' 至 ' + localDateTime(grant.endsAt)) + '</td><td style="padding:6px"><button class="btn" type="button" data-local-grant-revoke="' + esc(grant.id) + '">撤销</button></td></tr>';
+        }).join('') + '</tbody></table>';
+      list.querySelectorAll('[data-local-grant-revoke]').forEach(function (button) {
+        button.onclick = async function () {
+          if (!confirm('确定撤销该临时授权？')) return;
+          button.disabled = true;
+          try {
+            await localAccountRequest('/api/local-accounts/temporary-grants/' + encodeURIComponent(button.getAttribute('data-local-grant-revoke')), 'DELETE');
+            localAccountStatus('临时授权已撤销');
+            refreshAccessControl();
+          } catch (error) { localAccountStatus('撤销失败：' + error.message, true); }
+          finally { button.disabled = false; }
+        };
+      });
+    }
+
+    function bindLocalAccountControls() {
+      const policySave = localAccountNode('accessPolicySave');
+      const userCreate = localAccountNode('accessUserCreate');
+      const grantCreate = localAccountNode('accessGrantCreate');
+      if (policySave) policySave.onclick = async function () {
+        policySave.disabled = true;
+        try {
+          await localAccountRequest('/api/local-accounts/policy', 'PUT', {
+            maxAgeDays: localAccountNode('accessPolicyDays').value,
+            loginIpAllowlist: localAccountNode('accessGlobalAllowlist').value,
+          });
+          localAccountStatus('登录策略已保存');
+          refreshAccessControl();
+        } catch (error) { localAccountStatus('策略保存失败：' + error.message, true); }
+        finally { policySave.disabled = false; }
+      };
+      if (userCreate) userCreate.onclick = async function () {
+        userCreate.disabled = true;
+        try {
+          await localAccountRequest('/api/local-accounts/users', 'POST', {
+            username: localAccountNode('accessUserName').value,
+            role: localAccountNode('accessUserRole').value,
+            password: localAccountNode('accessUserPassword').value,
+            confirmPassword: localAccountNode('accessUserConfirm').value,
+            loginIpAllowlist: localAccountNode('accessUserAllowlist').value,
+          });
+          ['accessUserName', 'accessUserPassword', 'accessUserConfirm', 'accessUserAllowlist'].forEach(function (id) { localAccountNode(id).value = ''; });
+          localAccountStatus('本地账号已创建');
+          refreshAccessControl();
+        } catch (error) { localAccountStatus('账号创建失败：' + error.message, true); }
+        finally { userCreate.disabled = false; }
+      };
+      if (grantCreate) grantCreate.onclick = async function () {
+        grantCreate.disabled = true;
+        try {
+          await localAccountRequest('/api/local-accounts/temporary-grants', 'POST', {
+            userId: localAccountNode('accessGrantUser').value,
+            role: localAccountNode('accessGrantRole').value,
+            startsAt: new Date(localAccountNode('accessGrantStart').value).toISOString(),
+            endsAt: new Date(localAccountNode('accessGrantEnd').value).toISOString(),
+            note: localAccountNode('accessGrantNote').value,
+          });
+          localAccountStatus('临时授权已创建');
+          refreshAccessControl();
+        } catch (error) { localAccountStatus('授权创建失败：' + error.message, true); }
+        finally { grantCreate.disabled = false; }
+      };
+    }
+
+    async function refreshAccessControl() {
+      try {
+        renderAccessControl(await localAccountRequest('/api/local-accounts', 'GET'));
+      } catch (error) {
+        const profileText = localAccountNode('localAccountProfileText');
+        if (profileText) profileText.textContent = '账号信息加载失败：' + error.message;
+        if (el.accessPasswordStatus) { el.accessPasswordStatus.textContent = '加载失败：' + error.message; el.accessPasswordStatus.style.color = '#fca5a5'; }
+      }
+    }
+
+    async function saveAccessPassword() {
+      const currentPassword = el.accessCurrentPassword ? el.accessCurrentPassword.value : '';
+      const newPassword = el.accessNewPassword ? el.accessNewPassword.value : '';
+      const confirmPassword = el.accessConfirmPassword ? el.accessConfirmPassword.value : '';
+      const button = el.accessPasswordSave;
+      if (!currentPassword || !newPassword || newPassword !== confirmPassword) {
+        if (el.accessPasswordStatus) el.accessPasswordStatus.textContent = !currentPassword ? '请先输入当前密码' : (newPassword !== confirmPassword ? '两次输入的新密码不一致' : '请先输入新密码');
+        return;
+      }
+      if (button) { button.disabled = true; button.textContent = '保存中...'; }
+      try {
+        await localAccountRequest('/api/local-accounts/self-password', 'PUT', { currentPassword: currentPassword, newPassword: newPassword, confirmPassword: confirmPassword });
+        location.replace('/login');
+      } catch (error) {
+        if (el.accessPasswordStatus) { el.accessPasswordStatus.textContent = '保存失败：' + error.message; el.accessPasswordStatus.style.color = '#fca5a5'; }
+      } finally {
+        if (button) { button.textContent = '保存访问密码'; button.disabled = false; }
+      }
+    }
     function uploadSelectedFile(file, progressText = '') {
       if (!file) return Promise.resolve();
       const limitMB = Number(userSettings.uploadMaxMB) || settingsDefaults.uploadMaxMB;
