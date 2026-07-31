@@ -764,6 +764,14 @@ function validRole(value) {
   return Boolean(accessControl.roleLevel(value));
 }
 
+function validatedIpAllowlist(value) {
+  const entries = Array.isArray(value) ? value : String(value || '').split(/[\s,]+/);
+  const invalid = entries.some(function (entry) {
+    return String(entry || '').trim() && !accessControl.normalizeIpAllowlist([entry]).length;
+  });
+  return { ok: !invalid, values: accessControl.normalizeIpAllowlist(entries) };
+}
+
 function validNewPassword(body) {
   const password = String(body.newPassword || body.password || '');
   const confirm = String(body.confirmPassword || password);
@@ -826,6 +834,11 @@ app.post('/api/auth/password-expired', function (req, res) {
   const config = currentAccounts();
   const user = config.users.filter(function (item) { return item.username === String(body.user || '').trim(); })[0];
   const validation = validNewPassword(body);
+  const sourceIp = req.socket && req.socket.remoteAddress;
+  if (user && user.enabled && (!accessControl.isIpAllowed(sourceIp, config.loginIpAllowlist)
+    || !accessControl.isIpAllowed(sourceIp, user.loginIpAllowlist))) {
+    return res.status(403).json({ ok: false, code: 'ip_not_allowed', message: '当前登录 IP 未获授权' });
+  }
   if (!user || !user.enabled || !verifyAccountPassword(user, body.currentPassword || body.password)) return res.status(401).json({ ok: false, message: '用户名或当前密码错误' });
   if (validation.error) return res.status(400).json({ ok: false, message: validation.error });
   user.password = accessControl.createPasswordRecord(validation.password);
@@ -872,9 +885,11 @@ app.put('/api/local-accounts/policy', function (req, res) {
   if (!session) return;
   const body = req.body || {};
   const maxAgeDays = Math.floor(Number(body.maxAgeDays));
+  const ipAllowlist = validatedIpAllowlist(body.loginIpAllowlist);
   if (!Number.isFinite(maxAgeDays) || maxAgeDays < 1 || maxAgeDays > 3650) return res.status(400).json({ ok: false, message: '密码有效期必须在 1 到 3650 天之间' });
+  if (!ipAllowlist.ok) return res.status(400).json({ ok: false, message: '登录 IP 白名单包含无效 IPv4/CIDR' });
   session.config.passwordPolicy = { maxAgeDays: maxAgeDays };
-  session.config.loginIpAllowlist = accessControl.normalizeIpAllowlist(body.loginIpAllowlist);
+  session.config.loginIpAllowlist = ipAllowlist.values;
   try { return res.json({ ok: true, config: accessControl.publicConfig(saveAccounts(session.config)) }); }
   catch (error) { return res.status(500).json({ ok: false, message: '策略保存失败：' + error.message }); }
 });
@@ -886,14 +901,16 @@ app.post('/api/local-accounts/users', function (req, res) {
   const username = String(body.username || '').trim();
   const role = String(body.role || 'viewer').toLowerCase();
   const validation = validNewPassword(body);
+  const ipAllowlist = validatedIpAllowlist(body.loginIpAllowlist);
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{1,31}$/.test(username)) return res.status(400).json({ ok: false, message: '用户名需为 2-32 位字母、数字、点、下划线或短横线' });
   if (!validRole(role)) return res.status(400).json({ ok: false, message: '角色无效' });
   if (validation.error) return res.status(400).json({ ok: false, message: validation.error });
+  if (!ipAllowlist.ok) return res.status(400).json({ ok: false, message: '登录 IP 白名单包含无效 IPv4/CIDR' });
   if (session.config.users.some(function (item) { return item.username === username; })) return res.status(409).json({ ok: false, message: '用户名已存在' });
   session.config.users.push({
     id: accountId('u'), username: username, role: role, enabled: true,
     password: accessControl.createPasswordRecord(validation.password), passwordChangedAt: new Date().toISOString(),
-    sessionVersion: 1, loginIpAllowlist: accessControl.normalizeIpAllowlist(body.loginIpAllowlist),
+    sessionVersion: 1, loginIpAllowlist: ipAllowlist.values,
   });
   try { return res.status(201).json({ ok: true, config: accessControl.publicConfig(saveAccounts(session.config)) }); }
   catch (error) { return res.status(500).json({ ok: false, message: '账号创建失败：' + error.message }); }
@@ -906,12 +923,14 @@ app.put('/api/local-accounts/users/:id', function (req, res) {
   const user = accountById(session.config, req.params.id);
   const role = String(body.role || '').toLowerCase();
   const enabled = body.enabled !== false;
+  const ipAllowlist = validatedIpAllowlist(body.loginIpAllowlist);
   if (!user) return res.status(404).json({ ok: false, message: '账号不存在' });
   if (!validRole(role)) return res.status(400).json({ ok: false, message: '角色无效' });
+  if (!ipAllowlist.ok) return res.status(400).json({ ok: false, message: '登录 IP 白名单包含无效 IPv4/CIDR' });
   if (isOnlyBaseAdmin(session.config, user, role, enabled)) return res.status(400).json({ ok: false, message: '至少必须保留一个启用的基础管理员账号' });
   user.role = role;
   user.enabled = enabled;
-  user.loginIpAllowlist = accessControl.normalizeIpAllowlist(body.loginIpAllowlist);
+  user.loginIpAllowlist = ipAllowlist.values;
   try {
     const saved = saveAccounts(session.config);
     if (!user.enabled) invalidateAccount(user.id);
@@ -1022,7 +1041,10 @@ app.post('/api/auth/logout', function (req, res) {
   const m = /(?:^|;\s*)webssh_auth=([^;]+)/.exec(cookie);
   let token = m ? decodeURIComponent(m[1]) : '';
   if (!token && req.body && req.body.token) token = String(req.body.token);
-  if (token) authTokens.delete(token);
+  if (token) {
+    authTokens.delete(token);
+    accountSessions.delete(token);
+  }
   res.setHeader('Set-Cookie',
     'webssh_auth=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=Lax');
   res.json({ ok: true });
@@ -1156,6 +1178,9 @@ app.get('/api/access-control', function (req, res) {
 
 app.put('/api/access-control/password', function (req, res) {
   if (!requireSettingsAuth(req, res)) return;
+  if (accessConfig && accessConfig.version === 2) {
+    return res.status(409).json({ ok: false, message: '本地多账号配置请通过账户管理接口修改密码' });
+  }
   const body = req.body && typeof req.body === 'object' ? req.body : {};
   const currentPassword = String(body.currentPassword || '');
   const newPassword = String(body.newPassword || '');

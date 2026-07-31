@@ -91,12 +91,40 @@ async function run() {
     assert.strictEqual(profile.statusCode, 200, output);
     assert.strictEqual(profile.body.canManage, true);
     assert.strictEqual(profile.body.config.users.length, 3);
+    const invalidPolicy = await request(port, 'PUT', '/api/local-accounts/policy', {
+      maxAgeDays: 90, loginIpAllowlist: ['198.51.100.0/33'],
+    }, cookie);
+    assert.strictEqual(invalidPolicy.statusCode, 400, output);
+    const invalidUser = await request(port, 'POST', '/api/local-accounts/users', {
+      username: 'invalid-ip', role: 'viewer', password: 'Another-Secret!', loginIpAllowlist: ['198.51.100.0/33'],
+    }, cookie);
+    assert.strictEqual(invalidUser.statusCode, 400, output);
+    const invalidUserUpdate = await request(port, 'PUT', '/api/local-accounts/users/u-denied', {
+      role: 'viewer', enabled: true, loginIpAllowlist: ['198.51.100.0/33'],
+    }, cookie);
+    assert.strictEqual(invalidUserUpdate.statusCode, 400, output);
+    const legacyPasswordChange = await request(port, 'PUT', '/api/access-control/password', {
+      currentPassword: 'N3w-Secret!', newPassword: 'Another-Secret!', confirmPassword: 'Another-Secret!',
+    }, cookie);
+    assert.strictEqual(legacyPasswordChange.statusCode, 409, output);
+    const profileAfterLegacyAttempt = await request(port, 'GET', '/api/local-accounts', null, cookie);
+    assert.strictEqual(profileAfterLegacyAttempt.statusCode, 200, output);
+    assert.strictEqual(profileAfterLegacyAttempt.body.config.users.length, 3);
     const denied = await request(port, 'POST', '/api/auth/login', { user: 'denied', password: 'N3w-Secret!', timeoutHours: 2 });
     assert.strictEqual(denied.statusCode, 403);
     assert.strictEqual(denied.body.code, 'ip_not_allowed');
+    const deniedExpiredReset = await request(port, 'POST', '/api/auth/password-expired', {
+      user: 'denied', currentPassword: 'N3w-Secret!', newPassword: 'Another-Secret!', confirmPassword: 'Another-Secret!',
+    });
+    assert.strictEqual(deniedExpiredReset.statusCode, 403, output);
+    assert.strictEqual(deniedExpiredReset.body.code, 'ip_not_allowed');
     const expired = await request(port, 'POST', '/api/auth/login', { user: 'expired', password: 'N3w-Secret!', timeoutHours: 2 });
     assert.strictEqual(expired.statusCode, 403);
     assert.strictEqual(expired.body.code, 'password_expired');
+    const logout = await request(port, 'POST', '/api/auth/logout', {}, cookie);
+    assert.strictEqual(logout.statusCode, 200, output);
+    const profileAfterLogout = await request(port, 'GET', '/api/local-accounts', null, cookie);
+    assert.strictEqual(profileAfterLogout.statusCode, 401, output);
   } finally {
     child.kill();
     if (typeof fs.rmSync === 'function') fs.rmSync(configDirectory, { recursive: true, force: true });
