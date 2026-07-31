@@ -127,9 +127,14 @@
       line-height: 1.2;
       text-align: center;
       cursor: pointer;
+      user-select: none;
       transition: .18s ease;
     }
     .menu-item:hover { background: #111827; color: var(--text); border-color: #334155; }
+    .menu-item:focus-visible { outline: 2px solid rgba(34, 211, 238, .9); outline-offset: 2px; }
+    .menu-item.menu-drag-source { opacity: .48; cursor: grabbing; }
+    .menu-item.menu-drop-before { box-shadow: inset 0 2px 0 #22d3ee; }
+    .menu-item.menu-drop-after { box-shadow: inset 0 -2px 0 #22d3ee; }
     .menu-item.active {
       background: rgba(34, 211, 238, .12);
       border-color: rgba(34, 211, 238, .28);
@@ -2354,6 +2359,129 @@
       { id: 'db', label: '数据库管理', icon: 'DB', title: 'MySQL / openGauss / 达梦 DM 三库统一管理' },
       { id: 'protocol', label: '协议助手', icon: 'PRO', title: 'XLS 处理 / 故障码填充 / PDF 对照 / MBP 生成 / 协议批处理' },
     ];
+    const MENU_ORDER_KEY = 'webssh.menu-order.v1';
+    const MENU_REORDER_DELAY_MS = 450;
+    let menuDrag = null;
+    let menuDragTimer = null;
+    let suppressMenuClick = false;
+
+    function getMenuItemsInDisplayOrder() {
+      const byId = Object.create(null);
+      menuItems.forEach((item) => { byId[item.id] = item; });
+      try {
+        const savedOrder = JSON.parse(localStorage.getItem(MENU_ORDER_KEY) || '[]');
+        if (!Array.isArray(savedOrder)) throw new Error('菜单排序格式无效');
+        const seen = Object.create(null);
+        const ordered = [];
+        savedOrder.forEach((id) => {
+          const item = byId[id];
+          if (item && !seen[id]) {
+            seen[id] = true;
+            ordered.push(item);
+          }
+        });
+        menuItems.forEach((item) => {
+          if (!seen[item.id]) ordered.push(item);
+        });
+        return ordered;
+      } catch (_error) {
+        return menuItems.slice();
+      }
+    }
+
+    function saveMenuOrder(items) {
+      try {
+        localStorage.setItem(MENU_ORDER_KEY, JSON.stringify(items.map((item) => item.id)));
+      } catch (_error) {}
+    }
+
+    function clearMenuDropState() {
+      if (!el.menuBar) return;
+      el.menuBar.querySelectorAll('.menu-drop-before, .menu-drop-after').forEach((node) => {
+        node.classList.remove('menu-drop-before', 'menu-drop-after');
+      });
+    }
+
+    function cancelMenuDrag() {
+      if (menuDragTimer) {
+        clearTimeout(menuDragTimer);
+        menuDragTimer = null;
+      }
+      if (menuDrag && menuDrag.node) menuDrag.node.classList.remove('menu-drag-source');
+      clearMenuDropState();
+      menuDrag = null;
+    }
+
+    function updateMenuDropTarget(event) {
+      if (!menuDrag || !menuDrag.started) return;
+      clearMenuDropState();
+      menuDrag.drop = null;
+      const target = document.elementFromPoint(event.clientX, event.clientY);
+      const targetNode = target && target.closest ? target.closest('[data-menu]') : null;
+      if (!targetNode || !el.menuBar.contains(targetNode) || targetNode === menuDrag.node) return;
+      const rect = targetNode.getBoundingClientRect();
+      const position = event.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
+      menuDrag.drop = { id: targetNode.dataset.menu, position: position };
+      targetNode.classList.add(position === 'before' ? 'menu-drop-before' : 'menu-drop-after');
+    }
+
+    function finishMenuDrag() {
+      const drag = menuDrag;
+      const drop = drag && drag.drop;
+      const didLongPress = Boolean(drag && drag.started);
+      cancelMenuDrag();
+      if (!didLongPress) return;
+      suppressMenuClick = true;
+      setTimeout(() => { suppressMenuClick = false; }, 0);
+      if (!drop) return;
+      const items = getMenuItemsInDisplayOrder();
+      const sourceIndex = items.findIndex((item) => item.id === drag.itemId);
+      const movingItem = sourceIndex >= 0 ? items.splice(sourceIndex, 1)[0] : null;
+      const targetIndex = items.findIndex((item) => item.id === drop.id);
+      if (!movingItem || targetIndex < 0) return;
+      items.splice(drop.position === 'before' ? targetIndex : targetIndex + 1, 0, movingItem);
+      saveMenuOrder(items);
+      renderMenu();
+    }
+
+    function bindMenuDrag(node) {
+      node.addEventListener('pointerdown', (event) => {
+        if (event.button !== 0 || event.pointerType !== 'mouse') return;
+        cancelMenuDrag();
+        menuDrag = {
+          itemId: node.dataset.menu,
+          node: node,
+          pointerId: event.pointerId,
+          startX: event.clientX,
+          startY: event.clientY,
+          started: false,
+          drop: null,
+        };
+        if (node.setPointerCapture) {
+          try { node.setPointerCapture(event.pointerId); } catch (_error) {}
+        }
+        menuDragTimer = setTimeout(() => {
+          if (!menuDrag || menuDrag.node !== node) return;
+          menuDragTimer = null;
+          menuDrag.started = true;
+          node.classList.add('menu-drag-source');
+        }, MENU_REORDER_DELAY_MS);
+      });
+      node.addEventListener('pointermove', (event) => {
+        if (!menuDrag || menuDrag.pointerId !== event.pointerId) return;
+        if (!menuDrag.started) {
+          const moved = Math.abs(event.clientX - menuDrag.startX) + Math.abs(event.clientY - menuDrag.startY);
+          if (moved > 6) cancelMenuDrag();
+          return;
+        }
+        event.preventDefault();
+        updateMenuDropTarget(event);
+      });
+      node.addEventListener('pointerup', (event) => {
+        if (menuDrag && menuDrag.pointerId === event.pointerId) finishMenuDrag();
+      });
+      node.addEventListener('pointercancel', () => cancelMenuDrag());
+    }
     state.activeMenu = 'ssh';
 
     function cloneConnection(host) {
@@ -5395,14 +5523,21 @@
 
     function renderMenu() {
       if (!el.menuBar) return;
-      el.menuBar.innerHTML = menuItems.map((item) => `
-        <button class="menu-item ${state.activeMenu === item.id ? 'active' : ''}" data-menu="${esc(item.id)}" title="${esc(item.title || item.label)}">
+      el.menuBar.innerHTML = getMenuItemsInDisplayOrder().map((item) => `
+        <button class="menu-item ${state.activeMenu === item.id ? 'active' : ''}" data-menu="${esc(item.id)}" title="${esc(item.title || item.label)} · 按住左键拖动可排序">
           <span class="menu-icon">${esc(item.icon)}</span>
           <span class="menu-label">${esc(item.label)}</span>
         </button>
       `).join('');
       el.menuBar.querySelectorAll('[data-menu]').forEach((node) => {
-        node.onclick = () => showView(node.dataset.menu);
+        bindMenuDrag(node);
+        node.onclick = (event) => {
+          if (suppressMenuClick) {
+            event.preventDefault();
+            return;
+          }
+          showView(node.dataset.menu);
+        };
       });
     }
 
