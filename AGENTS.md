@@ -184,7 +184,7 @@ module4 的预览弹窗）。
 | Host | 192.168.0.22 |
 | OS | Kylin Linux V10 (Halberd), glibc 2.28, x86_64 |
 | SSH | 22 |
-| 账号 | root / `REDACTED_DEPLOY_PASS` |
+| 账号 | root / `<DEPLOY_PASSWORD>` |
 | 安装目录 | /opt/webssh |
 | HTTP 端口 | 3010（对外）|
 | 服务 | systemd 双服务 `webssh` + `webssh-protocol`（开机自启） |
@@ -200,7 +200,7 @@ module4 的预览弹窗）。
 WEBSSH_HOST=192.168.0.22 \
 WEBSSH_PORT=22 \
 WEBSSH_USER=root \
-WEBSSH_DEPLOY_PASS='REDACTED_DEPLOY_PASS' \
+WEBSSH_DEPLOY_PASS='<DEPLOY_PASSWORD>' \
 node scripts/deploy-upgrade.js
 ```
 脚本做的事：
@@ -218,11 +218,11 @@ node scripts/deploy-upgrade.js
 ### 3.3 协议助手：一键部署（推荐）
 ```powershell
 # PowerShell
-$env:WEBSSH_DEPLOY_PASS = 'REDACTED_DEPLOY_PASS'
+$env:WEBSSH_DEPLOY_PASS = '<DEPLOY_PASSWORD>'
 node scripts/deploy-protocol.js
 
 # Bash
-WEBSSH_DEPLOY_PASS='REDACTED_DEPLOY_PASS' node scripts/deploy-protocol.js
+WEBSSH_DEPLOY_PASS='<DEPLOY_PASSWORD>' node scripts/deploy-protocol.js
 ```
 脚本做的事（`scripts/deploy-protocol.js`）：
 1. 本地打 `webssh-protocol-<stamp>.tar.gz`：
@@ -250,11 +250,11 @@ WEBSSH_DEPLOY_PASS='REDACTED_DEPLOY_PASS' node scripts/deploy-protocol.js
 
 复用模式（不重打 Python/wheels，加快速度）：
 ```bash
-SKIP_BUILD=1 WEBSSH_DEPLOY_PASS='REDACTED_DEPLOY_PASS' node scripts/deploy-protocol.js
+SKIP_BUILD=1 WEBSSH_DEPLOY_PASS='<DEPLOY_PASSWORD>' node scripts/deploy-protocol.js
 ```
 仅推协议助手，不动主壳：
 ```bash
-SKIP_MAIN_SYNC=1 WEBSSH_DEPLOY_PASS='REDACTED_DEPLOY_PASS' node scripts/deploy-protocol.js
+SKIP_MAIN_SYNC=1 WEBSSH_DEPLOY_PASS='<DEPLOY_PASSWORD>' node scripts/deploy-protocol.js
 ```
 
 ### 3.4 部署后验证
@@ -432,13 +432,13 @@ webssh 主壳用的旧版 Node（系统遗留），不要升。`http-proxy@1.18.
 
 ### 6.1 改了 webssh 主壳（server.js / index.html / serial / sms）
 ```bash
-WEBSSH_HOST=192.168.0.22 WEBSSH_DEPLOY_PASS='REDACTED_DEPLOY_PASS' \
+WEBSSH_HOST=192.168.0.22 WEBSSH_DEPLOY_PASS='<DEPLOY_PASSWORD>' \
   node scripts/deploy-upgrade.js
 ```
 
 ### 6.2 改了协议助手（protocol_app/）
 ```powershell
-$env:WEBSSH_DEPLOY_PASS = 'REDACTED_DEPLOY_PASS'
+$env:WEBSSH_DEPLOY_PASS = '<DEPLOY_PASSWORD>'
 node scripts/deploy-protocol.js
 ```
 
@@ -448,7 +448,7 @@ node scripts/deploy-protocol.js
 ### 6.4 同时改了主壳 + 协议助手
 直接走 `deploy-protocol.js`（默认会同步主壳代码 + 重启主服务）：
 ```powershell
-$env:WEBSSH_DEPLOY_PASS = 'REDACTED_DEPLOY_PASS'
+$env:WEBSSH_DEPLOY_PASS = '<DEPLOY_PASSWORD>'
 node scripts/deploy-protocol.js
 ```
 
@@ -561,7 +561,7 @@ INSTALL.md
 
 打包流程（一行命令）：
 ```powershell
-$env:WEBSSH_DEPLOY_PASS = 'REDACTED_DEPLOY_PASS'
+$env:WEBSSH_DEPLOY_PASS = '<DEPLOY_PASSWORD>'
 node scripts/build-fullstack-on-server.js
 ```
 脚本做的事：在 192.168.0.22 服务器上 stage `/opt/webssh/{app,protocol,runtime}/`
@@ -1043,7 +1043,7 @@ UI 操作后用上面 3 条 firewall-cmd 复核，规则应已生效且 `--perma
 ### 10.5 部署
 属于主壳改动，走 `deploy-upgrade.js`：
 ```bash
-WEBSSH_HOST=192.168.0.22 WEBSSH_DEPLOY_PASS='REDACTED_DEPLOY_PASS' \
+WEBSSH_HOST=192.168.0.22 WEBSSH_DEPLOY_PASS='<DEPLOY_PASSWORD>' \
   node scripts/deploy-upgrade.js
 ```
 或者用 `deploy-protocol.js`（会顺带同步主壳代码）。
@@ -1095,7 +1095,7 @@ WEBSSH_HOST=192.168.0.22 WEBSSH_DEPLOY_PASS='REDACTED_DEPLOY_PASS' \
 ### 11.4 部署
 属于 webssh 主壳改动，走 `deploy-upgrade.js`：
 ```bash
-WEBSSH_HOST=192.168.0.22 WEBSSH_DEPLOY_PASS='REDACTED_DEPLOY_PASS' \
+WEBSSH_HOST=192.168.0.22 WEBSSH_DEPLOY_PASS='<DEPLOY_PASSWORD>' \
   node scripts/deploy-upgrade.js
 ```
 或者用 `deploy-protocol.js`（会顺带同步主壳代码）。
@@ -1552,7 +1552,7 @@ journalctl -u webssh-wvp -f       # wvp 日志，grep "注册请求" 看 401/403
 ```bash
 PORT=3010 node server.js
 # 浏览器 http://127.0.0.1:3010/  → 左菜单「数据库管理」
-# 1. 「连接信息」录 SSH（0.60/root/REDACTED_DEPLOY_PASS）+ 三库凭据 → 保存
+# 1. 「连接信息」录 SSH（0.60/root/<DEPLOY_PASSWORD>）+ 三库凭据 → 保存
 # 2. 概览 tab → MySQL/openGauss 绿灯，DM 灰灯 + 显示「一键启动 DM」按钮
 # 3. SQL 控制台切 MySQL → SHOW DATABASES → 出 6 库（含 dcim/wvp）
 # 4. 库表浏览切 MySQL → 点 dcim → 148 张表列出 → 点任一表 → 结构 + 100 行预览
@@ -1568,7 +1568,7 @@ curl -s http://127.0.0.1:3010/api/db-manager/status | jq
 ### 12.10 部署
 属于主壳改动，走 `deploy-upgrade.js`：
 ```bash
-WEBSSH_HOST=192.168.0.22 WEBSSH_DEPLOY_PASS='REDACTED_DEPLOY_PASS' \
+WEBSSH_HOST=192.168.0.22 WEBSSH_DEPLOY_PASS='<DEPLOY_PASSWORD>' \
   node scripts/deploy-upgrade.js
 ```
 **注意**：新装了 `pg` + `dmdb` 两个 npm 包，`deploy-upgrade.js` 会把整个 `node_modules` 同步过去。若目标机磁盘紧张可以先本地 `npm prune --production` 再打包。

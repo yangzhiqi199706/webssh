@@ -16,8 +16,8 @@
 //   5. 重启 webssh 主服务，分别探活 /health 和 /protocol/
 //
 // 用法（PowerShell / Git Bash）：
-//   $env:WEBSSH_DEPLOY_PASS = 'REDACTED_DEPLOY_PASS'        # PowerShell
-//   export WEBSSH_DEPLOY_PASS='REDACTED_DEPLOY_PASS'        # Bash
+//   $env:WEBSSH_DEPLOY_PASS = '<DEPLOY_PASSWORD>'        # PowerShell
+//   export WEBSSH_DEPLOY_PASS='<DEPLOY_PASSWORD>'        # Bash
 //   node scripts/deploy-protocol.js
 //
 // 环境变量（一般不动）：

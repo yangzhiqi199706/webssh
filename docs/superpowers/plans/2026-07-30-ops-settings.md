@@ -361,7 +361,7 @@ Expected: 退出码 0，无失败。
 
 - [ ] **Step 3: 部署与探活**
 
-Run: $env:WEBSSH_DEPLOY_PASS = 'REDACTED_DEPLOY_PASS'; node scripts/deploy-protocol.js
+Run: $env:WEBSSH_DEPLOY_PASS = '<DEPLOY_PASSWORD>'; node scripts/deploy-protocol.js
 
 Expected: webssh 和 webssh-protocol 均为 active，/health 和 /protocol/ 返回 HTTP 200。
 

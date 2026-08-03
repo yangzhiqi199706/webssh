@@ -49,3 +49,6 @@ video/vendor/flv.min.js
 
 # VS Code workspace settings may contain API keys or secrets
 .vscode/settings.json
+
+# Codex local settings may contain API keys or secrets
+.claude/settings.local.json

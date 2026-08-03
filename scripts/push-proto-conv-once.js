@@ -1,5 +1,11 @@
 // 一次性脚本：把本地 proto-conv/ 全量推到 192.168.0.22:/opt/webssh/app/proto-conv/
 // 起因：scripts/deploy-protocol.js 的 main-sync 没包含 proto-conv 目录
+const PASSWORD = process.env.WEBSSH_DEPLOY_PASS;
+if (!PASSWORD) {
+  console.error('错误：需要设置环境变量 WEBSSH_DEPLOY_PASS');
+  process.exit(1);
+}
+
 const { Client } = require('ssh2');
 const fs = require('fs');
 const path = require('path');
@@ -86,4 +92,4 @@ c.on('ready', () => {
       c.end();
     })().catch(e => { console.error('ERR:', e); c.end(); });
   });
-}).connect({ host: '192.168.0.22', username: 'root', password: 'REDACTED_DEPLOY_PASS' });
+}).connect({ host: '192.168.0.22', username: 'root', password: PASSWORD });
