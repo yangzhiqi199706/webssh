@@ -3116,6 +3116,10 @@ wssSerial.on('connection', function (ws) {
     const payload = msg && msg.payload ? msg.payload : {};
 
     if (msg.type === 'open') {
+      if (currentPath) {
+        send('error', { message: '串口已经打开或正在打开，请先关闭当前串口' });
+        return;
+      }
       const devPath = payload.path;
       if (!isValidDevicePath(devPath)) {
         send('error', { message: '无效的设备路径：' + devPath });

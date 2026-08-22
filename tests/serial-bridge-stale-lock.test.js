@@ -25,5 +25,9 @@ assert.ok(
   /lock && lock\.owner === serialLockOwner/.test(server),
   'WebSocket 释放锁时必须校验锁所有权，不能误删其他任务的锁'
 );
+assert.ok(
+  /if \(currentPath\) \{[\s\S]*?串口已经打开或正在打开/.test(server),
+  '同一 WebSocket 会话重复打开时必须拒绝，避免先前保留锁遗留'
+);
 
 console.log('serial bridge stale lock: passed');
