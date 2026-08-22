@@ -3,6 +3,7 @@
     <head>
         <link rel="stylesheet" href="/node_modules/@xterm/xterm/css/xterm.css" />
         <link rel="stylesheet" href="./assets/css/styles.css" />
+        <link rel="stylesheet" href="./assets/css/serial-bridge.css" />
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <title>远程串口 / 网络调试 · Web SSH</title>
@@ -262,6 +263,7 @@
                 <button type="button" id="button-back-ssh" class="toolbar-button toolbar-space corner" title="返回 SSH 终端">← 返回 SSH</button>
                 <button type="button" id="button-mode-serial" class="toolbar-button toolbar-space corner mode-tab active" title="串口调试模式（/dev/ttyS*）">串口</button>
                 <button type="button" id="button-mode-tcp" class="toolbar-button toolbar-space corner mode-tab" title="TCP 客户端调试（IP+端口）">网络</button>
+                <button type="button" id="button-bridge-settings" class="toolbar-button toolbar-space corner" aria-expanded="false" title="配置串口转网口、网口转串口和真实串口">串口转网口</button>
                 <label for="select-port" class="toolbar-input-label mode-serial-only">设备:</label>
                 <select id="select-port" class="toolbar-select toolbar-space on-connected-disabled mode-serial-only"></select>
                 <button type="button" id="button-refresh-ports" class="toolbar-button toolbar-space corner mode-serial-only" title="刷新串口列表">刷新</button>
@@ -393,9 +395,42 @@
                 <button type="button" id="button-reset-stats" class="toolbar-button corner toolbar-space">Reset Stats</button>
             </div>
         </div>
+        <aside id="serial-bridge-drawer" class="serial-bridge-drawer" hidden aria-label="串口转网口配置">
+            <div class="serial-bridge-head">
+                <div>
+                    <h1 class="serial-bridge-title">串口转网口</h1>
+                    <div class="serial-bridge-subtitle">DTU 透传配置与运行状态</div>
+                </div>
+                <button type="button" id="button-bridge-close" class="serial-bridge-close" aria-label="关闭串口转网口配置" title="关闭">&times;</button>
+            </div>
+            <div class="serial-bridge-body">
+                <div id="serial-bridge-message" class="serial-bridge-notice" role="status" aria-live="polite"></div>
+                <section class="serial-bridge-section" aria-labelledby="serial-bridge-basics-title">
+                    <div class="serial-bridge-section-head"><h2 id="serial-bridge-basics-title">设备设置</h2><span>支持 1-16 路串口</span></div>
+                    <div id="serial-bridge-basics" class="serial-bridge-basics"></div>
+                </section>
+                <section class="serial-bridge-section" aria-labelledby="serial-bridge-ports-title">
+                    <div class="serial-bridge-section-head">
+                        <div><h2 id="serial-bridge-ports-title">端口设置</h2><span>扫描设备后选择实际串口；保存参数后可逐路启动。</span></div>
+                        <div class="serial-bridge-actions">
+                            <button type="button" id="button-bridge-scan" class="serial-bridge-button">扫描设备</button>
+                            <button type="button" id="button-bridge-save" class="serial-bridge-button primary">保存配置</button>
+                            <button type="button" id="button-bridge-start-enabled" class="serial-bridge-button">启动已启用</button>
+                            <button type="button" id="button-bridge-stop-all" class="serial-bridge-button stop">停止全部</button>
+                        </div>
+                    </div>
+                    <div class="serial-bridge-table-wrap"><table id="serial-bridge-port-table" class="serial-bridge-table"></table></div>
+                </section>
+                <section class="serial-bridge-section" aria-labelledby="serial-bridge-communication-title">
+                    <div class="serial-bridge-section-head"><h2 id="serial-bridge-communication-title">通信设置</h2><span>参数与 drv 的 DTU 配置保持一致。</span></div>
+                    <div id="serial-bridge-communication" class="serial-bridge-communication"></div>
+                </section>
+            </div>
+        </aside>
         <script src="/node_modules/@xterm/xterm/lib/xterm.js"></script>
         <script src="/node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
         <script src="./assets/js/remote-serial.js"></script>
+        <script src="./assets/js/serial-bridge.js"></script>
         <script>
             (function () {
                 var btn = document.getElementById('button-back-ssh');

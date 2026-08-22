@@ -31,6 +31,7 @@ config/video-28181.json
 config/video-devices.json
 config/dcim-video.json
 config/db-manager.json
+config/serial-bridge.json
 
 # 数据库管理板块的备份产物（本地暂存）
 backups/db-manager/
@@ -49,6 +50,3 @@ video/vendor/flv.min.js
 
 # VS Code workspace settings may contain API keys or secrets
 .vscode/settings.json
-
-# Codex local settings may contain API keys or secrets
-.claude/settings.local.json

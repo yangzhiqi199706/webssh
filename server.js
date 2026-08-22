@@ -14,6 +14,8 @@ const { createIdleTimer } = require('./lib/ssh-idle-timer');
 const { createServiceOverview } = require('./lib/service-overview');
 const { spawn } = require('child_process');
 const httpProxy = require('http-proxy');
+const serialBridge = require('./serial/bridge-manager');
+const serialAutoStart = require('./serial/auto-start');
 
 const runSshCommand = createSshCommandRunner(Client);
 
@@ -627,6 +629,11 @@ const serviceOverview = createServiceOverview({
   retentionMs: 7 * 24 * 60 * 60 * 1000,
 });
 const AUTH_USER = accessControl.USERNAME;
+const SERIAL_BRIDGE_CONFIG_PATH = process.env.SERIAL_BRIDGE_CONFIG
+  || path.join(__dirname, 'config', 'serial-bridge.json');
+const serialBridgeManager = new serialBridge.SerialBridgeManager({
+  config: serialBridge.loadSerialBridgeConfig(SERIAL_BRIDGE_CONFIG_PATH, fs), fs: fs, net: net, spawn: spawn,
+});
 const authTokens = new Map(); // token -> expireAtMs
 const sshIdleSessionReconfigurers = new Set();
 
@@ -1254,6 +1261,8 @@ app.get('/api/serial/ports', function (req, res) {
   collect('ttyS');
   collect('ttyUSB');
   collect('ttyACM');
+  collect('ttyXRUSB');
+  collect('ttyO');
   candidates.sort(function (a, b) {
     const re = /^(.*?)(\d+)$/;
     const ma = re.exec(a);
@@ -1309,6 +1318,153 @@ app.get('/api/serial/ports', function (req, res) {
   });
 
   res.json({ ports: ports, probed: doProbe });
+});
+
+// ===================== 串口转网口（DTU）=====================
+function serialBridgePortById(id) {
+  return serialBridgeManager.getConfig().ports.find(function (item) { return item.id === Number(id); });
+}
+
+function reconcileSerialBridgeLocks() {
+  const statuses = serialBridgeManager.getStatus();
+  serialLocks.forEach(function (lock, devicePath) {
+    if (!lock || lock.type !== 'serial-bridge') return;
+    const status = statuses.find(function (item) { return item.id === lock.id; });
+    if (!status || (status.state !== 'running' && status.state !== 'starting')) serialLocks.delete(devicePath);
+  });
+}
+
+async function startSerialBridge(id) {
+  const portConfig = serialBridgePortById(id);
+  if (!portConfig) throw new Error('串口配置不存在');
+  reconcileSerialBridgeLocks();
+  const existing = serialBridgeManager.getStatus().find(function (item) { return item.id === portConfig.id; });
+  if (existing && (existing.state === 'running' || existing.state === 'starting')) {
+    return Object.assign({}, existing, { action: 'already-running' });
+  }
+  if (serialLocks.has(portConfig.devicePath)) throw new Error(portConfig.devicePath + ' 正被串口调试或转发任务占用');
+  const status = await serialBridgeManager.start(portConfig.id);
+  serialLocks.set(portConfig.devicePath, { since: Date.now(), type: 'serial-bridge', id: portConfig.id });
+  return Object.assign({}, status, { action: 'started' });
+}
+
+async function stopSerialBridge(id) {
+  const portConfig = serialBridgePortById(id);
+  await serialBridgeManager.stop(id);
+  if (portConfig) serialLocks.delete(portConfig.devicePath);
+}
+
+async function stopAllSerialBridges() {
+  const configs = serialBridgeManager.getConfig().ports;
+  await serialBridgeManager.stopAll();
+  configs.forEach(function (portConfig) { serialLocks.delete(portConfig.devicePath); });
+}
+
+function startPersistedSerialBridges() {
+  serialAutoStart.startEnabledSerialBridges({
+    getConfig: function () { return serialBridgeManager.getConfig(); },
+    startPort: startSerialBridge,
+    onRetry: function (result) {
+      console.warn('[serial-bridge] 端口' + result.id + '自启动第' + result.attempts + '/' + result.maxAttempts + '次失败：' + result.error);
+    },
+  }).then(function (results) {
+    results.forEach(function (result) {
+      if (result.action === 'disabled') return;
+      if (result.state === 'error') {
+        console.error('[serial-bridge] 端口' + result.id + '自启动失败（已尝试' + result.attempts + '次）：' + result.error);
+        return;
+      }
+      console.log('[serial-bridge] 端口' + result.id + '已按持久化配置启动（第' + result.attempts + '次）');
+    });
+  }).catch(function (error) {
+    console.error('[serial-bridge] 已启用端口自动启动异常：' + error.message);
+  });
+}
+
+function serialBridgeRuntimeConfigChanged(current, next) {
+  return ['devicePath', 'baudRate', 'dataBits', 'parity', 'stopBits', 'packetIntervalMs', 'type', 'listenPort', 'targetHost', 'targetPort']
+    .some(function (key) { return current[key] !== next[key]; });
+}
+
+app.get('/api/serial/bridge/config', function (_req, res) {
+  reconcileSerialBridgeLocks();
+  res.json({ ok: true, config: serialBridgeManager.getConfig(), status: serialBridgeManager.getStatus() });
+});
+
+app.get('/api/serial/bridge/status', function (_req, res) {
+  reconcileSerialBridgeLocks();
+  res.json({ ok: true, status: serialBridgeManager.getStatus() });
+});
+
+app.put('/api/serial/bridge/config', async function (req, res) {
+  const candidate = req.body && req.body.config ? req.body.config : req.body;
+  const checked = serialBridge.validateSerialBridgeConfig(candidate);
+  if (!checked.ok) {
+    res.status(400).json({ ok: false, message: checked.errors.join('；'), errors: checked.errors });
+    return;
+  }
+  try {
+    const currentConfig = serialBridgeManager.getConfig();
+    const runningIds = serialBridgeManager.getStatus().filter(function (item) { return item.state === 'running' || item.state === 'starting'; })
+      .map(function (item) { return item.id; });
+    const changedRunningPort = runningIds.find(function (id) {
+      const current = currentConfig.ports.find(function (port) { return port.id === id; });
+      const next = checked.config.ports.find(function (port) { return port.id === id; });
+      return current && next && serialBridgeRuntimeConfigChanged(current, next);
+    });
+    if (changedRunningPort) {
+      res.status(409).json({ ok: false, message: '串口 ' + changedRunningPort + ' 正在运行，请先停止该端口后再修改通信参数' });
+      return;
+    }
+    const saved = serialBridge.saveSerialBridgeConfig(SERIAL_BRIDGE_CONFIG_PATH, checked.config, fs, path);
+    serialBridgeManager.setConfig(saved);
+    res.json({ ok: true, config: serialBridgeManager.getConfig(), status: serialBridgeManager.getStatus() });
+  } catch (error) {
+    res.status(500).json({ ok: false, message: '保存串口转网口配置失败：' + error.message });
+  }
+});
+
+app.post('/api/serial/bridge/:id/start', async function (req, res) {
+  try {
+    const status = await startSerialBridge(req.params.id);
+    res.json({ ok: true, status: status });
+  } catch (error) {
+    res.status(400).json({ ok: false, message: '启动串口转网口失败：' + error.message });
+  }
+});
+
+app.post('/api/serial/bridge/:id/stop', async function (req, res) {
+  try {
+    await stopSerialBridge(req.params.id);
+    res.json({ ok: true, status: serialBridgeManager.getStatus().find(function (item) { return item.id === Number(req.params.id); }) });
+  } catch (error) {
+    res.status(500).json({ ok: false, message: '停止串口转网口失败：' + error.message });
+  }
+});
+
+app.post('/api/serial/bridge/start-enabled', async function (_req, res) {
+  const requestBody = _req.body || {};
+  const config = serialBridgeManager.getConfig();
+  const requestedIds = Array.isArray(requestBody.portIds)
+    ? Array.from(new Set(requestBody.portIds.map(function (id) { return Number(id); }).filter(function (id) {
+      return Number.isInteger(id) && id >= 1 && id <= config.comNum;
+    })))
+    : config.ports.slice(0, config.comNum).filter(function (port) { return port.autoStart === true; }).map(function (port) { return port.id; });
+  const results = [];
+  for (const id of requestedIds) {
+    try { results.push(await startSerialBridge(id)); }
+    catch (error) { results.push({ id: id, state: 'error', error: error.message }); }
+  }
+  res.json({ ok: true, results: results, status: serialBridgeManager.getStatus() });
+});
+
+app.post('/api/serial/bridge/stop-all', async function (_req, res) {
+  try {
+    await stopAllSerialBridges();
+    res.json({ ok: true, status: serialBridgeManager.getStatus() });
+  } catch (error) {
+    res.status(500).json({ ok: false, message: '停止全部串口转网口失败：' + error.message });
+  }
 });
 
 // ===== 大框架设置：IP 管理 =====
@@ -2841,7 +2997,7 @@ wss.on('connection', function (ws) {
 
 function isValidDevicePath(p) {
   // 只允许打开 /dev/ttyS* 、/dev/ttyUSB* 、/dev/ttyACM*
-  return typeof p === 'string' && /^\/dev\/tty(S|USB|ACM)\d+$/.test(p);
+  return typeof p === 'string' && /^\/dev\/tty(?:S|USB|ACM|XRUSB|O)\d+$/.test(p);
 }
 
 function normalizeBaud(b) {
@@ -13909,6 +14065,8 @@ echo json_encode(array(
 const port = Number(process.env.PORT || 3000);
 server.listen(port, function () {
   serviceOverview.start();
+  startPersistedSerialBridges();
+
   console.log('Web SSH running at http://0.0.0.0:' + port);
 });
 
@@ -13917,6 +14075,7 @@ function shutdownServiceOverview() {
   if (serviceOverviewShuttingDown) return;
   serviceOverviewShuttingDown = true;
   serviceOverview.stop();
+  serialBridgeManager.stopAll().catch(function () {});
 
   const shutdownTimeout = setTimeout(function () {
     process.exit(1);

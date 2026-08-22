@@ -44,7 +44,7 @@ h3 { margin:0; font-size:14px; line-height:1.35; }
 .btn.primary:hover { background:#0e4559; color:#ecfeff; }
 .btn:disabled { cursor:wait; opacity:.65; }
 
-.dashboard-content { width:min(1500px, 100%); margin:0 auto; padding:20px clamp(14px, 2vw, 24px) 28px; }
+.dashboard-content { width:100%; margin:0; padding:20px clamp(14px, 2vw, 24px) 28px; }
 .request-error { margin:0 0 16px; padding:10px 12px; border:1px solid var(--red); border-radius:8px; background:#26121d; color:#fecdd3; overflow-wrap:anywhere; }
 .overview-card { border:1px solid var(--border); border-radius:12px; background:var(--panel); }
 
