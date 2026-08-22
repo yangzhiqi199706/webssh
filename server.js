@@ -3077,6 +3077,17 @@ wssSerial.on('connection', function (ws) {
   let deviceStream = null;   // fs.ReadStream + .write
   let writeStream = null;
   let currentPath = null;
+  const serialLockOwner = {};
+
+  function ownsSerialLock(devicePath) {
+    const lock = serialLocks.get(devicePath);
+    return Boolean(lock && lock.owner === serialLockOwner);
+  }
+
+  function releaseSerialLock(devicePath) {
+    const lock = serialLocks.get(devicePath);
+    if (lock && lock.owner === serialLockOwner) serialLocks.delete(devicePath);
+  }
 
   function send(type, payload) {
     if (ws.readyState !== WebSocket.OPEN) return;
@@ -3089,7 +3100,7 @@ wssSerial.on('connection', function (ws) {
 
   function closeDevice(reason) {
     if (currentPath) {
-      serialLocks.delete(currentPath);
+      releaseSerialLock(currentPath);
       currentPath = null;
     }
     try { if (deviceStream) deviceStream.destroy(); } catch (_err) {}
@@ -3120,7 +3131,10 @@ wssSerial.on('connection', function (ws) {
       }
 
       // 先用 stty 配置，再打开文件描述符
+      currentPath = devPath;
+      serialLocks.set(devPath, { since: Date.now(), type: 'serial-debug', owner: serialLockOwner, state: 'starting' });
       runStty(devPath, payload).then(function () {
+        if (currentPath !== devPath || !ownsSerialLock(devPath)) return;
         try {
           deviceStream = fs.createReadStream(devPath, { highWaterMark: 4096 });
           writeStream = fs.createWriteStream(devPath, { flags: 'r+' });
@@ -3129,8 +3143,8 @@ wssSerial.on('connection', function (ws) {
           closeDevice('open-failed');
           return;
         }
-        currentPath = devPath;
-        serialLocks.set(devPath, { since: Date.now() });
+        const lock = serialLocks.get(devPath);
+        if (lock && lock.owner === serialLockOwner) lock.state = 'running';
 
         deviceStream.on('data', function (chunk) {
           send('output', { data: chunk.toString('base64'), encoding: 'base64' });
@@ -3152,6 +3166,8 @@ wssSerial.on('connection', function (ws) {
           baudRate: normalizeBaud(payload.baudRate || 115200),
         });
       }).catch(function (err) {
+        if (currentPath === devPath) closeDevice('open-failed');
+        else releaseSerialLock(devPath);
         send('error', { message: err.message });
       });
       return;

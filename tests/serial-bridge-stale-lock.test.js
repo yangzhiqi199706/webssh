@@ -15,5 +15,15 @@ assert.ok(
   /app\.get\('\/api\/serial\/bridge\/status'[\s\S]*?reconcileSerialBridgeLocks\(\)/.test(server),
   '状态查询必须同步回收异常停止桥接的遗留锁'
 );
+const openBlock = /if \(msg\.type === 'open'\) \{([\s\S]*?)\n    if \(msg\.type === 'input'\)/.exec(server);
+assert.ok(openBlock, '必须存在串口 WebSocket open 处理逻辑');
+assert.ok(
+  openBlock[1].indexOf('serialLocks.set(devPath') < openBlock[1].indexOf('runStty(devPath, payload)'),
+  'WebSocket 串口必须在异步 stty 配置前原子占用设备锁'
+);
+assert.ok(
+  /lock && lock\.owner === serialLockOwner/.test(server),
+  'WebSocket 释放锁时必须校验锁所有权，不能误删其他任务的锁'
+);
 
 console.log('serial bridge stale lock: passed');
