@@ -17,6 +17,7 @@ BACKUP_PROTOCOL=""
 BACKUP_NODE=""
 NEW_MAIN_STARTED=0
 NEW_PROTO_STARTED=0
+PROTOCOL_RUNTIME_DIRS=(uploads outputs downloads module4_uploads module4_downloads)
 
 log() { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 warn() { printf '[警告] %s\n' "$*" >&2; }
@@ -88,6 +89,25 @@ log "Python runtime 已解包：$($PY_BIN --version 2>&1)"
 
 mkdir -p "$INSTALL_DIR/logs" "$INSTALL_DIR/run" "$INSTALL_DIR/config" "$INSTALL_DIR/runtime"
 
+# 将早期版本放在 app/ 下的串口桥接配置迁移到独立的持久化配置目录。
+LEGACY_SERIAL_BRIDGE_CONFIG="$INSTALL_DIR/app/config/serial-bridge.json"
+PERSISTED_SERIAL_BRIDGE_CONFIG="$INSTALL_DIR/config/serial-bridge.json"
+if [[ ! -f "$PERSISTED_SERIAL_BRIDGE_CONFIG" && -f "$LEGACY_SERIAL_BRIDGE_CONFIG" ]]; then
+  install -m 600 "$LEGACY_SERIAL_BRIDGE_CONFIG" "$PERSISTED_SERIAL_BRIDGE_CONFIG"
+fi
+
+# 整体替换 protocol 前先把用户上传、输出和下载文件保存到本次安装的临时目录。
+PROTOCOL_RUNTIME_DATA="$TMP_ROOT/protocol-runtime-data"
+if [[ -d "$INSTALL_DIR/protocol/app" ]]; then
+  for runtime_dir in "${PROTOCOL_RUNTIME_DIRS[@]}"; do
+    source_dir="$INSTALL_DIR/protocol/app/$runtime_dir"
+    if [[ -d "$source_dir" ]]; then
+      mkdir -p "$PROTOCOL_RUNTIME_DATA/$runtime_dir"
+      cp -a "$source_dir/." "$PROTOCOL_RUNTIME_DATA/$runtime_dir/"
+    fi
+  done
+fi
+
 if systemctl list-unit-files 2>/dev/null | grep -q "^${SERVICE_PROTO}\.service"; then systemctl stop "$SERVICE_PROTO" || true; fi
 if systemctl list-unit-files 2>/dev/null | grep -q "^${SERVICE_MAIN}\.service"; then systemctl stop "$SERVICE_MAIN" || true; fi
 
@@ -116,7 +136,14 @@ cp -a "$PY_ROOT" "$INSTALL_DIR/protocol/runtime/python"
 mkdir -p "$INSTALL_DIR/protocol/runtime/site-packages"
 "$INSTALL_DIR/protocol/runtime/python/bin/python3" -m pip install --no-index --no-cache-dir --disable-pip-version-check --find-links="$WHEELS_DIR" --target="$INSTALL_DIR/protocol/runtime/site-packages" "$WHEELS_DIR"/*.whl
 
-mkdir -p "$INSTALL_DIR/protocol/app/uploads" "$INSTALL_DIR/protocol/app/outputs" "$INSTALL_DIR/protocol/app/downloads" "$INSTALL_DIR/protocol/app/module4_uploads" "$INSTALL_DIR/protocol/app/module4_downloads"
+for runtime_dir in "${PROTOCOL_RUNTIME_DIRS[@]}"; do
+  target_dir="$INSTALL_DIR/protocol/app/$runtime_dir"
+  rm -rf "$target_dir"
+  mkdir -p "$target_dir"
+  if [[ -d "$PROTOCOL_RUNTIME_DATA/$runtime_dir" ]]; then
+    cp -a "$PROTOCOL_RUNTIME_DATA/$runtime_dir/." "$target_dir/"
+  fi
+done
 PYTHONPATH="$INSTALL_DIR/protocol/runtime/site-packages" "$INSTALL_DIR/protocol/runtime/python/bin/python3" - <<'PY_CHECK'
 import importlib
 mods = ['flask', 'pandas', 'numpy', 'xlrd', 'xlwt', 'openpyxl', 'docx', 'lxml']

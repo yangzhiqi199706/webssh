@@ -630,7 +630,17 @@ const serviceOverview = createServiceOverview({
 });
 const AUTH_USER = accessControl.USERNAME;
 const SERIAL_BRIDGE_CONFIG_PATH = process.env.SERIAL_BRIDGE_CONFIG
-  || path.join(__dirname, 'config', 'serial-bridge.json');
+  || path.join(CONFIG_DIR, 'serial-bridge.json');
+const LEGACY_SERIAL_BRIDGE_CONFIG_PATH = path.join(__dirname, 'config', 'serial-bridge.json');
+if (!process.env.SERIAL_BRIDGE_CONFIG && !fs.existsSync(SERIAL_BRIDGE_CONFIG_PATH) && fs.existsSync(LEGACY_SERIAL_BRIDGE_CONFIG_PATH)) {
+  try {
+    fs.mkdirSync(CONFIG_DIR, { recursive: true });
+    fs.copyFileSync(LEGACY_SERIAL_BRIDGE_CONFIG_PATH, SERIAL_BRIDGE_CONFIG_PATH);
+    fs.chmodSync(SERIAL_BRIDGE_CONFIG_PATH, 0o600);
+  } catch (error) {
+    console.warn('[serial-bridge] 迁移持久化配置失败：' + error.message);
+  }
+}
 const serialBridgeManager = new serialBridge.SerialBridgeManager({
   config: serialBridge.loadSerialBridgeConfig(SERIAL_BRIDGE_CONFIG_PATH, fs), fs: fs, net: net, spawn: spawn,
 });
@@ -1342,22 +1352,38 @@ async function startSerialBridge(id) {
   if (existing && (existing.state === 'running' || existing.state === 'starting')) {
     return Object.assign({}, existing, { action: 'already-running' });
   }
-  if (serialLocks.has(portConfig.devicePath)) throw new Error(portConfig.devicePath + ' 正被串口调试或转发任务占用');
-  const status = await serialBridgeManager.start(portConfig.id);
-  serialLocks.set(portConfig.devicePath, { since: Date.now(), type: 'serial-bridge', id: portConfig.id });
-  return Object.assign({}, status, { action: 'started' });
+  const devicePath = portConfig.devicePath;
+  if (serialLocks.has(devicePath)) throw new Error(devicePath + ' 正被串口调试或转发任务占用');
+  // 在第一个 await 前写入保留锁，阻止串口调试或并发启动抢占同一个 TTY。
+  serialLocks.set(devicePath, { since: Date.now(), type: 'serial-bridge', id: portConfig.id, state: 'starting' });
+  try {
+    const status = await serialBridgeManager.start(portConfig.id);
+    const lock = serialLocks.get(devicePath);
+    if (lock && lock.type === 'serial-bridge' && lock.id === portConfig.id) lock.state = 'running';
+    return Object.assign({}, status, { action: 'started' });
+  } catch (error) {
+    const lock = serialLocks.get(devicePath);
+    if (lock && lock.type === 'serial-bridge' && lock.id === portConfig.id) serialLocks.delete(devicePath);
+    throw error;
+  }
 }
 
 async function stopSerialBridge(id) {
   const portConfig = serialBridgePortById(id);
   await serialBridgeManager.stop(id);
-  if (portConfig) serialLocks.delete(portConfig.devicePath);
+  if (portConfig) {
+    const lock = serialLocks.get(portConfig.devicePath);
+    if (lock && lock.type === 'serial-bridge' && lock.id === portConfig.id) serialLocks.delete(portConfig.devicePath);
+  }
 }
 
 async function stopAllSerialBridges() {
   const configs = serialBridgeManager.getConfig().ports;
   await serialBridgeManager.stopAll();
-  configs.forEach(function (portConfig) { serialLocks.delete(portConfig.devicePath); });
+  configs.forEach(function (portConfig) {
+    const lock = serialLocks.get(portConfig.devicePath);
+    if (lock && lock.type === 'serial-bridge' && lock.id === portConfig.id) serialLocks.delete(portConfig.devicePath);
+  });
 }
 
 function startPersistedSerialBridges() {
@@ -1387,16 +1413,19 @@ function serialBridgeRuntimeConfigChanged(current, next) {
 }
 
 app.get('/api/serial/bridge/config', function (_req, res) {
+  if (!requireSettingsAuth(_req, res)) return;
   reconcileSerialBridgeLocks();
   res.json({ ok: true, config: serialBridgeManager.getConfig(), status: serialBridgeManager.getStatus() });
 });
 
 app.get('/api/serial/bridge/status', function (_req, res) {
+  if (!requireSettingsAuth(_req, res)) return;
   reconcileSerialBridgeLocks();
   res.json({ ok: true, status: serialBridgeManager.getStatus() });
 });
 
 app.put('/api/serial/bridge/config', async function (req, res) {
+  if (!requireSettingsAuth(req, res)) return;
   const candidate = req.body && req.body.config ? req.body.config : req.body;
   const checked = serialBridge.validateSerialBridgeConfig(candidate);
   if (!checked.ok) {
@@ -1425,6 +1454,7 @@ app.put('/api/serial/bridge/config', async function (req, res) {
 });
 
 app.post('/api/serial/bridge/:id/start', async function (req, res) {
+  if (!requireSettingsAuth(req, res)) return;
   try {
     const status = await startSerialBridge(req.params.id);
     res.json({ ok: true, status: status });
@@ -1434,6 +1464,7 @@ app.post('/api/serial/bridge/:id/start', async function (req, res) {
 });
 
 app.post('/api/serial/bridge/:id/stop', async function (req, res) {
+  if (!requireSettingsAuth(req, res)) return;
   try {
     await stopSerialBridge(req.params.id);
     res.json({ ok: true, status: serialBridgeManager.getStatus().find(function (item) { return item.id === Number(req.params.id); }) });
@@ -1443,6 +1474,7 @@ app.post('/api/serial/bridge/:id/stop', async function (req, res) {
 });
 
 app.post('/api/serial/bridge/start-enabled', async function (_req, res) {
+  if (!requireSettingsAuth(_req, res)) return;
   const requestBody = _req.body || {};
   const config = serialBridgeManager.getConfig();
   const requestedIds = Array.isArray(requestBody.portIds)
@@ -1459,6 +1491,7 @@ app.post('/api/serial/bridge/start-enabled', async function (_req, res) {
 });
 
 app.post('/api/serial/bridge/stop-all', async function (_req, res) {
+  if (!requireSettingsAuth(_req, res)) return;
   try {
     await stopAllSerialBridges();
     res.json({ ok: true, status: serialBridgeManager.getStatus() });

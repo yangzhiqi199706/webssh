@@ -52,6 +52,7 @@ SIP_PORT="${SIP_PORT:-5060}"
 RTP_PORT_RANGE="${RTP_PORT_RANGE:-30000-30100}"
 ZLM_HTTP_PORT="${ZLM_HTTP_PORT:-18080}"
 ZLM_API_PORT="${ZLM_API_PORT:-8000}"
+PROTOCOL_RUNTIME_DIRS=(uploads outputs downloads module4_uploads module4_downloads)
 
 log()  { echo "[$(date '+%H:%M:%S')] $*"; }
 die()  { echo "[错误] $*" >&2; exit 1; }
@@ -102,6 +103,27 @@ done
 
 # -------------------- 3. 备份旧安装（如果有） --------------------
 STAMP="$(date +%Y%m%d%H%M%S)"
+mkdir -p "$INSTALL_DIR/config"
+
+# 将早期版本放在 app/ 下的串口桥接配置迁移到独立的持久化配置目录。
+LEGACY_SERIAL_BRIDGE_CONFIG="$INSTALL_DIR/app/config/serial-bridge.json"
+PERSISTED_SERIAL_BRIDGE_CONFIG="$INSTALL_DIR/config/serial-bridge.json"
+if [[ ! -f "$PERSISTED_SERIAL_BRIDGE_CONFIG" && -f "$LEGACY_SERIAL_BRIDGE_CONFIG" ]]; then
+  install -m 600 "$LEGACY_SERIAL_BRIDGE_CONFIG" "$PERSISTED_SERIAL_BRIDGE_CONFIG"
+fi
+
+# 替换 protocol 目录前备份用户上传、输出和下载文件；失败时保留暂存目录供恢复。
+PROTOCOL_RUNTIME_DATA="$INSTALL_DIR/.protocol-runtime-data-$STAMP"
+if [[ -d "$INSTALL_DIR/protocol/app" ]]; then
+  for runtime_dir in "${PROTOCOL_RUNTIME_DIRS[@]}"; do
+    source_dir="$INSTALL_DIR/protocol/app/$runtime_dir"
+    if [[ -d "$source_dir" ]]; then
+      mkdir -p "$PROTOCOL_RUNTIME_DATA/$runtime_dir"
+      cp -a "$source_dir/." "$PROTOCOL_RUNTIME_DATA/$runtime_dir/"
+    fi
+  done
+fi
+
 if [[ -d "$INSTALL_DIR/app" ]]; then
   log "备份旧 app -> $INSTALL_DIR/app.bak-$STAMP"
   mv "$INSTALL_DIR/app" "$INSTALL_DIR/app.bak-$STAMP"
@@ -169,13 +191,15 @@ cp -a "$PACKAGE_ROOT/protocol/app"                    "$INSTALL_DIR/protocol/"
 cp -a "$PACKAGE_ROOT/protocol/runtime/python"         "$INSTALL_DIR/protocol/runtime/"
 cp -a "$PACKAGE_ROOT/protocol/runtime/site-packages"  "$INSTALL_DIR/protocol/runtime/"
 
-# 运行时数据目录
-mkdir -p \
-  "$INSTALL_DIR/protocol/app/uploads" \
-  "$INSTALL_DIR/protocol/app/outputs" \
-  "$INSTALL_DIR/protocol/app/downloads" \
-  "$INSTALL_DIR/protocol/app/module4_uploads" \
-  "$INSTALL_DIR/protocol/app/module4_downloads"
+# 运行时数据目录：不接受包内产物，并恢复升级前用户数据。
+for runtime_dir in "${PROTOCOL_RUNTIME_DIRS[@]}"; do
+  target_dir="$INSTALL_DIR/protocol/app/$runtime_dir"
+  rm -rf "$target_dir"
+  mkdir -p "$target_dir"
+  if [[ -d "$PROTOCOL_RUNTIME_DATA/$runtime_dir" ]]; then
+    cp -a "$PROTOCOL_RUNTIME_DATA/$runtime_dir/." "$target_dir/"
+  fi
+done
 
 # 验证关键依赖能 import
 log "验证 Python 依赖..."
@@ -410,6 +434,8 @@ if systemctl is-active firewalld >/dev/null 2>&1; then
   fi
   firewall-cmd --reload >/dev/null 2>&1 || true
 fi
+
+rm -rf "$PROTOCOL_RUNTIME_DATA"
 
 log ""
 log "✅ 安装完成"

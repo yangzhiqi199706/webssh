@@ -17,6 +17,7 @@ const STAMP = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14);
 const RELEASE = `webssh-fullstack-offline-linux-arm64-v${VERSION}-${STAMP}`;
 const OUT_DIR = path.join(ROOT, "dist");
 const ARCHIVE = path.join(OUT_DIR, `${RELEASE}.tar.gz`);
+const RUNTIME_PROTOCOL_DIRS = ["uploads", "outputs", "downloads", "module4_uploads", "module4_downloads"];
 
 function need(p, label) { if (!fs.existsSync(p)) throw new Error(`缺少${label || p}: ${p}`); }
 function sha256(p) { return crypto.createHash("sha256").update(fs.readFileSync(p)).digest("hex"); }
@@ -38,6 +39,19 @@ function copy(src, dst) {
     fs.cpSync(src, dst, { recursive: true, force: true });
   }
 }
+function removeProtocolRuntimeArtifacts(dir) {
+  RUNTIME_PROTOCOL_DIRS.forEach((name) => fs.rmSync(path.join(dir, name), { recursive: true, force: true }));
+  fs.readdirSync(dir, { withFileTypes: true }).forEach((entry) => {
+    const target = path.join(dir, entry.name);
+    if (!entry.isDirectory()) return;
+    if (entry.name === "__pycache__") fs.rmSync(target, { recursive: true, force: true });
+    else removeProtocolRuntimeArtifacts(target);
+  });
+}
+function copyProtocolApp(src, dst) {
+  copy(src, dst);
+  removeProtocolRuntimeArtifacts(dst);
+}
 function runTar(args, cwd) {
   execFileSync("tar", args, { cwd, stdio: "inherit" });
 }
@@ -47,6 +61,7 @@ const APP_DIRS = ["lib", "serial", "sms", "ha", "proto-conv", "video", "db", "ov
 const APP_FILES = ["server.js", "index.html", "login.html", "webssh-intro.html", "package.json", "package-lock.json"];
 function main() {
   [NODE_TAR, PY_TAR, WHEELS, path.join(ROOT, "server.js"), path.join(ROOT, "index.html"), path.join(ROOT, "package.json"), path.join(ROOT, "package-lock.json"), path.join(ROOT, "protocol_app"), path.join(ROOT, "systemd", "webssh.service.template"), path.join(ROOT, "systemd", "webssh-protocol.service.template"), path.join(ROOT, "scripts", "uninstall-all.sh")].forEach(need);
+  need(path.join(ROOT, "node_modules"), "app/node_modules");
   fs.mkdirSync(OUT_DIR, { recursive: true });
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), `${RELEASE}-`));
   const stage = path.join(temp, RELEASE);
@@ -55,7 +70,7 @@ function main() {
   APP_FILES.forEach(n => copy(path.join(ROOT, n), path.join(app, n)));
   APP_DIRS.forEach(n => { if (fs.existsSync(path.join(ROOT, n))) copy(path.join(ROOT, n), path.join(app, n)); });
   write(path.join(app, "runtime-features.js"), "window.WEBSSH_FEATURES = { protocol: true, video: true, db: true, ha: true, protoConv: true };\n");
-  copy(path.join(ROOT, "protocol_app"), path.join(stage, "protocol", "app"));
+  copyProtocolApp(path.join(ROOT, "protocol_app"), path.join(stage, "protocol", "app"));
   copy(NODE_TAR, path.join(stage, "runtime", path.basename(NODE_TAR)));
   copy(PY_TAR, path.join(stage, "protocol", "runtime", path.basename(PY_TAR)));
   copy(WHEELS, path.join(stage, "protocol", "wheels"));
@@ -74,4 +89,4 @@ function main() {
   console.log(`SHA256: ${digest}`);
 }
 if (require.main === module) { try { main(); } catch (e) { console.error(e.stack || e.message); process.exit(1); } }
-module.exports = { sha256 };
+module.exports = { sha256, copyProtocolApp, RUNTIME_PROTOCOL_DIRS };

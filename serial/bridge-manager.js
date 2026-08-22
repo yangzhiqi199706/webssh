@@ -101,6 +101,12 @@ function validatePortConfig(port, allPorts) {
   const errors = [];
   if (!integerInRange(port.id, 1, MAX_PORTS)) errors.push('端口编号必须在 1-16 之间');
   if (port.devicePath && !isValidDevicePath(port.devicePath)) errors.push('串口设备路径无效');
+  if (port.devicePath) {
+    const duplicateDevice = (allPorts || []).some(function (other) {
+      return other !== port && other.devicePath === port.devicePath;
+    });
+    if (duplicateDevice) errors.push('串口设备路径不能重复');
+  }
   if (DEFAULT_BAUD_RATES.indexOf(port.baudRate) < 0) errors.push('波特率不受支持');
   if ([5, 6, 7, 8].indexOf(port.dataBits) < 0) errors.push('数据位必须为 5-8');
   if (['N', 'E', 'O'].indexOf(port.parity) < 0) errors.push('校验必须为 N/E/O');
@@ -154,8 +160,10 @@ function validateSerialBridgeConfig(value) {
     return normalizePort(input.ports && input.ports[index], index);
   });
   const portErrors = [];
-  ports.slice(0, integerInRange(comNum, 1, MAX_PORTS) ? comNum : MAX_PORTS).forEach(function (port) {
-    const currentErrors = validatePortConfig(port, ports);
+  const activePortCount = integerInRange(comNum, 1, MAX_PORTS) ? comNum : MAX_PORTS;
+  const activePorts = ports.slice(0, activePortCount);
+  activePorts.forEach(function (port) {
+    const currentErrors = validatePortConfig(port, activePorts);
     if (currentErrors.length) portErrors.push({ id: port.id, errors: currentErrors });
   });
   portErrors.forEach(function (item) {

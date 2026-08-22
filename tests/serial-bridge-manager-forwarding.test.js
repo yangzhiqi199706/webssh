@@ -8,6 +8,20 @@ const invalidResult = serialBridge.validateSerialBridgeConfig(invalidConfig);
 assert.strictEqual(invalidResult.ok, false, '重复监听端口必须拒绝保存');
 assert.ok(invalidResult.errors.some(function (message) { return message.indexOf('端口') >= 0 && message.indexOf('重复') >= 0; }));
 
+const duplicateDeviceConfig = serialBridge.createDefaultSerialBridgeConfig();
+duplicateDeviceConfig.ports[0].devicePath = '/dev/ttyUSB0';
+duplicateDeviceConfig.ports[1].devicePath = '/dev/ttyUSB0';
+const duplicateDeviceResult = serialBridge.validateSerialBridgeConfig(duplicateDeviceConfig);
+assert.strictEqual(duplicateDeviceResult.ok, false, '重复串口设备必须拒绝保存');
+assert.ok(duplicateDeviceResult.errors.some(function (message) { return message.indexOf('设备路径不能重复') >= 0; }));
+
+const inactiveDuplicateConfig = serialBridge.createDefaultSerialBridgeConfig();
+inactiveDuplicateConfig.comNum = 1;
+inactiveDuplicateConfig.ports[0].devicePath = '/dev/ttyUSB0';
+inactiveDuplicateConfig.ports[1].devicePath = '/dev/ttyUSB0';
+assert.strictEqual(serialBridge.validateSerialBridgeConfig(inactiveDuplicateConfig).ok, true,
+  '非启用范围内的端口不应阻止有效配置保存');
+
 const badPortConfig = serialBridge.createDefaultSerialBridgeConfig();
 badPortConfig.ports[0].devicePath = '/etc/passwd';
 badPortConfig.ports[0].listenPort = 80;
