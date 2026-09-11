@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>协议转换 · Web SSH</title>
+  <link rel="stylesheet" href="./assets/css/pc-wecom.css" />
   <style>
     :root {
       color-scheme: dark;
@@ -289,6 +290,7 @@
       <button class="btn modbus" id="btnOpenModbusControl" type="button"><span class="dot off" id="modbusCtrlDot"></span>Modbus 控制转换</button>
       <button class="btn modbus" id="btnOpenSnmp" type="button"><span class="dot off" id="snmpDot"></span>SNMP 转发</button>
       <button class="btn modbus" id="btnOpenIec104" type="button"><span class="dot off" id="iec104Dot"></span>IEC 104 转发</button>
+      <button class="btn" id="btnOpenWecom" type="button"><span class="dot off" id="wecomDot"></span>企业微信转发</button>
       <button class="btn" id="btnLogin" type="button">登录</button>
       <button class="btn" id="btnTest" type="button">连接测试</button>
       <button class="btn" id="btnToggleProtocol" type="button" title="切换 baseUrl 的协议头（HTTPS ↔ HTTP）">协议: ?</button>
@@ -684,5 +686,6 @@
   <script src="./assets/js/pc-modbus-control.js"></script>
   <script src="./assets/js/pc-snmp.js"></script>
   <script src="./assets/js/pc-iec104.js"></script>
+  <script src="./assets/js/pc-wecom.js"></script>
 </body>
 </html>

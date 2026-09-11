@@ -620,6 +620,16 @@
     .settings-placeholder h4 { margin: 0 0 10px; color: #e2e8f0; font-size: 14px; }
     .settings-placeholder ul { margin: 8px 0 0; padding-left: 18px; line-height: 1.9; }
     .settings-placeholder .soon { display: inline-block; margin-left: 8px; padding: 1px 7px; border-radius: 999px; font-size: 11px; color: #fcd34d; background: rgba(251, 191, 36, .14); }
+    .ops-management-view { flex: 1; min-width: 0; min-height: 0; display: none; background: #020617; }
+    .ops-management-view.active { display: flex; }
+    .ops-management-shell { flex: 1; min-width: 0; min-height: 0; display: flex; }
+    .ops-management-nav {
+      width: 188px; flex-shrink: 0; display: flex; flex-direction: column;
+      border-right: 1px solid var(--border); background: rgba(2, 6, 23, .8);
+    }
+    .ops-management-heading { padding: 18px 16px 10px; font-size: 14px; font-weight: 700; color: #e2e8f0; }
+    .ops-management-tabs { width: auto; flex: 1; border-right: 0; }
+    .ops-management-pane { padding: 22px 24px; background: rgba(2, 6, 23, .45); }
     .about-grid { display: grid; grid-template-columns: minmax(120px, max-content) 1fr; gap: 8px 16px; font-size: 13px; }
     .about-grid .k { color: var(--muted); }
     .about-grid .v { color: #e2e8f0; word-break: break-all; }
@@ -752,6 +762,11 @@
       .settings-body { flex-direction: column; }
       .settings-tabs { width: 100%; flex-direction: row; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--border); }
       .settings-tab { flex-shrink: 0; }
+      .ops-management-shell { flex-direction: column; }
+      .ops-management-nav { width: 100%; border-right: 0; border-bottom: 1px solid var(--border); }
+      .ops-management-heading { padding: 14px 16px 4px; }
+      .ops-management-tabs { flex: none; }
+      .ops-management-pane { padding: 16px; }
     }
     .sidebar-scroll::-webkit-scrollbar, .terminal::-webkit-scrollbar, .file-list::-webkit-scrollbar, .tabs::-webkit-scrollbar {
       width: 10px;
@@ -847,6 +862,10 @@
     :root[data-theme="light"] .settings-tab.active { background: var(--cyan-2); color: var(--cyan-soft); }
     :root[data-theme="light"] .settings-section-title { color: var(--text-strong); }
     :root[data-theme="light"] .settings-card { background: var(--panel); border-color: var(--border); }
+    :root[data-theme="light"] .ops-management-view { background: var(--panel-2); }
+    :root[data-theme="light"] .ops-management-nav { background: var(--panel-2); }
+    :root[data-theme="light"] .ops-management-heading { color: var(--text-strong); }
+    :root[data-theme="light"] .ops-management-pane { background: var(--app-bg); }
     :root[data-theme="light"] .settings-placeholder { background: var(--panel-2); border-color: var(--border); }
     :root[data-theme="light"] .settings-placeholder h4,
     :root[data-theme="light"] .about-grid .v { color: var(--text-strong); }
@@ -950,6 +969,16 @@
       </main>
     </div>
 
+    <div class="ops-management-view" id="opsManagementView" aria-hidden="true">
+      <div class="ops-management-shell">
+        <aside class="ops-management-nav">
+          <div class="ops-management-heading">运维管理</div>
+          <nav class="settings-tabs ops-management-tabs" id="opsManagementTabs" aria-label="运维管理分类"></nav>
+        </aside>
+        <main class="settings-pane ops-management-pane" id="opsManagementPane"></main>
+      </div>
+    </div>
+
     <div class="serial-view" id="serialView">
       <iframe id="serialFrame" title="串口调试" allow="serial" loading="lazy" src="about:blank"></iframe>
     </div>
@@ -1035,10 +1064,10 @@
 
   <div class="modal-mask" id="settingsMask" aria-hidden="true">
     <div class="modal settings-modal">
-      <div class="modal-head">
-        <div>
-          <div class="head-title">设置</div>
-          <div class="head-sub">项目偏好与运维开关</div>
+        <div class="modal-head">
+          <div>
+            <div class="head-title">设置</div>
+          <div class="head-sub">项目偏好与界面配置</div>
         </div>
         <button class="btn" id="closeSettings">关闭</button>
       </div>
@@ -1310,6 +1339,39 @@
               </div>
             </div>
             <div class="settings-card" style="margin-top:14px">
+              <div style="font-size:13px;font-weight:600;color:#e2e8f0;margin-bottom:6px">Docker 定时重启</div>
+              <div style="font-size:12px;color:var(--muted);margin-bottom:10px">按设定分钟数循环倒计时，Docker 重启成功后自动开始下一轮；失败后暂停并保留结果。</div>
+              <div class="grid2">
+                <label class="field">
+                  <span>启用循环重启</span>
+                  <select id="dsrEnabled">
+                    <option value="0">关闭</option>
+                    <option value="1">开启</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>重启间隔（分钟，1-10080）</span>
+                  <input id="dsrIntervalMinutes" type="number" min="1" max="10080" step="1" value="60" />
+                </label>
+              </div>
+              <div class="field" style="margin-top:12px">
+                <span>当前状态</span>
+                <div id="dsrStatus" role="status" aria-live="polite" style="font-size:13px;color:#cbd5e1;padding:8px 10px;background:#0b1220;border:1px solid #1f2937;border-radius:10px;min-height:20px">未加载</div>
+              </div>
+              <div class="field">
+                <span>上次执行结果</span>
+                <div id="dsrLastResult" role="status" aria-live="polite" style="font-size:12px;color:#94a3b8;padding:8px 10px;background:#0b1220;border:1px solid #1f2937;border-radius:10px;min-height:20px;white-space:pre-wrap;word-break:break-all">无</div>
+              </div>
+              <div style="display:flex;justify-content:space-between;gap:10px;padding-top:10px;flex-wrap:wrap">
+                <div style="display:flex;gap:8px;flex-wrap:wrap">
+                  <button class="btn" id="dsrCancel" type="button">取消倒计时</button>
+                  <button class="btn" id="dsrRestartCountdown" type="button">重新倒计时</button>
+                  <button class="btn" id="dsrTrigger" type="button">立即执行</button>
+                </div>
+                <button class="btn primary" id="dsrSave" type="button">保存定时设置</button>
+              </div>
+            </div>
+            <div class="settings-card" style="margin-top:14px">
               <div style="font-size:13px;font-weight:600;color:#e2e8f0;margin-bottom:10px">服务日志管理</div>
               <div class="grid2">
                 <label class="field">
@@ -1354,6 +1416,11 @@
                 </label>
               </div>
             </div>
+          </section>
+
+          <section class="settings-section" data-pane="account">
+            <h3 class="settings-section-title">账号管理</h3>
+            <div class="settings-section-desc">管理页面访问密码、当前登录账号、本地账号与临时授权策略</div>
             <div class="settings-card">
               <div style="font-size:13px;font-weight:600;color:#e2e8f0;margin-bottom:6px">页面访问密码</div>
               <div id="accessPasswordHint" style="font-size:12px;color:var(--muted);margin-bottom:10px">首次设置前，请使用当前服务器日期作为当前密码。</div>
@@ -2244,6 +2311,9 @@
       settingsMask: document.getElementById('settingsMask'),
       settingsTabs: document.getElementById('settingsTabs'),
       settingsPane: document.getElementById('settingsPane'),
+      opsManagementView: document.getElementById('opsManagementView'),
+      opsManagementTabs: document.getElementById('opsManagementTabs'),
+      opsManagementPane: document.getElementById('opsManagementPane'),
       drEnabled: document.getElementById('drEnabled'),
       drCountdown: document.getElementById('drCountdown'),
       drStatus: document.getElementById('drStatus'),
@@ -2252,6 +2322,14 @@
       drRestartCountdown: document.getElementById('drRestartCountdown'),
       drTrigger: document.getElementById('drTrigger'),
       drSave: document.getElementById('drSave'),
+      dsrEnabled: document.getElementById('dsrEnabled'),
+      dsrIntervalMinutes: document.getElementById('dsrIntervalMinutes'),
+      dsrStatus: document.getElementById('dsrStatus'),
+      dsrLastResult: document.getElementById('dsrLastResult'),
+      dsrCancel: document.getElementById('dsrCancel'),
+      dsrRestartCountdown: document.getElementById('dsrRestartCountdown'),
+      dsrTrigger: document.getElementById('dsrTrigger'),
+      dsrSave: document.getElementById('dsrSave'),
       drTopDot: document.getElementById('drTopDot'),
       drTopState: document.getElementById('drTopState'),
       opsLogRotateEnabled: document.getElementById('opsLogRotateEnabled'),
@@ -2354,6 +2432,7 @@
       { id: 'sms', label: '信创短信猫', icon: 'SMS', title: '数据库监测 + 短信猫推送' },
       { id: 'ha', label: '双机热备', icon: 'HA', title: '主备服务器心跳监测与告警' },
       { id: 'overview', label: '服务总览', icon: 'OPS', title: '本机、双机热备与 dcim 的只读运行总览' },
+      { id: 'ops-management', label: '运维管理', icon: 'MGT', title: 'Docker、日志、时间、IP 与防火墙管理' },
       { id: 'proto-conv', label: '协议转换', icon: 'PC', title: '8082 接口可视化调用与协议转换' },
       { id: 'video', label: '视频监控', icon: 'VID', title: 'GB/T 28181 视频接入与 1/4/9/16 分屏' },
       { id: 'db', label: '数据库管理', icon: 'DB', title: 'MySQL / openGauss / 达梦 DM 三库统一管理' },
@@ -3175,13 +3254,17 @@
       { id: 'terminal', label: '终端' },
       { id: 'files', label: '文件' },
       { id: 'serial', label: '串口' },
+      { id: 'about', label: '关于' },
+    ];
+    const opsManagementTabs = [
       { id: 'ops', label: '运维' },
       { id: 'time', label: '时间' },
       { id: 'ip', label: 'IP 管理' },
       { id: 'firewall', label: '防火墙' },
-      { id: 'about', label: '关于' },
+      { id: 'account', label: '账号管理' },
     ];
-    state.settingsTab = 'ops';
+    state.settingsTab = 'appearance';
+    state.opsManagementTab = 'ops';
 
     function renderSettingsTabs() {
       if (!el.settingsTabs) return;
@@ -3193,12 +3276,35 @@
       });
     }
 
-    function switchSettingsTab(id) {
-      state.settingsTab = id;
-      renderSettingsTabs();
-      document.querySelectorAll('.settings-section').forEach((node) => {
+    function renderOpsManagementTabs() {
+      if (!el.opsManagementTabs) return;
+      el.opsManagementTabs.innerHTML = opsManagementTabs.map((t) => `
+        <button class="settings-tab ${state.opsManagementTab === t.id ? 'active' : ''}" data-ops-management-tab="${esc(t.id)}">${esc(t.label)}</button>
+      `).join('');
+      el.opsManagementTabs.querySelectorAll('[data-ops-management-tab]').forEach((node) => {
+        node.onclick = () => switchOpsManagementTab(node.dataset.opsManagementTab);
+      });
+    }
+
+    function activateSettingsPane(container, id) {
+      if (!container) return;
+      container.querySelectorAll('.settings-section').forEach((node) => {
         node.classList.toggle('active', node.dataset.pane === id);
       });
+    }
+
+    function switchSettingsTab(id) {
+      if (!settingsTabs.some((tab) => tab.id === id)) return;
+      state.settingsTab = id;
+      renderSettingsTabs();
+      activateSettingsPane(el.settingsPane, id);
+    }
+
+    function switchOpsManagementTab(id) {
+      if (!opsManagementTabs.some((tab) => tab.id === id)) return;
+      state.opsManagementTab = id;
+      renderOpsManagementTabs();
+      activateSettingsPane(el.opsManagementPane, id);
       if (id === 'firewall') {
         refreshFirewallAll();
       }
@@ -3211,17 +3317,35 @@
       }
     }
 
+    function mountOpsManagementSections() {
+      if (!el.settingsPane || !el.opsManagementPane) return;
+      opsManagementTabs.forEach((tab) => {
+        const section = el.settingsPane.querySelector('.settings-section[data-pane="' + tab.id + '"]');
+        if (section) el.opsManagementPane.appendChild(section);
+      });
+    }
+
     function openSettings(tab) {
       if (!el.settingsMask) return;
-      switchSettingsTab(tab || state.settingsTab || 'ops');
+      const target = settingsTabs.some((item) => item.id === tab) ? tab : (state.settingsTab || 'appearance');
+      switchSettingsTab(target);
       syncSettingsForm();
       el.settingsMask.classList.add('open');
       el.settingsMask.setAttribute('aria-hidden', 'false');
+    }
+
+    function openOpsManagement(tab) {
+      const target = opsManagementTabs.some((item) => item.id === tab) ? tab : (state.opsManagementTab || 'ops');
+      switchOpsManagementTab(target);
       refreshDockerRestart(false);
+      refreshDockerScheduledRestart(false);
       refreshOpsSettings(false);
       refreshAccessControl();
       if (drRefreshTimer) clearInterval(drRefreshTimer);
-      drRefreshTimer = setInterval(() => refreshDockerRestart(true), 1000);
+      drRefreshTimer = setInterval(() => {
+        refreshDockerRestart(true);
+        refreshDockerScheduledRestart(true);
+      }, 1000);
     }
 
     function syncSettingsForm() {
@@ -3856,6 +3980,86 @@
         renderDockerRestart(data, true);
       } catch (err) {
         alert('操作失败：' + err.message);
+      }
+    }
+
+    async function refreshDockerScheduledRestart(preserveInputs) {
+      try {
+        const resp = await fetch('/api/docker-scheduled-restart/config');
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        renderDockerScheduledRestart(await resp.json(), preserveInputs);
+      } catch (err) {
+        if (el.dsrStatus) el.dsrStatus.textContent = '加载失败：' + err.message;
+      }
+    }
+
+    function renderDockerScheduledRestart(data, preserveInputs) {
+      if (!preserveInputs) {
+        if (el.dsrEnabled) el.dsrEnabled.value = data.enabled ? '1' : '0';
+        if (el.dsrIntervalMinutes) el.dsrIntervalMinutes.value = String(data.intervalMinutes || 60);
+      }
+      if (el.dsrStatus) {
+        const parts = [data.enabled ? '开启' : '关闭'];
+        if (data.running) parts.push('正在执行 systemctl restart docker');
+        else if (data.counting) {
+          const mins = Math.floor(Number(data.remainingSec || 0) / 60);
+          const secs = Number(data.remainingSec || 0) % 60;
+          parts.push('倒计时中，剩余 ' + mins + ' 分钟 ' + secs + ' 秒');
+        } else if (data.enabled) {
+          parts.push(data.lastResult && !data.lastResult.ok ? '上次重启失败，已暂停' : '等待开始倒计时');
+        }
+        el.dsrStatus.textContent = parts.join(' · ');
+      }
+      if (el.dsrLastResult) {
+        const result = data.lastResult;
+        if (!result) {
+          el.dsrLastResult.textContent = '无';
+        } else {
+          el.dsrLastResult.textContent = [
+            (result.ok ? '成功' : '失败') + '  exit=' + result.exitCode + '  trigger=' + result.trigger,
+            '开始：' + result.startedAt,
+            '结束：' + result.finishedAt,
+            result.stderr ? 'stderr: ' + result.stderr.trim() : '',
+          ].filter(Boolean).join('\n');
+        }
+      }
+    }
+
+    async function saveDockerScheduledRestart() {
+      const enabled = el.dsrEnabled && el.dsrEnabled.value === '1';
+      const intervalMinutes = Number(el.dsrIntervalMinutes && el.dsrIntervalMinutes.value);
+      if (!Number.isInteger(intervalMinutes) || intervalMinutes < 1 || intervalMinutes > 10080) {
+        alert('重启间隔必须是 1-10080 分钟之间的整数');
+        return;
+      }
+      const button = el.dsrSave;
+      const oldText = button ? button.textContent : '';
+      if (button) { button.disabled = true; button.textContent = '保存中...'; }
+      try {
+        const resp = await fetch('/api/docker-scheduled-restart/config', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: enabled, intervalMinutes: intervalMinutes }),
+        });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        renderDockerScheduledRestart(await resp.json(), true);
+        if (button) {
+          button.textContent = '已保存';
+          setTimeout(function () { button.textContent = oldText; button.disabled = false; }, 1200);
+        }
+      } catch (error) {
+        if (button) { button.textContent = oldText; button.disabled = false; }
+        alert('保存失败：' + error.message);
+      }
+    }
+
+    async function postDockerScheduledRestart(url) {
+      try {
+        const resp = await fetch(url, { method: 'POST' });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        renderDockerScheduledRestart(await resp.json(), true);
+      } catch (error) {
+        alert('操作失败：' + error.message);
       }
     }
 
@@ -5305,7 +5509,7 @@
 
     el.openConnect?.addEventListener('click', () => setModal(true));
     el.openSettings?.addEventListener('click', () => openSettings('appearance'));
-    el.openDocker?.addEventListener('click', () => openSettings('ops'));
+    el.openDocker?.addEventListener('click', () => showView('ops-management'));
     el.closeSettings?.addEventListener('click', () => closeSettings());
     el.drSave?.addEventListener('click', () => saveDockerRestart());
     el.opsSaveSettings?.addEventListener('click', () => saveOpsSettings());
@@ -5338,6 +5542,26 @@
       } finally {
         btn.disabled = false;
         btn.textContent = oldText;
+      }
+    });
+    el.dsrSave?.addEventListener('click', () => saveDockerScheduledRestart());
+    el.dsrCancel?.addEventListener('click', () => postDockerScheduledRestart('/api/docker-scheduled-restart/cancel'));
+    el.dsrRestartCountdown?.addEventListener('click', () => postDockerScheduledRestart('/api/docker-scheduled-restart/restart-countdown'));
+    el.dsrTrigger?.addEventListener('click', async () => {
+      if (!confirm('将立即执行 systemctl restart docker，docker 会短暂重启，确认继续？')) return;
+      const button = el.dsrTrigger;
+      const oldText = button.textContent;
+      button.disabled = true;
+      button.textContent = '执行中...';
+      try {
+        const resp = await fetch('/api/docker-scheduled-restart/trigger', { method: 'POST' });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        renderDockerScheduledRestart(await resp.json(), true);
+      } catch (error) {
+        alert('请求失败：' + error.message);
+      } finally {
+        button.disabled = false;
+        button.textContent = oldText;
       }
     });
     el.closeModal?.addEventListener('click', () => setModal(false));
@@ -5544,6 +5768,7 @@
     function showView(view) {
       state.activeMenu = view;
       const isSsh = view === 'ssh';
+      const isOpsManagement = view === 'ops-management';
       const isSerial = view === 'serial';
       const isSms = view === 'sms';
       const isProtocol = view === 'protocol';
@@ -5553,6 +5778,10 @@
       const isVideo = view === 'video';
       const isDb = view === 'db';
       el.sshView.style.display = isSsh ? '' : 'none';
+      if (el.opsManagementView) {
+        el.opsManagementView.classList.toggle('active', isOpsManagement);
+        el.opsManagementView.setAttribute('aria-hidden', isOpsManagement ? 'false' : 'true');
+      }
       el.serialView.classList.toggle('active', isSerial);
       el.smsView.classList.toggle('active', isSms);
       if (el.protocolView) el.protocolView.classList.toggle('active', isProtocol);
@@ -5561,8 +5790,14 @@
       if (el.protoConvView) el.protoConvView.classList.toggle('active', isProtoConv);
       if (el.videoView) el.videoView.classList.toggle('active', isVideo);
       if (el.dbView) el.dbView.classList.toggle('active', isDb);
+      if (!isOpsManagement && drRefreshTimer) {
+        clearInterval(drRefreshTimer);
+        drRefreshTimer = null;
+      }
       renderMenu();
-      if (isSerial) {
+      if (isOpsManagement) {
+        openOpsManagement();
+      } else if (isSerial) {
         if (!el.serialFrame.dataset.loaded) {
           el.serialFrame.src = './serial/index.html';
           el.serialFrame.dataset.loaded = '1';
@@ -5644,7 +5879,9 @@
 
     renderAll();
     renderMenu();
+    mountOpsManagementSections();
     renderSettingsTabs();
+    renderOpsManagementTabs();
     applySettings();
     bindSettingsForm();
     bindFirewallUi();

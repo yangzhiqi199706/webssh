@@ -25,7 +25,7 @@
 - 串口调试：`/ws/serial`，服务端原生串口 + 浏览器 WebSerial 双支持
 - TCP 调试：`/ws/tcp`
 - 信创短信猫：MySQL 监测告警 + 短信推送（`sms/` 子站）
-- docker 自动重启：开机倒计时执行 `systemctl restart docker`
+- docker 自动重启：开机倒计时执行 `systemctl restart docker`；运维板块另有按分钟循环的 Docker 定时重启
 - **协议助手反代**：`/protocol/*` → `127.0.0.1:5000`（用 `http-proxy@1.18.1`）
 
 **协议助手 5 个模块**（全部走 `/protocol` 子路径）：
@@ -330,6 +330,7 @@ journalctl -u webssh-protocol -n 200 --no-pager
 tail -f /opt/webssh/logs/webssh.out.log
 tail -f /opt/webssh/logs/protocol.out.log
 tail -f /opt/webssh/logs/docker-restart.log
+tail -f /opt/webssh/logs/docker-scheduled-restart.log
 ```
 
 ------------------------------------------------------------
