@@ -1,0 +1,51 @@
+'use strict';
+const assert = require('assert');
+const fs = require('fs'), os = require('os'), path = require('path');
+const { Forwarder } = require('../proto-conv/wecom-forwarder');
+const app = { corpId: 'ww123', agentId: '1000001', secret: 'private-secret', toUser: 'user1', toParty: '', toTag: '' };
+(async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wc-app-'));
+  const options = { file: path.join(dir, 'state.json'), sourceId: () => 'test' };
+  const m = new Forwarder(options);
+  m.configure({ channel: 'application', application: app, enabled: true });
+  assert.strictEqual(m.config().channel, 'application');
+  assert.strictEqual(m.config().application.secret, '');
+  assert.strictEqual(m.config().application.hasSecret, true);
+  assert.strictEqual(new Forwarder(options).fatal, '');
+  m.configure({ application: { secret: '' } });
+  assert.strictEqual(m.data.config.application.secret, app.secret);
+  m.data.queue.push({ id: 'q' });
+  assert.throws(() => m.configure({ enabled: false, channel: 'webhook' }), /队列/);
+  m.configure({ application: { secret: 'rotated-secret' } });
+  assert.strictEqual(m.data.config.application.secret, 'rotated-secret');
+  assert.throws(() => m.configure({ application: { toUser: 'another-user' } }), /队列/);
+  m.configure({ application: { secret: app.secret } });
+  assert.ok(!m.safeError(app.secret).includes(app.secret));
+  m.data.queue = [];
+  let applicationSends = 0, robotSends = 0;
+  m.appClient = { send: async () => { applicationSends++; }, credentials: async () => {} };
+  m.options.send = async () => { robotSends++; };
+  await m.test(); assert.strictEqual(applicationSends, 1); assert.strictEqual(robotSends, 0);
+  assert.strictEqual(m.logs()[0].channel, 'application');
+  m.configure({ channel: 'webhook', webhook: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=fixture', enabled: false });
+  assert.strictEqual(m.data.config.application.secret, app.secret);
+  const legacy = JSON.parse(fs.readFileSync(options.file)); delete legacy.config.application; delete legacy.config.channel;
+  fs.writeFileSync(options.file, JSON.stringify(legacy));
+  assert.strictEqual(new Forwarder(options).config().channel, 'webhook');
+  const { createClient } = require('../proto-conv/wecom-application');
+  let tokens = 0, sends = 0, invalid = false, partial = false, now = 0;
+  const client = createClient(async (url, payload) => {
+    if (url.includes('/gettoken?')) { tokens++; return { errcode: 0, access_token: 'token-' + tokens, expires_in: 7200 }; }
+    sends++; assert.strictEqual(payload.agentid, 1000001); assert.strictEqual(payload.touser, 'user1');
+    if (invalid) { invalid = false; return { errcode: 42001 }; }
+    return partial ? { errcode: 0, invaliduser: 'user1' } : { errcode: 0 };
+  }, () => now);
+  await Promise.all([client.credentials(app), client.credentials(app)]); assert.strictEqual(tokens, 1);
+  await client.send(app, { text: { content: 'test' } }); assert.strictEqual(tokens, 1);
+  invalid = true; await client.send(app, { text: { content: 'test' } }); assert.strictEqual(tokens, 2);
+  now = 7200000; await client.credentials(app); assert.strictEqual(tokens, 3);
+  partial = true; await assert.rejects(() => client.send(app, { text: { content: 'test' } }), /接收/);
+  assert.strictEqual(sends, 4);
+  fs.rmSync(dir, { recursive: true });
+  console.log('PASS application config, secret protection, queue guard, token cache/refresh and partial recipients');
+})().catch(e => { console.error(e); process.exitCode = 1; });

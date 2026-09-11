@@ -407,7 +407,7 @@ class SerialBridgeManager {
       return this.getStatus().find(function (item) { return item.id === port.id; });
     } catch (error) {
       bridge.error = error.message;
-      await this._closeBridge(port.id);
+      await this._closeBridge(port.id, bridge);
       throw error;
     }
   }
@@ -488,7 +488,10 @@ class SerialBridgeManager {
         socket.on('data', (chunk) => {
           if (bridge.serial && bridge.serial.writable) bridge.serial.writable.write(chunk);
         });
-        socket.on('close', () => { bridge.outbound = null; });
+        socket.on('close', () => {
+          bridge.outbound = null;
+          this._closeBridge(port.id, bridge).catch(function () {});
+        });
         resolve(socket);
       });
     });
@@ -498,9 +501,9 @@ class SerialBridgeManager {
     return this._closeBridge(Number(id));
   }
 
-  async _closeBridge(id) {
+  async _closeBridge(id, expectedBridge) {
     const bridge = this.bridges.get(id);
-    if (!bridge) return;
+    if (!bridge || (expectedBridge && bridge !== expectedBridge)) return;
     bridge.stopRequested = true;
     this.bridges.delete(id);
     if (bridge.packetTimer) clearTimeout(bridge.packetTimer);

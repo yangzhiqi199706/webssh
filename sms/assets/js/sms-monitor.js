@@ -353,6 +353,10 @@
       var qs1 = '/api/sms/monitor/recent?sinceClientId=' + lastClientId;
       var qs2 = '/api/sms/monitor/cancels?sinceClientId=' + lastCancelClientId;
       var res = await Promise.all([fetch(qs1), fetch(qs2)]);
+      if (!res[0].ok || !res[1].ok) {
+        var failed = !res[0].ok ? res[0].status : res[1].status;
+        throw new Error('HTTP ' + failed);
+      }
       if (res[0].ok) {
         var d1 = await res[0].json();
         if (d1.state) renderState(d1.state);
@@ -373,8 +377,8 @@
           lastCancelClientId = d2.lastClientId;
         }
       }
-    } catch (_e) {
-      // 静默，下次再试
+    } catch (error) {
+      if (el.monMetaBox) el.monMetaBox.textContent = '轮询失败：' + error.message + '\n将自动重试。';
     }
   }
 

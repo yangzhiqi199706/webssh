@@ -23,6 +23,8 @@ config/sms-db.json
 config/sms-push.json
 config/ha.json
 config/proto-conv.json
+config/proto-conv-wecom.json
+config/proto-conv-wecom.json.tmp
 config/proto-conv-modbus.json
 config/proto-conv-modbus-map.csv
 config/proto-conv-modbus-control.json
@@ -32,6 +34,8 @@ config/video-devices.json
 config/dcim-video.json
 config/db-manager.json
 config/serial-bridge.json
+config/docker-restart.json
+config/docker-scheduled-restart.json
 
 # 数据库管理板块的备份产物（本地暂存）
 backups/db-manager/

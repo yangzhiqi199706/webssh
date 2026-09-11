@@ -12,6 +12,8 @@ const opsSettings = require('./lib/ops-settings');
 const { rotateLogs } = require('./lib/log-rotation');
 const { createIdleTimer } = require('./lib/ssh-idle-timer');
 const { createServiceOverview } = require('./lib/service-overview');
+const smsMonitorState = require('./lib/sms-monitor-state');
+const { createDockerScheduledRestart } = require('./lib/docker-scheduled-restart');
 const { spawn } = require('child_process');
 const httpProxy = require('http-proxy');
 const serialBridge = require('./serial/bridge-manager');
@@ -1240,6 +1242,11 @@ app.get('/login', function (_req, res) {
   res.sendFile(require('path').join(__dirname, 'login.html'));
 });
 
+// 配置目录只供服务端读取，不能被 express.static 直接下载（其中可能含数据库密码）。
+app.use('/config', function (_req, res) {
+  res.status(404).send('Not Found');
+});
+
 // 拦截浏览器对主页的访问：未登录就跳到 /login
 // 注意只拦 GET 的 / 和 /index.html，其他 API/WS/静态资源都不动
 app.get(['/', '/index.html'], function (req, res, next) {
@@ -1352,37 +1359,34 @@ async function startSerialBridge(id) {
   if (existing && (existing.state === 'running' || existing.state === 'starting')) {
     return Object.assign({}, existing, { action: 'already-running' });
   }
-  const devicePath = portConfig.devicePath;
-  if (serialLocks.has(devicePath)) throw new Error(devicePath + ' 正被串口调试或转发任务占用');
-  // 在第一个 await 前写入保留锁，阻止串口调试或并发启动抢占同一个 TTY。
-  serialLocks.set(devicePath, { since: Date.now(), type: 'serial-bridge', id: portConfig.id, state: 'starting' });
+  if (serialLocks.has(portConfig.devicePath)) throw new Error(portConfig.devicePath + ' 正被串口调试或转发任务占用');
+  const lock = { since: Date.now(), type: 'serial-bridge', id: portConfig.id };
+  serialLocks.set(portConfig.devicePath, lock);
   try {
     const status = await serialBridgeManager.start(portConfig.id);
-    const lock = serialLocks.get(devicePath);
-    if (lock && lock.type === 'serial-bridge' && lock.id === portConfig.id) lock.state = 'running';
     return Object.assign({}, status, { action: 'started' });
   } catch (error) {
-    const lock = serialLocks.get(devicePath);
-    if (lock && lock.type === 'serial-bridge' && lock.id === portConfig.id) serialLocks.delete(devicePath);
+    if (serialLocks.get(portConfig.devicePath) === lock) serialLocks.delete(portConfig.devicePath);
     throw error;
   }
 }
 
 async function stopSerialBridge(id) {
   const portConfig = serialBridgePortById(id);
+  const lock = portConfig && serialLocks.get(portConfig.devicePath);
   await serialBridgeManager.stop(id);
-  if (portConfig) {
-    const lock = serialLocks.get(portConfig.devicePath);
-    if (lock && lock.type === 'serial-bridge' && lock.id === portConfig.id) serialLocks.delete(portConfig.devicePath);
-  }
+  if (portConfig && lock && lock.type === 'serial-bridge' && lock.id === Number(id)
+    && serialLocks.get(portConfig.devicePath) === lock) serialLocks.delete(portConfig.devicePath);
 }
 
 async function stopAllSerialBridges() {
   const configs = serialBridgeManager.getConfig().ports;
+  const locks = configs.map(function (portConfig) { return serialLocks.get(portConfig.devicePath); });
   await serialBridgeManager.stopAll();
-  configs.forEach(function (portConfig) {
-    const lock = serialLocks.get(portConfig.devicePath);
-    if (lock && lock.type === 'serial-bridge' && lock.id === portConfig.id) serialLocks.delete(portConfig.devicePath);
+  configs.forEach(function (portConfig, index) {
+    const lock = locks[index];
+    if (lock && lock.type === 'serial-bridge' && lock.id === portConfig.id
+      && serialLocks.get(portConfig.devicePath) === lock) serialLocks.delete(portConfig.devicePath);
   });
 }
 
@@ -3077,17 +3081,7 @@ wssSerial.on('connection', function (ws) {
   let deviceStream = null;   // fs.ReadStream + .write
   let writeStream = null;
   let currentPath = null;
-  const serialLockOwner = {};
-
-  function ownsSerialLock(devicePath) {
-    const lock = serialLocks.get(devicePath);
-    return Boolean(lock && lock.owner === serialLockOwner);
-  }
-
-  function releaseSerialLock(devicePath) {
-    const lock = serialLocks.get(devicePath);
-    if (lock && lock.owner === serialLockOwner) serialLocks.delete(devicePath);
-  }
+  let deviceLock = null;
 
   function send(type, payload) {
     if (ws.readyState !== WebSocket.OPEN) return;
@@ -3100,9 +3094,10 @@ wssSerial.on('connection', function (ws) {
 
   function closeDevice(reason) {
     if (currentPath) {
-      releaseSerialLock(currentPath);
+      if (serialLocks.get(currentPath) === deviceLock) serialLocks.delete(currentPath);
       currentPath = null;
     }
+    deviceLock = null;
     try { if (deviceStream) deviceStream.destroy(); } catch (_err) {}
     try { if (writeStream) writeStream.end(); } catch (_err) {}
     deviceStream = null;
@@ -3125,7 +3120,8 @@ wssSerial.on('connection', function (ws) {
         send('error', { message: '无效的设备路径：' + devPath });
         return;
       }
-      if (serialLocks.has(devPath)) {
+      reconcileSerialBridgeLocks();
+      if (serialLocks.has(devPath) || currentPath) {
         send('error', { message: devPath + ' 正被其他会话占用' });
         return;
       }
@@ -3135,10 +3131,12 @@ wssSerial.on('connection', function (ws) {
       }
 
       // 先用 stty 配置，再打开文件描述符
+      const lock = { since: Date.now(), type: 'serial-debug' };
       currentPath = devPath;
-      serialLocks.set(devPath, { since: Date.now(), type: 'serial-debug', owner: serialLockOwner, state: 'starting' });
+      deviceLock = lock;
+      serialLocks.set(devPath, lock);
       runStty(devPath, payload).then(function () {
-        if (currentPath !== devPath || !ownsSerialLock(devPath)) return;
+        if (deviceLock !== lock || ws.readyState !== WebSocket.OPEN) return;
         try {
           deviceStream = fs.createReadStream(devPath, { highWaterMark: 4096 });
           writeStream = fs.createWriteStream(devPath, { flags: 'r+' });
@@ -3147,17 +3145,18 @@ wssSerial.on('connection', function (ws) {
           closeDevice('open-failed');
           return;
         }
-        const lock = serialLocks.get(devPath);
-        if (lock && lock.owner === serialLockOwner) lock.state = 'running';
+        currentPath = devPath;
 
         deviceStream.on('data', function (chunk) {
           send('output', { data: chunk.toString('base64'), encoding: 'base64' });
         });
         deviceStream.on('error', function (err) {
+          if (deviceLock !== lock) return;
           send('error', { message: '串口读取错误：' + err.message });
           closeDevice('read-error');
         });
         deviceStream.on('close', function () {
+          if (deviceLock !== lock) return;
           closeDevice('device-closed');
         });
         writeStream.on('error', function (err) {
@@ -3170,8 +3169,8 @@ wssSerial.on('connection', function (ws) {
           baudRate: normalizeBaud(payload.baudRate || 115200),
         });
       }).catch(function (err) {
-        if (currentPath === devPath) closeDevice('open-failed');
-        else releaseSerialLock(devPath);
+        if (deviceLock !== lock) return;
+        closeDevice('open-failed');
         send('error', { message: err.message });
       });
       return;
@@ -3559,6 +3558,85 @@ wssTcp.on('connection', function (ws) {
   appendLog(`服务启动，enabled=${config.enabled} countdown=${config.countdownSec}s`);
 })();
 
+// ===== Docker 定时重启模块 =====
+// 与“开机后自动重启 docker”保持独立：启用后按分钟循环，成功后自动进入下一轮，失败后暂停。
+(function setupDockerScheduledRestart() {
+  const DEFAULT_CONFIG_PATH = path.join(__dirname, '..', 'config', 'docker-scheduled-restart.json');
+  const CONFIG_PATH = process.env.DOCKER_SCHEDULED_RESTART_CONFIG || DEFAULT_CONFIG_PATH;
+  const LOG_PATH = process.env.DOCKER_SCHEDULED_RESTART_LOG
+    || path.join(__dirname, '..', 'logs', 'docker-scheduled-restart.log');
+
+  function readConfig() {
+    try { return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')); } catch (_error) { return {}; }
+  }
+
+  function saveConfig(next) {
+    try {
+      fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
+      fs.writeFileSync(CONFIG_PATH, JSON.stringify(next, null, 2) + '\n', 'utf8');
+    } catch (error) {
+      console.error('[docker-scheduled-restart] 写配置失败:', error.message);
+    }
+  }
+
+  function appendLog(line) {
+    try {
+      fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true });
+      fs.appendFileSync(LOG_PATH, '[' + new Date().toISOString() + '] ' + line + '\n', 'utf8');
+    } catch (_error) {}
+  }
+
+  const scheduler = createDockerScheduledRestart({
+    loadConfig: readConfig,
+    saveConfig: saveConfig,
+    appendLog: appendLog,
+    spawn: spawn,
+    beforeRestart: function (reason) {
+      if (typeof global.__smsDbPrepareForRestart === 'function') {
+        try { global.__smsDbPrepareForRestart(reason); } catch (_error) {}
+      }
+    },
+    afterRestart: function (reason) {
+      if (typeof global.__smsDbRecover === 'function') {
+        try { global.__smsDbRecover(reason); } catch (_error) {}
+      }
+    },
+  });
+
+  app.get('/api/docker-scheduled-restart/config', function (_req, res) {
+    res.json(scheduler.getState());
+  });
+
+  app.put('/api/docker-scheduled-restart/config', function (req, res) {
+    const body = req.body || {};
+    if (body.intervalMinutes !== undefined) {
+      const value = Number(body.intervalMinutes);
+      if (!Number.isFinite(value) || value < 1 || value > 10080 || Math.floor(value) !== value) {
+        return res.status(400).json({ ok: false, message: '定时重启间隔必须是 1-10080 分钟之间的整数' });
+      }
+    }
+    return res.json(scheduler.updateConfig(body));
+  });
+
+  app.post('/api/docker-scheduled-restart/cancel', function (_req, res) {
+    res.json(scheduler.cancel('user-cancel'));
+  });
+
+  app.post('/api/docker-scheduled-restart/restart-countdown', function (_req, res) {
+    res.json(scheduler.restartCountdown());
+  });
+
+  app.post('/api/docker-scheduled-restart/trigger', function (_req, res) {
+    scheduler.trigger().then(function (result) {
+      res.json(Object.assign({}, scheduler.getState(), { result: result }));
+    });
+  });
+
+  scheduler.load();
+  appendLog('服务启动，enabled=' + scheduler.getState().enabled
+    + ' intervalMinutes=' + scheduler.getState().intervalMinutes);
+})();
+
 // ===== 信创短信猫 - 数据库连接模块 =====
 // 目的：给"短信猫"功能提供一条可配置、可持久化、可开机自启的 MySQL 连接
 (function setupSmsDb() {
@@ -3724,11 +3802,13 @@ wssTcp.on('connection', function (ws) {
     }
   }
 
-  app.get('/api/sms/db/status', function (_req, res) {
+  app.get('/api/sms/db/status', function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     res.json(publicStatus());
   });
 
   app.post('/api/sms/db/connect', async function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     const body = req.body || {};
     const host = String(body.host || '').trim() || defaults.host;
     const port = Number(body.port) || defaults.port;
@@ -3765,7 +3845,8 @@ wssTcp.on('connection', function (ws) {
     }
   });
 
-  app.post('/api/sms/db/disconnect', async function (_req, res) {
+  app.post('/api/sms/db/disconnect', async function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     stopAutoRetry('手动断开');
     await closePool('manual-disconnect');
     cfg.autoStart = false;
@@ -5847,6 +5928,8 @@ wssTcp.on('connection', function (ws) {
   const MAX_PENDING_SEC_MODE0 = 120; // NotifyModeID=0 路径默认上限（更宽容）
   const MIN_PENDING_SEC = 5;
   const MAX_PENDING_SEC_LIMIT = 600;
+  const MAX_PENDING_ALARMS = 1000;
+  const PENDING_QUERY_BATCH = 200;
 
   const defaults = {
     enabled: true,
@@ -5863,8 +5946,11 @@ wssTcp.on('connection', function (ws) {
   let nextClientId = 1;
   // 等待 TextMessage 填充的新告警：Map<id, { firstSeenMs, row }>
   let pendingAlarms = new Map();
-  // 告警解除：按 CancelTime 增量，不看 id（同一条 id 被 UPDATE）
-  let lastCancelMs = 0;        // 时间戳毫秒，作为游标
+  // 告警解除：使用 CancelTime + id 复合游标，避免同一秒多条记录漏报
+  const cancelCursor = smsMonitorState.createCancelCursor(0, 0);
+  let lastCancelMs = 0;        // 兼容状态展示：时间戳毫秒
+  let lastCancelId = 0;        // 同一秒内的 id 游标
+  let monitorInitialized = false;
   let cancelBuffer = [];       // [{ clientId, row }]
   let nextCancelClientId = 1;
   let totalCancelled = 0;
@@ -5946,12 +6032,20 @@ wssTcp.on('connection', function (ws) {
     try {
       const [rows] = await pool.query('SELECT COALESCE(MAX(id),0) AS maxId FROM `' + TABLE + '`');
       lastSeenId = Number(rows[0] && rows[0].maxId) || 0;
-      // 同时把 CancelTime 游标对齐到当前最大值，避免首次把历史解除全部当成新事件
-      const [c] = await pool.query('SELECT MAX(CancelTime) AS maxT FROM `' + TABLE + '` WHERE CancelTime IS NOT NULL');
+      // 同时把复合游标对齐到当前最新解除记录，避免首次把历史解除全部当成新事件
+      const [c] = await pool.query(
+        'SELECT CancelTime AS maxT, id AS maxId FROM `' + TABLE + '`'
+          + ' WHERE CancelTime IS NOT NULL ORDER BY CancelTime DESC, id DESC LIMIT 1'
+      );
       const maxT = c[0] && c[0].maxT;
+      const maxId = Number(c[0] && c[0].maxId) || 0;
       lastCancelMs = maxT ? new Date(maxT).getTime() : 0;
-      appendLog(`初始化 lastSeenId=${lastSeenId} lastCancelMs=${lastCancelMs}`);
+      lastCancelId = maxId;
+      cancelCursor.update(lastCancelMs, lastCancelId);
+      monitorInitialized = true;
+      appendLog(`初始化 lastSeenId=${lastSeenId} lastCancelMs=${lastCancelMs} lastCancelId=${lastCancelId}`);
     } catch (err) {
+      monitorInitialized = false;
       lastError = err.message;
       appendLog(`初始化失败：${err.message}`);
       if (isConnectionError(err) && typeof global.__smsDbMarkBroken === 'function') {
@@ -5966,7 +6060,7 @@ wssTcp.on('connection', function (ws) {
     if (!pool) { lastError = '数据库未连接'; return; }
     polling = true;
     try {
-      if (lastSeenId === 0 && lastCancelMs === 0) await initLastSeenId();
+      if (!monitorInitialized) await initLastSeenId();
 
       // 1) 新告警：id > lastSeenId，但 TextMessage 可能稍后由其它进程填充，
       //    所以 TextMessage 为空时先入 pending，等下次轮询再查。
@@ -5983,7 +6077,17 @@ wssTcp.on('connection', function (ws) {
             alarmBuffer.push({ clientId: nextClientId++, row });
             notifyAlarmListeners(row);
           } else {
-            pendingAlarms.set(Number(row.id), { firstSeenMs: nowMs, row });
+            smsMonitorState.pushPendingWithLimit(
+              pendingAlarms,
+              row,
+              nowMs,
+              MAX_PENDING_ALARMS,
+              function (flushedRow, reason) {
+                alarmBuffer.push({ clientId: nextClientId++, row: flushedRow });
+                notifyAlarmListeners(flushedRow);
+                appendLog(`pending 队列达到上限，id=${flushedRow.id} 已兜底放行（${reason}）`);
+              }
+            );
           }
           if (Number(row.id) > lastSeenId) lastSeenId = Number(row.id);
         }
@@ -5995,13 +6099,16 @@ wssTcp.on('connection', function (ws) {
       // 超时阈值按当前 pending 行的 NotifyModeID 决定：>0 走 maxPendingSec，=0 走 maxPendingSecMode0
       if (pendingAlarms.size) {
         const ids = Array.from(pendingAlarms.keys());
-        const placeholders = ids.map(function () { return '?'; }).join(',');
-        const [fresh] = await pool.query(
-          'SELECT * FROM `' + TABLE + '` WHERE id IN (' + placeholders + ')',
-          ids
-        );
         const byId = new Map();
-        (fresh || []).forEach(function (r) { byId.set(Number(r.id), r); });
+        const batches = smsMonitorState.chunk(ids, PENDING_QUERY_BATCH);
+        for (const batch of batches) {
+          const placeholders = batch.map(function () { return '?'; }).join(',');
+          const [fresh] = await pool.query(
+            'SELECT * FROM `' + TABLE + '` WHERE id IN (' + placeholders + ')',
+            batch
+          );
+          (fresh || []).forEach(function (r) { byId.set(Number(r.id), r); });
+        }
         const nowMs = Date.now();
         for (const id of ids) {
           const p = pendingAlarms.get(id);
@@ -6026,20 +6133,17 @@ wssTcp.on('connection', function (ws) {
         alarmBuffer = alarmBuffer.slice(-cfg.bufferSize);
       }
 
-      // 2) 告警解除：CancelTime > lastCancelMs
-      const cursorDate = lastCancelMs > 0 ? new Date(lastCancelMs) : new Date(0);
-      const [cancels] = await pool.query(
-        'SELECT * FROM `' + TABLE + '` WHERE CancelTime IS NOT NULL AND CancelTime > ? ORDER BY CancelTime ASC LIMIT 200',
-        [cursorDate]
-      );
+      // 2) 告警解除：使用 CancelTime + id 复合游标，确保同一秒内的多条解除不漏报
+      const cancelQuery = smsMonitorState.buildCancelQuery(TABLE, cancelCursor, 200);
+      const [cancels] = await pool.query(cancelQuery.sql, cancelQuery.params);
       if (cancels && cancels.length) {
         for (const row of cancels) {
-          const t = row.CancelTime ? new Date(row.CancelTime).getTime() : 0;
-          // 防御：游标相等时跳过（mysql2 的 > 已能排除相等，这里多一层保险）
-          if (t && t <= lastCancelMs) continue;
+          if (!smsMonitorState.acceptCancelRow(cancelCursor, row)) continue;
           cancelBuffer.push({ clientId: nextCancelClientId++, row });
           notifyCancelListeners(row);
-          if (t > lastCancelMs) lastCancelMs = t;
+          const cursor = cancelCursor.value();
+          lastCancelMs = cursor.timeMs;
+          lastCancelId = cursor.id;
         }
         if (cancelBuffer.length > cfg.bufferSize) {
           cancelBuffer = cancelBuffer.slice(-cfg.bufferSize);
@@ -6100,16 +6204,21 @@ wssTcp.on('connection', function (ws) {
       totalCancelled: totalCancelled,
       lastPollAt: lastPollAt,
       lastError: lastError,
+      lastCancelId: lastCancelId,
+      pendingLimit: MAX_PENDING_ALARMS,
+      pendingQueryBatch: PENDING_QUERY_BATCH,
       dbConnected: !!getPool(),
       table: TABLE,
     };
   }
 
-  app.get('/api/sms/monitor/config', function (_req, res) {
+  app.get('/api/sms/monitor/config', function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     res.json(publicState());
   });
 
   app.put('/api/sms/monitor/config', function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     const body = req.body || {};
     if ('enabled' in body) cfg.enabled = Boolean(body.enabled);
     if ('intervalSec' in body) cfg.intervalSec = clamp(body.intervalSec, MIN_INTERVAL, MAX_INTERVAL, cfg.intervalSec);
@@ -6123,6 +6232,7 @@ wssTcp.on('connection', function (ws) {
   });
 
   app.get('/api/sms/monitor/recent', function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     const sinceClientId = Number(req.query.sinceClientId) || 0;
     const items = alarmBuffer.filter(function (e) { return e.clientId > sinceClientId; });
     const lastClientId = alarmBuffer.length
@@ -6132,6 +6242,7 @@ wssTcp.on('connection', function (ws) {
   });
 
   app.get('/api/sms/monitor/cancels', function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     const sinceClientId = Number(req.query.sinceClientId) || 0;
     const items = cancelBuffer.filter(function (e) { return e.clientId > sinceClientId; });
     const lastClientId = cancelBuffer.length
@@ -6141,6 +6252,7 @@ wssTcp.on('connection', function (ws) {
   });
 
   app.post('/api/sms/monitor/clear', function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     const scope = String((req.query && req.query.scope) || 'all');
     if (scope === 'all' || scope === 'alarms') alarmBuffer = [];
     if (scope === 'all' || scope === 'cancels') cancelBuffer = [];
@@ -6933,11 +7045,13 @@ wssTcp.on('connection', function (ws) {
   }
 
   // ===== HTTP 接口 =====
-  app.get('/api/sms/push/config', function (_req, res) {
+  app.get('/api/sms/push/config', function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     res.json(publicState());
   });
 
   app.put('/api/sms/push/config', function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     const body = req.body || {};
     // 允许 PUT 同时切换品牌：body.brand 指定要修改的品牌 key（默认改激活品牌）
     const targetKey = body.brand && DRIVERS[body.brand] ? body.brand : cfgRoot.brand;
@@ -6976,13 +7090,15 @@ wssTcp.on('connection', function (ws) {
   });
 
   // 列出全部支持的品牌（含 capabilities，前端做能力开关）
-  app.get('/api/sms/push/brands', function (_req, res) {
+  app.get('/api/sms/push/brands', function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     res.json({ ok: true, brand: cfgRoot.brand, brands: listBrands() });
   });
 
   // 切换激活品牌：参数已并存，不强制关闭其他品牌的 enabled。
   // 互斥仍由 PUT 接口 + readCfg 启动时保证：任何时候真正发送的只可能是 cfgRoot.brand 这一个。
   app.post('/api/sms/push/brand', function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     const body = req.body || {};
     const want = String(body.brand || '');
     if (!DRIVERS[want]) return res.status(400).json({ ok: false, message: '未知品牌：' + want });
@@ -6994,7 +7110,8 @@ wssTcp.on('connection', function (ws) {
   });
 
   // 列出 dcim-person（前端"收件人"按钮的只读视图，仅供查看，不再用于推送配置）
-  app.get('/api/sms/push/persons', async function (_req, res) {
+  app.get('/api/sms/push/persons', async function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     try {
       const list = await listPersons();
       res.json({
@@ -7011,6 +7128,7 @@ wssTcp.on('connection', function (ws) {
   // 调试接口：给一个 NotifyModeID，返回 alarmnotifymode 行 + 解析出的 person 列表，
   // 前端"收件人"弹窗里可以输入 modeId 直观验证联表是否正确
   app.get('/api/sms/push/resolve-mode', async function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     const id = Number(req.query && req.query.id);
     try {
       const resolved = await resolveByNotifyMode(id);
@@ -7022,6 +7140,7 @@ wssTcp.on('connection', function (ws) {
   });
 
   app.post('/api/sms/push/send', async function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     const body = req.body || {};
     try {
       const entry = await sendOne({
@@ -7040,6 +7159,7 @@ wssTcp.on('connection', function (ws) {
   });
 
   app.get('/api/sms/push/history', function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     const limit = clamp(req.query.limit, 1, MAX_HISTORY, 100);
     res.json({
       state: publicState(),
@@ -7048,6 +7168,7 @@ wssTcp.on('connection', function (ws) {
   });
 
   app.post('/api/sms/push/refresh-results', async function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     const body = req.body || {};
     try {
       const r = await refreshResults(Array.isArray(body.ids) ? body.ids : null);
@@ -7058,7 +7179,8 @@ wssTcp.on('connection', function (ws) {
     }
   });
 
-  app.get('/api/sms/push/sim-status', async function (_req, res) {
+  app.get('/api/sms/push/sim-status', async function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     try {
       const resp = await callSimStatus();
       const json = parseJsonSafe(resp.body);
@@ -7074,7 +7196,8 @@ wssTcp.on('connection', function (ws) {
     }
   });
 
-  app.post('/api/sms/push/clear-history', function (_req, res) {
+  app.post('/api/sms/push/clear-history', function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     history = [];
     res.json(publicState());
   });
@@ -7567,7 +7690,8 @@ wssTcp.on('connection', function (ws) {
 
   // ===== HTTP 接口 =====
   // GET：返回 dcim-alarmparam 当前快照 + 调度状态 + 4 项预检明细 + 下次预计触发时间
-  app.get('/api/sms/scheduled/config', async function (_req, res) {
+  app.get('/api/sms/scheduled/config', async function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     try {
       const row = await readParam();
       const guards = await evaluateGuards(row);
@@ -7607,12 +7731,14 @@ wssTcp.on('connection', function (ws) {
   });
 
   // GET：最近 N 条调度记录（默认全量返回，按时间倒序）
-  app.get('/api/sms/scheduled/recent', function (_req, res) {
+  app.get('/api/sms/scheduled/recent', function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     res.json({ ok: true, items: recent.slice().reverse() });
   });
 
   // POST：手动触发一次（不看开关、不看小时、不看防重间隔）
-  app.post('/api/sms/scheduled/trigger', async function (_req, res) {
+  app.post('/api/sms/scheduled/trigger', async function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     try {
       const r = await evaluateAndMaybeSend('manual', true);
       res.json({ ok: true, fired: r.fired, entry: r.entry, state: publicState() });
@@ -8112,6 +8238,25 @@ wssTcp.on('connection', function (ws) {
     getCfg: function () { return cfg; },
     appendLog: appendLog,
   };
+})();
+
+// ===== 协议转换 → 企业微信群机器人 =====
+(function setupWecomForwarder() {
+  const path = require('path');
+  const crypto = require('crypto');
+  const alarms = require('./proto-conv/wecom-alarms');
+  const Forwarder = require('./proto-conv/wecom-forwarder').Forwarder;
+  const manager = new Forwarder({
+    file: process.env.WECOM_CONFIG || path.join(__dirname, 'config', 'proto-conv-wecom.json'),
+    sourceId: function () {
+      const cfg = global.__protoConv.getCfg();
+      return crypto.createHash('sha256').update(JSON.stringify([cfg.baseUrl, cfg.userName, cfg.userLsh, cfg.pathMap])).digest('hex');
+    },
+    collect: function (config, since) { return alarms.collect(global.__protoConv, config, since); },
+    loadOptions: function (fields) { return require('./proto-conv/wecom-options').loadOptions(global.__protoConv, fields); },
+  });
+  require('./proto-conv/wecom-routes').register(app, manager, requireAccount);
+  manager.start();
 })();
 
 // ===== 协议转换 → Modbus TCP 转发 =====

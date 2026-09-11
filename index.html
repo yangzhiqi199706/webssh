@@ -1339,6 +1339,39 @@
               </div>
             </div>
             <div class="settings-card" style="margin-top:14px">
+              <div style="font-size:13px;font-weight:600;color:#e2e8f0;margin-bottom:6px">Docker 定时重启</div>
+              <div style="font-size:12px;color:var(--muted);margin-bottom:10px">按设定分钟数循环倒计时，Docker 重启成功后自动开始下一轮；失败后暂停并保留结果。</div>
+              <div class="grid2">
+                <label class="field">
+                  <span>启用循环重启</span>
+                  <select id="dsrEnabled">
+                    <option value="0">关闭</option>
+                    <option value="1">开启</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>重启间隔（分钟，1-10080）</span>
+                  <input id="dsrIntervalMinutes" type="number" min="1" max="10080" step="1" value="60" />
+                </label>
+              </div>
+              <div class="field" style="margin-top:12px">
+                <span>当前状态</span>
+                <div id="dsrStatus" role="status" aria-live="polite" style="font-size:13px;color:#cbd5e1;padding:8px 10px;background:#0b1220;border:1px solid #1f2937;border-radius:10px;min-height:20px">未加载</div>
+              </div>
+              <div class="field">
+                <span>上次执行结果</span>
+                <div id="dsrLastResult" role="status" aria-live="polite" style="font-size:12px;color:#94a3b8;padding:8px 10px;background:#0b1220;border:1px solid #1f2937;border-radius:10px;min-height:20px;white-space:pre-wrap;word-break:break-all">无</div>
+              </div>
+              <div style="display:flex;justify-content:space-between;gap:10px;padding-top:10px;flex-wrap:wrap">
+                <div style="display:flex;gap:8px;flex-wrap:wrap">
+                  <button class="btn" id="dsrCancel" type="button">取消倒计时</button>
+                  <button class="btn" id="dsrRestartCountdown" type="button">重新倒计时</button>
+                  <button class="btn" id="dsrTrigger" type="button">立即执行</button>
+                </div>
+                <button class="btn primary" id="dsrSave" type="button">保存定时设置</button>
+              </div>
+            </div>
+            <div class="settings-card" style="margin-top:14px">
               <div style="font-size:13px;font-weight:600;color:#e2e8f0;margin-bottom:10px">服务日志管理</div>
               <div class="grid2">
                 <label class="field">
@@ -2289,6 +2322,14 @@
       drRestartCountdown: document.getElementById('drRestartCountdown'),
       drTrigger: document.getElementById('drTrigger'),
       drSave: document.getElementById('drSave'),
+      dsrEnabled: document.getElementById('dsrEnabled'),
+      dsrIntervalMinutes: document.getElementById('dsrIntervalMinutes'),
+      dsrStatus: document.getElementById('dsrStatus'),
+      dsrLastResult: document.getElementById('dsrLastResult'),
+      dsrCancel: document.getElementById('dsrCancel'),
+      dsrRestartCountdown: document.getElementById('dsrRestartCountdown'),
+      dsrTrigger: document.getElementById('dsrTrigger'),
+      dsrSave: document.getElementById('dsrSave'),
       drTopDot: document.getElementById('drTopDot'),
       drTopState: document.getElementById('drTopState'),
       opsLogRotateEnabled: document.getElementById('opsLogRotateEnabled'),
@@ -3297,10 +3338,14 @@
       const target = opsManagementTabs.some((item) => item.id === tab) ? tab : (state.opsManagementTab || 'ops');
       switchOpsManagementTab(target);
       refreshDockerRestart(false);
+      refreshDockerScheduledRestart(false);
       refreshOpsSettings(false);
       refreshAccessControl();
       if (drRefreshTimer) clearInterval(drRefreshTimer);
-      drRefreshTimer = setInterval(() => refreshDockerRestart(true), 1000);
+      drRefreshTimer = setInterval(() => {
+        refreshDockerRestart(true);
+        refreshDockerScheduledRestart(true);
+      }, 1000);
     }
 
     function syncSettingsForm() {
@@ -3935,6 +3980,86 @@
         renderDockerRestart(data, true);
       } catch (err) {
         alert('操作失败：' + err.message);
+      }
+    }
+
+    async function refreshDockerScheduledRestart(preserveInputs) {
+      try {
+        const resp = await fetch('/api/docker-scheduled-restart/config');
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        renderDockerScheduledRestart(await resp.json(), preserveInputs);
+      } catch (err) {
+        if (el.dsrStatus) el.dsrStatus.textContent = '加载失败：' + err.message;
+      }
+    }
+
+    function renderDockerScheduledRestart(data, preserveInputs) {
+      if (!preserveInputs) {
+        if (el.dsrEnabled) el.dsrEnabled.value = data.enabled ? '1' : '0';
+        if (el.dsrIntervalMinutes) el.dsrIntervalMinutes.value = String(data.intervalMinutes || 60);
+      }
+      if (el.dsrStatus) {
+        const parts = [data.enabled ? '开启' : '关闭'];
+        if (data.running) parts.push('正在执行 systemctl restart docker');
+        else if (data.counting) {
+          const mins = Math.floor(Number(data.remainingSec || 0) / 60);
+          const secs = Number(data.remainingSec || 0) % 60;
+          parts.push('倒计时中，剩余 ' + mins + ' 分钟 ' + secs + ' 秒');
+        } else if (data.enabled) {
+          parts.push(data.lastResult && !data.lastResult.ok ? '上次重启失败，已暂停' : '等待开始倒计时');
+        }
+        el.dsrStatus.textContent = parts.join(' · ');
+      }
+      if (el.dsrLastResult) {
+        const result = data.lastResult;
+        if (!result) {
+          el.dsrLastResult.textContent = '无';
+        } else {
+          el.dsrLastResult.textContent = [
+            (result.ok ? '成功' : '失败') + '  exit=' + result.exitCode + '  trigger=' + result.trigger,
+            '开始：' + result.startedAt,
+            '结束：' + result.finishedAt,
+            result.stderr ? 'stderr: ' + result.stderr.trim() : '',
+          ].filter(Boolean).join('\n');
+        }
+      }
+    }
+
+    async function saveDockerScheduledRestart() {
+      const enabled = el.dsrEnabled && el.dsrEnabled.value === '1';
+      const intervalMinutes = Number(el.dsrIntervalMinutes && el.dsrIntervalMinutes.value);
+      if (!Number.isInteger(intervalMinutes) || intervalMinutes < 1 || intervalMinutes > 10080) {
+        alert('重启间隔必须是 1-10080 分钟之间的整数');
+        return;
+      }
+      const button = el.dsrSave;
+      const oldText = button ? button.textContent : '';
+      if (button) { button.disabled = true; button.textContent = '保存中...'; }
+      try {
+        const resp = await fetch('/api/docker-scheduled-restart/config', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: enabled, intervalMinutes: intervalMinutes }),
+        });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        renderDockerScheduledRestart(await resp.json(), true);
+        if (button) {
+          button.textContent = '已保存';
+          setTimeout(function () { button.textContent = oldText; button.disabled = false; }, 1200);
+        }
+      } catch (error) {
+        if (button) { button.textContent = oldText; button.disabled = false; }
+        alert('保存失败：' + error.message);
+      }
+    }
+
+    async function postDockerScheduledRestart(url) {
+      try {
+        const resp = await fetch(url, { method: 'POST' });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        renderDockerScheduledRestart(await resp.json(), true);
+      } catch (error) {
+        alert('操作失败：' + error.message);
       }
     }
 
@@ -5417,6 +5542,26 @@
       } finally {
         btn.disabled = false;
         btn.textContent = oldText;
+      }
+    });
+    el.dsrSave?.addEventListener('click', () => saveDockerScheduledRestart());
+    el.dsrCancel?.addEventListener('click', () => postDockerScheduledRestart('/api/docker-scheduled-restart/cancel'));
+    el.dsrRestartCountdown?.addEventListener('click', () => postDockerScheduledRestart('/api/docker-scheduled-restart/restart-countdown'));
+    el.dsrTrigger?.addEventListener('click', async () => {
+      if (!confirm('将立即执行 systemctl restart docker，docker 会短暂重启，确认继续？')) return;
+      const button = el.dsrTrigger;
+      const oldText = button.textContent;
+      button.disabled = true;
+      button.textContent = '执行中...';
+      try {
+        const resp = await fetch('/api/docker-scheduled-restart/trigger', { method: 'POST' });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        renderDockerScheduledRestart(await resp.json(), true);
+      } catch (error) {
+        alert('请求失败：' + error.message);
+      } finally {
+        button.disabled = false;
+        button.textContent = oldText;
       }
     });
     el.closeModal?.addEventListener('click', () => setModal(false));

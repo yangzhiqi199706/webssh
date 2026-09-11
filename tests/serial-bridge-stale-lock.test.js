@@ -22,7 +22,7 @@ assert.ok(
   'WebSocket 串口必须在异步 stty 配置前原子占用设备锁'
 );
 assert.ok(
-  /lock && lock\.owner === serialLockOwner/.test(server),
+  /serialLocks\.get\(currentPath\) === deviceLock/.test(server),
   'WebSocket 释放锁时必须校验锁所有权，不能误删其他任务的锁'
 );
 assert.ok(
