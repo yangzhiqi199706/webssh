@@ -23,6 +23,10 @@ config/sms-db.json
 config/sms-push.json
 config/ha.json
 config/proto-conv.json
+config/proto-conv-wecom.json
+config/proto-conv-wecom.json.tmp
+config/proto-conv-b-interface.json
+config/proto-conv-b-interface.json.tmp
 config/proto-conv-modbus.json
 config/proto-conv-modbus-map.csv
 config/proto-conv-modbus-control.json
@@ -31,6 +35,9 @@ config/video-28181.json
 config/video-devices.json
 config/dcim-video.json
 config/db-manager.json
+config/serial-bridge.json
+config/docker-restart.json
+config/docker-scheduled-restart.json
 
 # 数据库管理板块的备份产物（本地暂存）
 backups/db-manager/
@@ -50,5 +57,22 @@ video/vendor/flv.min.js
 # VS Code workspace settings may contain API keys or secrets
 .vscode/settings.json
 
-# Codex local settings may contain API keys or secrets
-.claude/settings.local.json
+# Local-only development and release assets
+/.offline-downloads-arm64/
+/output/
+/tmp/
+/.claude/
+/.playwright-cli/
+/.api-doc-work-*/
+/.superpowers/
+/协议文档/
+*.pem
+*.key
+
+# Keep only sanitized example connection files
+/config/*
+!/config/*.example.json
+!/config/.env.example
+
+*.bak_*
+*.bak-*

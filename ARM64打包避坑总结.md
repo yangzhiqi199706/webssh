@@ -1,19 +1,19 @@
-# WebSSH ARM64 主壳打包避坑总结
+# WebSSH ARM64 全功能打包避坑总结
 
 适用对象：Kylin V10 / aarch64 / ARM64 服务器上的 WebSSH 主壳离线包。
 
-当前已验证可用包：
+当前已验证可用包（192.168.50.221，2026-08-04）：
 
 ```text
-dist/webssh-main-offline-linux-arm64-node16-v1.0.0-20260714070436.tar.gz
-SHA-256: f739a97d8c322a32f3122fec90eb7117e1bbfd1090444b2dd11f2c134852eb52
+dist/webssh-fullstack-offline-linux-arm64-v1.0.0-20260804015822.tar.gz
+SHA-256: 430f6fd5e6c5072dc472c7b8c8cf46013809a47506da4e220522fbc45372ff44
 ```
 
-当前包只包含 WebSSH 主壳，协议助手和视频监控不实现、不部署，菜单隐藏。
+该包是 ARM64 全功能离线包，包含 WebSSH 主壳、协议助手、串口、短信猫、双机热备、协议转换、数据库管理和视频监控入口。视频板块复用目标机已有 dcim/ZLMediaKit/WVP 媒体栈，不安装第二套 MediaServer。
 
 ## 一、最重要结论
 
-1. ARM64 包必须使用 Node.js 16.20.2 linux-arm64。
+1. ARM64 全功能包必须使用 Node.js 16.20.2 linux-arm64。
 2. 不要使用官方 Node.js 12.22.12 linux-arm64 作为这台鲲鹏/Kylin 的最终运行时。
 3. 打包完成后必须带 `.sha256` 文件，且内容必须和 tar 包当前文件一致。
 4. 解包安装前必须检查 `runtime/node/bin/node` 存在并可执行。
@@ -164,7 +164,7 @@ active
 {"ok":true}
 v16.20.2:arm64
 MODULES_OK
-window.WEBSSH_FEATURES = { protocol: false, video: false };
+window.WEBSSH_FEATURES = { protocol: true, video: true, db: true, ha: true, protoConv: true };
 *:3010 users:(("node",...))
 ```
 
@@ -257,7 +257,7 @@ LISTEN ... *:3010 ... users:(("node",pid=...,fd=...))
 - [ ] 安装后 `webssh` 是 `active`
 - [ ] `/health` 返回 `{"ok":true}`
 - [ ] 关键 Node 模块加载输出 `MODULES_OK`
-- [ ] `runtime-features.js` 里 `protocol` 和 `video` 都是 `false`
+- [ ] `runtime-features.js` 里 `protocol`、`video`、`db`、`ha`、`protoConv` 都是 `true`
 - [ ] `ss` 显示 `node` 监听 `3010`
 
-只要其中任一项不满足，就不要把包标记为可交付。
+只要其中任一项不满足，就不要把包标记为可交付。视频验收还要确认 50.221 上 dcim 容器、ZLMediaKit、WVP、Redis、MySQL 进程和既有端口仍然正常。

@@ -16,8 +16,8 @@
 //   5. 重启 webssh 主服务，分别探活 /health 和 /protocol/
 //
 // 用法（PowerShell / Git Bash）：
-//   $env:WEBSSH_DEPLOY_PASS = '<DEPLOY_PASSWORD>'        # PowerShell
-//   export WEBSSH_DEPLOY_PASS='<DEPLOY_PASSWORD>'        # Bash
+//   $env:WEBSSH_DEPLOY_PASS = (process.env.WEBSSH_DEPLOY_PASS || '')        # PowerShell
+//   export WEBSSH_DEPLOY_PASS=(process.env.WEBSSH_DEPLOY_PASS || '')        # Bash
 //   node scripts/deploy-protocol.js
 //
 // 环境变量（一般不动）：
@@ -101,6 +101,7 @@ function protocolMainSyncEntries() {
     'lib',
     'video',
     'overview',
+    'dcim-settings',
   ];
 }
 
@@ -113,7 +114,7 @@ function createMainSyncDirectorySwap(mainSync, appDir, entry, stamp) {
       ? ['index.html', 'assets/js/video-runtime.js', 'assets/css/style.css']
       : entry === 'overview'
         ? ['index.html', 'assets/js/overview.js', 'assets/css/style.css']
-      : null;
+      : entry === 'dcim-settings' ? ['index.html', 'settings.js', 'change-tracker.js', 'style.css'] : null;
   if (!requiredFiles) throw new Error('不支持的主壳目录切换: ' + entry);
   const source = `${mainSync}/${entry}`;
   const target = `${appDir}/${entry}`;
@@ -134,7 +135,7 @@ function createMainSyncDirectorySwap(mainSync, appDir, entry, stamp) {
 function createMainSyncReleasePlan(appDir, stamp, service, httpPort) {
   const entries = [
     'server.js', 'index.html', 'login.html', 'package.json', 'package-lock.json',
-    'node_modules', 'lib', 'video', 'overview', 'snmp-bundle', 'proto-conv', 'db',
+    'node_modules', 'lib', 'video', 'overview', 'snmp-bundle', 'proto-conv', 'db', 'dcim-settings',
   ];
   const backup = `${appDir}/.main-sync-backup-${stamp}`;
   const backupSteps = entries.map((entry) => {
@@ -525,10 +526,14 @@ async function main() {
         await exec(conn, swap.switch);
         directorySwaps.push(swap);
       }
+      const dcimSwap = createMainSyncDirectorySwap(mainSync, `${INSTALL_DIR}/app`, 'dcim-settings', stamp);
+      await exec(conn, dcimSwap.stage);
+      await exec(conn, dcimSwap.switch);
+      directorySwaps.push(dcimSwap);
       for (const entry of MAIN_SYNC_ENTRIES) {
         const source = `${mainSync}/${entry}`;
         const target = `${INSTALL_DIR}/app/${entry}`;
-        if (entry !== 'lib' && entry !== 'video' && entry !== 'overview') await exec(conn, `cp -f ${source} ${target}`);
+        if (entry !== 'lib' && entry !== 'video' && entry !== 'overview' && entry !== 'dcim-settings') await exec(conn, `cp -f ${source} ${target}`);
       }
       // 拷 http-proxy + 它的依赖到 app/node_modules
       await exec(conn, `cp -a ${mainSync}/node_modules/. ${INSTALL_DIR}/app/node_modules/`);

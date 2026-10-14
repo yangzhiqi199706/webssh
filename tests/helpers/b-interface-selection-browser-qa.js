@@ -1,0 +1,42 @@
+async (page) => {
+  await page.setExtraHTTPHeaders({});
+  await page.goto('http://127.0.0.1:3037/proto-conv/index.html');
+  await page.getByRole('button', { name: 'B接口转发', exact: true }).click();
+  await page.getByRole('tab', { name: '设备和测点', exact: true }).click();
+  const selectAll = page.getByRole('button', { name: '全选设备', exact: true });
+  const clearAll = page.getByRole('button', { name: '取消全选设备', exact: true });
+  await clearAll.click();
+  if (await page.getByRole('checkbox', { name: /^转发设备 / }).first().isChecked()) throw new Error('Clear all did not clear current devices');
+  const code = page.getByRole('textbox', { name: '联通五位设备编码', exact: true }).first();
+  const resource = page.getByRole('textbox', { name: '设备资管编码', exact: true }).first();
+  const signal = page.getByRole('textbox', { name: '12 位 ID', exact: true }).first();
+  await code.fill('10077'); await resource.fill('edited-resource'); await signal.fill('100299901000');
+  const point = page.getByRole('checkbox', { name: '转发 参数1', exact: true }).first(); await point.uncheck();
+  await selectAll.click();
+  if (!await page.getByRole('checkbox', { name: /^转发设备 / }).first().isChecked()) throw new Error('Select all did not select devices');
+  if (await point.isChecked()) throw new Error('Device select all changed point selection');
+  if (await code.inputValue() !== '10077' || await resource.inputValue() !== 'edited-resource' || await signal.inputValue() !== '100299901000') throw new Error('Bulk selection lost draft values');
+  // Keep references to the focused input: switching another row's type cannot rebuild it.
+  await code.evaluate(el => { window.bOriginalCode = el; });
+  await page.getByRole('combobox', { name: '测点类型', exact: true }).nth(1).selectOption('AI');
+  if (!await code.evaluate(el => el === window.bOriginalCode)) throw new Error('Type change rebuilt unrelated input');
+  await page.getByRole('button', { name: '下一页设备', exact: true }).click();
+  if (!await page.getByRole('checkbox', { name: /^转发设备 / }).first().isChecked()) throw new Error('Select all did not include other pages');
+  await clearAll.click();
+  await page.getByRole('button', { name: '上一页设备', exact: true }).click();
+  if (await page.getByRole('checkbox', { name: /^转发设备 / }).first().isChecked()) throw new Error('Clear all did not include other pages');
+  await page.getByRole('checkbox', { name: /^转发设备 / }).first().check();
+  await page.getByRole('button', { name: '下一页设备', exact: true }).click();
+  await page.getByRole('button', { name: '保存设备和测点', exact: true }).click();
+  await page.getByRole('alert').filter({ hasText: '配置已保存' }).waitFor();
+  const saved = await page.evaluate(async () => (await fetch('/fixture/saved')).json());
+  const latest = saved[saved.length - 1];
+  if (latest.devices.length !== 1 || latest.devices[0].deviceId !== '3' || latest.devices[0].bDeviceId !== '10077' || latest.devices[0].rId !== 'edited-resource') throw new Error('Saved payload lost hidden-page device selection or codes');
+  if (latest.devices[0].params.some(p => p.paraName === '参数1')) throw new Error('Point selection was overwritten');
+  await page.setExtraHTTPHeaders({ 'X-Fixture-Role': 'viewer' });
+  await page.keyboard.press('Escape'); await page.getByRole('button', { name: 'B接口转发', exact: true }).click();
+  await page.getByRole('alert').filter({ hasText: '只读' }).waitFor();
+  await page.getByRole('tab', { name: '设备和测点', exact: true }).click();
+  if (await selectAll.isEnabled() || await clearAll.isEnabled()) throw new Error('Viewer can change batch selection');
+  return 'PASS bulk selection across all pages, draft preservation, point independence, local row updates, hidden-page save and viewer permissions';
+}

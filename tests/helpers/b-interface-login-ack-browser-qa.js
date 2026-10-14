@@ -1,0 +1,42 @@
+async (page) => {
+  await page.setExtraHTTPHeaders({});
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.goto('http://127.0.0.1:3037/proto-conv/index.html');
+  await page.evaluate(() => fetch('/fixture/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ count: 2, points: 2 }) }));
+  await page.getByRole('button', { name: 'B接口转发', exact: true }).click();
+  await page.locator('#biField-suId').fill('AABBCCDDEEFF');
+  await page.locator('#biCopyLoginAck').click();
+  await page.getByRole('alert').filter({ hasText: '已复制完整 LOGIN_ACK' }).waitFor();
+  let xml = await page.locator('#biLoginAckXml').inputValue();
+  if (!xml.includes('<SUId>001122AABBCC</SUId>') || xml.includes('AABBCCDDEEFF') || !xml.includes('<Name>LOGIN_ACK</Name>') || !xml.includes('<RightLevel>1</RightLevel>')) throw new Error('Incorrect saved-config ACK');
+  if ((await page.evaluate(() => navigator.clipboard.readText())).replace(/\r\n/g, '\n') !== xml) throw new Error('Clipboard missed complete response');
+  await page.getByText('SOAP 与运行参数（按上级平台 WSDL 核对）', { exact: true }).click();
+  await page.locator('[id="biField-soap.version"]').selectOption('1.2');
+  await page.locator('[id="biField-soap.method"]').fill('exchange');
+  await page.locator('[id="biField-soap.result"]').fill('resultXml');
+  await page.locator('#biSave').click(); await page.getByRole('alert').filter({ hasText: '配置已保存' }).waitFor();
+  if (await page.locator('#biLoginAckXml').inputValue() !== '') throw new Error('Stale ACK after config save');
+  await page.locator('#biCopyLoginAck').click(); await page.getByRole('alert').filter({ hasText: '已复制完整 LOGIN_ACK' }).waitFor();
+  xml = await page.locator('#biLoginAckXml').inputValue();
+  if (!xml.includes('<SUId>AABBCCDDEEFF</SUId>') || !xml.includes('2003/05/soap-envelope') || !xml.includes('<b:exchangeResponse>') || !xml.includes('<resultXml><![CDATA[')) throw new Error('Updated SOAP configuration not applied');
+  await page.locator('.bi-wsdl').scrollIntoViewIfNeeded(); await page.screenshot({ path: 'output/playwright/b-interface-login-ack-desktop.png' });
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
+    window.mockCopyCalls = 0; document.execCommand = name => { if (name === 'copy') window.mockCopyCalls++; return false; };
+  });
+  await page.locator('#biCopyLoginAck').click(); await page.getByRole('alert').filter({ hasText: '请按 Ctrl+C 复制' }).waitFor();
+  if (!await page.locator('#biLoginAckXml').evaluate(el => document.activeElement === el && el.selectionStart === 0 && el.selectionEnd === el.value.length && window.mockCopyCalls === 1)) throw new Error('Manual copy fallback incomplete');
+  await page.locator('#biField-suId').fill(''); await page.locator('#biSave').click(); await page.getByRole('alert').filter({ hasText: '配置已保存' }).waitFor();
+  await page.locator('#biCopyLoginAck').click(); await page.getByRole('alert').filter({ hasText: '请先填写并保存' }).waitFor();
+  if (await page.locator('#biLoginAckXml').inputValue() !== '') throw new Error('Invalid identity retained stale ACK');
+  await page.locator('#biField-suId').fill('AABBCCDDEEFF'); await page.locator('#biSave').click(); await page.getByRole('alert').filter({ hasText: '配置已保存' }).waitFor();
+  await page.setExtraHTTPHeaders({ 'X-Fixture-Role': 'viewer' }); await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: 'B接口转发', exact: true }).click(); await page.getByRole('alert').filter({ hasText: '只读' }).waitFor();
+  if (!await page.locator('#biCopyLoginAck').isEnabled() || await page.locator('#biSave').isEnabled()) throw new Error('Viewer permissions wrong');
+  await page.locator('#biCopyLoginAck').click(); await page.getByRole('alert').filter({ hasText: '请按 Ctrl+C 复制' }).waitFor();
+  await page.setViewportSize({ width: 390, height: 844 }); await page.locator('#biCopyLoginAck').scrollIntoViewIfNeeded();
+  const box = await page.locator('#biCopyLoginAck').boundingBox();
+  if (!box || box.x < 0 || box.x + box.width > 390) throw new Error('Mobile copy button overflows');
+  await page.screenshot({ path: 'output/playwright/b-interface-login-ack-mobile.png' });
+  return 'PASS LOGIN_ACK clipboard, manual-copy fallback, saved identity/bindings, empty-ID/stale guard, viewer and mobile';
+}

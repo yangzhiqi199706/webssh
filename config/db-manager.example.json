@@ -37,6 +37,25 @@
       "systemdUnit": "DmServiceDMSERVER.service",
       "dockerCli": "/home/dmdba/dmdbms/bin/disql",
       "dockerDump": "/home/dmdba/dmdbms/bin/dexp"
+    },
+    "kingbase": {
+      "enabled": true,
+      "host": "",
+      "port": 54321,
+      "username": "dcim",
+      "password": "",
+      "database": "dcim",
+      "schema": "public",
+      "systemdUnit": "kingbase.service",
+      "binDir": "/opt/Kingbase/ES/V8/KESRealPro/V008R006C008B0020/Server/bin",
+      "containerPort": 54321,
+      "container": "",
+      "ssh": {
+        "host": "",
+        "port": 22,
+        "username": "root",
+        "password": ""
+      }
     }
   }
 }

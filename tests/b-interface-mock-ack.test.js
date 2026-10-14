@@ -1,0 +1,27 @@
+'use strict';
+const assert = require('assert'), fs = require('fs'), path = require('path');
+const { defaults } = require('../proto-conv/b-interface-forwarder');
+const mock = require('../proto-conv/b-interface-mock-ack');
+const cfg = JSON.parse(JSON.stringify(defaults));
+cfg.userName = 'DO_NOT_EXPORT_USER'; cfg.password = 'DO_NOT_EXPORT_PASSWORD'; cfg.devices = [{ deviceName: 'PRIVATE_DEVICE' }];
+let result = mock.generate(cfg);
+assert.strictEqual(result.responseBody, '${bAckEnvelope}');
+assert.ok(result.script.includes('SEND_HISALARM')); assert.ok(result.script.includes("'605'")); assert.ok(result.script.includes("'603'"));
+assert.ok(result.script.includes('RightLevel')); assert.ok(result.script.includes('Result'));
+assert.ok(!JSON.stringify(result).includes('DO_NOT_EXPORT') && !JSON.stringify(result).includes('PRIVATE_DEVICE'));
+assert.ok(result.script.includes('2097152')); assert.ok(result.script.includes('DOCTYPE') && result.script.includes('ENTITY'));
+assert.ok(result.script.includes('requestContext.bAckEnvelope'));
+const custom = Object.assign({}, cfg, { soap: { version: '1.2', namespace: "urn:test:quote'\\path:${danger}&x", method: 'exchange', parameter: 'requestXml', result: 'responseXml', action: '' } });
+const customResult = mock.generate(custom);
+assert.ok(customResult.script.includes('exchange')); assert.ok(customResult.script.includes('requestXml')); assert.ok(customResult.script.includes('responseXml'));
+assert.ok(customResult.script.includes('2003/05/soap-envelope')); assert.ok(customResult.script.includes('s:Reason'));
+assert.throws(() => mock.generate({ soap: Object.assign({}, cfg.soap, { method: "invoke');boom()" }) }), /SOAP/);
+assert.throws(() => mock.generate({ soap: Object.assign({}, cfg.soap, { version: '2.0' }) }), /SOAP/);
+assert.throws(() => mock.generate({ soap: Object.assign({}, cfg.soap, { namespace: 'urn:test\nline' }) }), /SOAP/);
+assert.throws(() => mock.generate({}), /SOAP/);
+const directory = path.join(__dirname,'..','tmp','b-interface','mock-ack-generated'); fs.mkdirSync(directory,{recursive:true});
+[ ['default',cfg], ['custom',custom], ['escaped',Object.assign({},custom,{soap:Object.assign({},custom.soap,{namespace:"urn:test:'\"\\${danger}"})})] ].forEach(([name,config]) => {
+  fs.writeFileSync(path.join(directory,name+'.groovy'),mock.generate(config).script);
+  fs.writeFileSync(path.join(directory,name+'.json'),JSON.stringify(config.soap));
+});
+console.log('PASS mock ACK generator: saved SOAP bindings, four message kinds, secret isolation, guards, safe literal output');

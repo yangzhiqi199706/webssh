@@ -1,3 +1,4 @@
+const containerFiles = require('./lib/container-files');
 const express = require('express');
 const fs = require('fs');
 const http = require('http');
@@ -12,8 +13,13 @@ const opsSettings = require('./lib/ops-settings');
 const { rotateLogs } = require('./lib/log-rotation');
 const { createIdleTimer } = require('./lib/ssh-idle-timer');
 const { createServiceOverview } = require('./lib/service-overview');
+const smsMonitorState = require('./lib/sms-monitor-state');
+const { createDockerScheduledRestart } = require('./lib/docker-scheduled-restart');
 const { spawn } = require('child_process');
 const httpProxy = require('http-proxy');
+const serialBridge = require('./serial/bridge-manager');
+const serialAutoStart = require('./serial/auto-start');
+const dcimSettings = require('./lib/dcim-settings');
 
 const runSshCommand = createSshCommandRunner(Client);
 
@@ -627,6 +633,11 @@ const serviceOverview = createServiceOverview({
   retentionMs: 7 * 24 * 60 * 60 * 1000,
 });
 const AUTH_USER = accessControl.USERNAME;
+const SERIAL_BRIDGE_CONFIG_PATH = process.env.SERIAL_BRIDGE_CONFIG
+  || path.join(__dirname, 'config', 'serial-bridge.json');
+const serialBridgeManager = new serialBridge.SerialBridgeManager({
+  config: serialBridge.loadSerialBridgeConfig(SERIAL_BRIDGE_CONFIG_PATH, fs), fs: fs, net: net, spawn: spawn,
+});
 const authTokens = new Map(); // token -> expireAtMs
 const sshIdleSessionReconfigurers = new Set();
 
@@ -1056,6 +1067,8 @@ function requireSettingsAuth(req, res) {
   return false;
 }
 
+dcimSettings.register(app, { configDir: CONFIG_DIR, runSsh: runSshCommand, requireAccount: requireAccount });
+
 function publicOpsState() {
   return currentOpsSettings;
 }
@@ -1223,6 +1236,11 @@ app.get('/login', function (_req, res) {
   res.sendFile(require('path').join(__dirname, 'login.html'));
 });
 
+// 配置目录只供服务端读取，不能被 express.static 直接下载（其中可能含数据库密码）。
+app.use('/config', function (_req, res) {
+  res.status(404).send('Not Found');
+});
+
 // 拦截浏览器对主页的访问：未登录就跳到 /login
 // 注意只拦 GET 的 / 和 /index.html，其他 API/WS/静态资源都不动
 app.get(['/', '/index.html'], function (req, res, next) {
@@ -1236,79 +1254,175 @@ app.get('/health', function (_req, res) {
   res.json({ ok: true });
 });
 
-// 列出服务器上可用的串口设备（/dev/ttyS* 和 /dev/ttyUSB*、/dev/ttyACM*）
-// ?probe=1 时会真正尝试 open() 每个端口，分辨"物理存在"和"虚拟幽灵"
-app.get('/api/serial/ports', function (req, res) {
-  const doProbe = String(req.query.probe || '') === '1';
-  const candidates = [];
-  function collect(prefix) {
-    try {
-      const entries = fs.readdirSync('/dev');
-      entries.forEach(function (name) {
-        if (name.indexOf(prefix) === 0) {
-          candidates.push('/dev/' + name);
-        }
-      });
-    } catch (_err) {}
-  }
-  collect('ttyS');
-  collect('ttyUSB');
-  collect('ttyACM');
-  candidates.sort(function (a, b) {
-    const re = /^(.*?)(\d+)$/;
-    const ma = re.exec(a);
-    const mb = re.exec(b);
-    if (ma && mb && ma[1] === mb[1]) return Number(ma[2]) - Number(mb[2]);
-    return a.localeCompare(b);
-  });
-
-  // 读 /proc/tty/driver/serial 获取 ttyS* 的 UART 类型（unknown 表示端口号存在但未接物理 UART）
-  const uartTypes = {};
+// 驱动访问隔离到子进程，避免异常串口阻塞整个 Web 服务。
+const scanSerialPorts = require('./serial/port-scanner').createScanner({ locks: serialLocks });
+app.get('/api/serial/ports', async function (req, res) {
   try {
-    const raw = fs.readFileSync('/proc/tty/driver/serial', 'utf8');
-    raw.split('\n').forEach(function (line) {
-      const m = /^\s*(\d+):\s+uart:(\S+)/.exec(line);
-      if (m) uartTypes['/dev/ttyS' + m[1]] = m[2];
-    });
-  } catch (_err) {}
-
-  function probeOpenable(devPath) {
-    // 非阻塞打开一次，成功就返回 true；失败记原因
-    try {
-      const fd = fs.openSync(devPath, fs.constants.O_RDWR | fs.constants.O_NOCTTY | fs.constants.O_NONBLOCK);
-      fs.closeSync(fd);
-      return { openable: true };
-    } catch (err) {
-      return { openable: false, reason: err.code || err.message };
-    }
+    res.json(await scanSerialPorts(String(req.query.probe || '') === '1'));
+  } catch (err) {
+    console.error('[serial-scan]', err.message);
+    res.status(err.status || 500).json({ ok: false, message: err.message });
   }
+});
 
-  const ports = candidates.map(function (p) {
-    const busy = serialLocks.has(p);
-    const uart = uartTypes[p] || null; // 只有 ttyS* 会有
-    const entry = {
-      path: p,
-      busy: busy,
-      uartType: uart,               // 如 '16550A'、'unknown'、null（非 ttyS 或读取失败）
-      kind: p.indexOf('/dev/ttyUSB') === 0 ? 'usb'
-          : p.indexOf('/dev/ttyACM') === 0 ? 'acm'
-          : 'builtin',
-    };
-    if (doProbe && !busy) {
-      // probe 只对当前未占用的端口做，避免打扰正在通信的端口
-      const r = probeOpenable(p);
-      entry.openable = r.openable;
-      if (!r.openable) entry.probeError = r.reason;
-    }
-    // ttyS* 且 uart=unknown 直接标记为物理不存在（无需 probe 也能判断）
-    if (uart && uart.toLowerCase() === 'unknown') {
-      entry.openable = false;
-      if (!entry.probeError) entry.probeError = 'uart unknown';
-    }
-    return entry;
+// ===================== 串口转网口（DTU）=====================
+function serialBridgePortById(id) {
+  return serialBridgeManager.getConfig().ports.find(function (item) { return item.id === Number(id); });
+}
+
+function reconcileSerialBridgeLocks() {
+  const statuses = serialBridgeManager.getStatus();
+  serialLocks.forEach(function (lock, devicePath) {
+    if (!lock || lock.type !== 'serial-bridge') return;
+    const status = statuses.find(function (item) { return item.id === lock.id; });
+    if (!status || (status.state !== 'running' && status.state !== 'starting')) serialLocks.delete(devicePath);
   });
+}
 
-  res.json({ ports: ports, probed: doProbe });
+async function startSerialBridge(id) {
+  const portConfig = serialBridgePortById(id);
+  if (!portConfig) throw new Error('串口配置不存在');
+  reconcileSerialBridgeLocks();
+  const existing = serialBridgeManager.getStatus().find(function (item) { return item.id === portConfig.id; });
+  if (existing && (existing.state === 'running' || existing.state === 'starting')) {
+    return Object.assign({}, existing, { action: 'already-running' });
+  }
+  if (serialLocks.has(portConfig.devicePath)) throw new Error(portConfig.devicePath + ' 正被串口调试或转发任务占用');
+  const lock = { since: Date.now(), type: 'serial-bridge', id: portConfig.id };
+  serialLocks.set(portConfig.devicePath, lock);
+  try {
+    const status = await serialBridgeManager.start(portConfig.id);
+    return Object.assign({}, status, { action: 'started' });
+  } catch (error) {
+    if (serialLocks.get(portConfig.devicePath) === lock) serialLocks.delete(portConfig.devicePath);
+    throw error;
+  }
+}
+
+async function stopSerialBridge(id) {
+  const portConfig = serialBridgePortById(id);
+  const lock = portConfig && serialLocks.get(portConfig.devicePath);
+  await serialBridgeManager.stop(id);
+  if (portConfig && lock && lock.type === 'serial-bridge' && lock.id === Number(id)
+    && serialLocks.get(portConfig.devicePath) === lock) serialLocks.delete(portConfig.devicePath);
+}
+
+async function stopAllSerialBridges() {
+  const configs = serialBridgeManager.getConfig().ports;
+  const locks = configs.map(function (portConfig) { return serialLocks.get(portConfig.devicePath); });
+  await serialBridgeManager.stopAll();
+  configs.forEach(function (portConfig, index) {
+    const lock = locks[index];
+    if (lock && lock.type === 'serial-bridge' && lock.id === portConfig.id
+      && serialLocks.get(portConfig.devicePath) === lock) serialLocks.delete(portConfig.devicePath);
+  });
+}
+
+function startPersistedSerialBridges() {
+  serialAutoStart.startEnabledSerialBridges({
+    getConfig: function () { return serialBridgeManager.getConfig(); },
+    startPort: startSerialBridge,
+    onRetry: function (result) {
+      console.warn('[serial-bridge] 端口' + result.id + '自启动第' + result.attempts + '/' + result.maxAttempts + '次失败：' + result.error);
+    },
+  }).then(function (results) {
+    results.forEach(function (result) {
+      if (result.action === 'disabled') return;
+      if (result.state === 'error') {
+        console.error('[serial-bridge] 端口' + result.id + '自启动失败（已尝试' + result.attempts + '次）：' + result.error);
+        return;
+      }
+      console.log('[serial-bridge] 端口' + result.id + '已按持久化配置启动（第' + result.attempts + '次）');
+    });
+  }).catch(function (error) {
+    console.error('[serial-bridge] 已启用端口自动启动异常：' + error.message);
+  });
+}
+
+function serialBridgeRuntimeConfigChanged(current, next) {
+  return ['devicePath', 'baudRate', 'dataBits', 'parity', 'stopBits', 'packetIntervalMs', 'type', 'listenPort', 'targetHost', 'targetPort']
+    .some(function (key) { return current[key] !== next[key]; });
+}
+
+app.get('/api/serial/bridge/config', function (_req, res) {
+  reconcileSerialBridgeLocks();
+  res.json({ ok: true, config: serialBridgeManager.getConfig(), status: serialBridgeManager.getStatus() });
+});
+
+app.get('/api/serial/bridge/status', function (_req, res) {
+  reconcileSerialBridgeLocks();
+  res.json({ ok: true, status: serialBridgeManager.getStatus() });
+});
+
+app.put('/api/serial/bridge/config', async function (req, res) {
+  const candidate = req.body && req.body.config ? req.body.config : req.body;
+  const checked = serialBridge.validateSerialBridgeConfig(candidate);
+  if (!checked.ok) {
+    res.status(400).json({ ok: false, message: checked.errors.join('；'), errors: checked.errors });
+    return;
+  }
+  try {
+    const currentConfig = serialBridgeManager.getConfig();
+    const runningIds = serialBridgeManager.getStatus().filter(function (item) { return item.state === 'running' || item.state === 'starting'; })
+      .map(function (item) { return item.id; });
+    const changedRunningPort = runningIds.find(function (id) {
+      const current = currentConfig.ports.find(function (port) { return port.id === id; });
+      const next = checked.config.ports.find(function (port) { return port.id === id; });
+      return current && next && serialBridgeRuntimeConfigChanged(current, next);
+    });
+    if (changedRunningPort) {
+      res.status(409).json({ ok: false, message: '串口 ' + changedRunningPort + ' 正在运行，请先停止该端口后再修改通信参数' });
+      return;
+    }
+    const saved = serialBridge.saveSerialBridgeConfig(SERIAL_BRIDGE_CONFIG_PATH, checked.config, fs, path);
+    serialBridgeManager.setConfig(saved);
+    res.json({ ok: true, config: serialBridgeManager.getConfig(), status: serialBridgeManager.getStatus() });
+  } catch (error) {
+    res.status(500).json({ ok: false, message: '保存串口转网口配置失败：' + error.message });
+  }
+});
+
+app.post('/api/serial/bridge/:id/start', async function (req, res) {
+  try {
+    const status = await startSerialBridge(req.params.id);
+    res.json({ ok: true, status: status });
+  } catch (error) {
+    res.status(400).json({ ok: false, message: '启动串口转网口失败：' + error.message });
+  }
+});
+
+app.post('/api/serial/bridge/:id/stop', async function (req, res) {
+  try {
+    await stopSerialBridge(req.params.id);
+    res.json({ ok: true, status: serialBridgeManager.getStatus().find(function (item) { return item.id === Number(req.params.id); }) });
+  } catch (error) {
+    res.status(500).json({ ok: false, message: '停止串口转网口失败：' + error.message });
+  }
+});
+
+app.post('/api/serial/bridge/start-enabled', async function (_req, res) {
+  const requestBody = _req.body || {};
+  const config = serialBridgeManager.getConfig();
+  const requestedIds = Array.isArray(requestBody.portIds)
+    ? Array.from(new Set(requestBody.portIds.map(function (id) { return Number(id); }).filter(function (id) {
+      return Number.isInteger(id) && id >= 1 && id <= config.comNum;
+    })))
+    : config.ports.slice(0, config.comNum).filter(function (port) { return port.autoStart === true; }).map(function (port) { return port.id; });
+  const results = [];
+  for (const id of requestedIds) {
+    try { results.push(await startSerialBridge(id)); }
+    catch (error) { results.push({ id: id, state: 'error', error: error.message }); }
+  }
+  res.json({ ok: true, results: results, status: serialBridgeManager.getStatus() });
+});
+
+app.post('/api/serial/bridge/stop-all', async function (_req, res) {
+  try {
+    await stopAllSerialBridges();
+    res.json({ ok: true, status: serialBridgeManager.getStatus() });
+  } catch (error) {
+    res.status(500).json({ ok: false, message: '停止全部串口转网口失败：' + error.message });
+  }
 });
 
 // ===== 大框架设置：IP 管理 =====
@@ -2216,6 +2330,9 @@ wss.on('connection', function (ws) {
   let stream = null;
   let sftp = null;
   let sshReady = false;
+  let connectionStarted = false;
+  let connectionType = 'ssh';
+  let containerName = '';
   let lifetimeTimer = null; // 连接时长上限：到期后服务端主动断开
   let connectionHours = 0;
   let idleTimer = null;
@@ -2265,6 +2382,14 @@ wss.on('connection', function (ws) {
       callback(null, sftp);
       return;
     }
+    if (connectionType === 'container') {
+      const adapter = containerFiles.createContainerFiles(ssh, containerName);
+      adapter.probe(function (err) {
+        if (!err) sftp = adapter;
+        callback(err, err ? null : adapter);
+      });
+      return;
+    }
     ssh.sftp(function (err, sftpStream) {
       if (err) {
         callback(err);
@@ -2277,7 +2402,6 @@ wss.on('connection', function (ws) {
 
   ssh.on('ready', function () {
     sshReady = true;
-    send('status', { state: 'connected' });
     reconfigureIdleTimer();
     // 连接时长上限：到期后由服务端主动断开，前端会清掉密码强制重输
     if (connectionHours > 0) {
@@ -2289,7 +2413,7 @@ wss.on('connection', function (ws) {
         try { ws.close(); } catch (_e) {}
       }, ms);
     }
-    ssh.shell({ term: 'xterm-color', cols: 120, rows: 30 }, function (err, shellStream) {
+    function onShell(err, shellStream) {
       if (err) {
         send('error', { message: err.message });
         ws.close();
@@ -2297,6 +2421,9 @@ wss.on('connection', function (ws) {
       }
 
       stream = shellStream;
+      send('status', { state: 'connected' });
+      shellStream.on('error', function (err) { send('error', { message: err.message }); ws.close(); });
+      if (shellStream.stderr) shellStream.stderr.on('data', function (data) { send('output', { data: data.toString('utf8') }); });
 
       // 背压保护：WebSocket 发送缓冲超过 4MB 时暂停 pty 流，避免 docker exec 之类瞬时大输出把内存和事件循环拖住
       const BACKPRESSURE_HIGH = 4 * 1024 * 1024;
@@ -2329,7 +2456,12 @@ wss.on('connection', function (ws) {
         send('status', { state: 'closed' });
         ws.close();
       });
-    });
+    }
+    if (connectionType === 'container') {
+      ssh.exec(containerFiles.terminalCommand(containerName), { pty: { term: 'xterm-color', cols: 120, rows: 30 } }, onShell);
+    } else {
+      ssh.shell({ term: 'xterm-color', cols: 120, rows: 30 }, onShell);
+    }
   });
 
   ssh.on('error', function (err) {
@@ -2350,6 +2482,13 @@ wss.on('connection', function (ws) {
     if (sshReady) touchIdleTimer();
 
     if (msg.type === 'connect') {
+      if (connectionStarted) { send('error', { message: '当前会话已连接，请新建连接切换目标' }); return; }
+      try {
+        connectionType = payload.connectionType || 'ssh';
+        if (connectionType !== 'ssh' && connectionType !== 'container') throw new Error('连接类型无效');
+        containerName = connectionType === 'container' ? containerFiles.validateContainer(payload.containerName) : '';
+      } catch (err) { send('error', { message: err.message }); return; }
+      connectionStarted = true;
       const cfg = {
         host: payload.host || demoConfig.host,
         port: Number(payload.port || demoConfig.port),
@@ -2386,7 +2525,7 @@ wss.on('connection', function (ws) {
         }
         send('sftp:ready', {
           requestId: payload.requestId,
-          cwd: '/var/www',
+          cwd: connectionType === 'container' ? '/' : '/var/www',
         });
       });
       return;
@@ -2788,6 +2927,7 @@ wss.on('connection', function (ws) {
     }
 
     if (msg.type === 'snmp:deploy') {
+      if (connectionType === 'container') { send('snmp:done', { requestId: payload.requestId, ok: false, message: '容器连接不支持宿主机 SNMP 部署，请使用 SSH 主机连接' }); return; }
       runSnmpDeploy(payload || {}, send, ssh, ensureSftp, sshReady);
       return;
     }
@@ -2818,6 +2958,7 @@ wss.on('connection', function (ws) {
   ws.on('close', function () {
     clearIdleTimer();
     sshIdleSessionReconfigurers.delete(reconfigureIdleTimer);
+    if (lifetimeTimer) clearTimeout(lifetimeTimer);
     sftp = null;
     sshReady = false;
     try {
@@ -2841,7 +2982,7 @@ wss.on('connection', function (ws) {
 
 function isValidDevicePath(p) {
   // 只允许打开 /dev/ttyS* 、/dev/ttyUSB* 、/dev/ttyACM*
-  return typeof p === 'string' && /^\/dev\/tty(S|USB|ACM)\d+$/.test(p);
+  return typeof p === 'string' && /^\/dev\/tty(?:S|USB|ACM|XRUSB|O)\d+$/.test(p);
 }
 
 function normalizeBaud(b) {
@@ -2888,6 +3029,7 @@ wssSerial.on('connection', function (ws) {
   let deviceStream = null;   // fs.ReadStream + .write
   let writeStream = null;
   let currentPath = null;
+  let deviceLock = null;
 
   function send(type, payload) {
     if (ws.readyState !== WebSocket.OPEN) return;
@@ -2900,9 +3042,10 @@ wssSerial.on('connection', function (ws) {
 
   function closeDevice(reason) {
     if (currentPath) {
-      serialLocks.delete(currentPath);
+      if (serialLocks.get(currentPath) === deviceLock) serialLocks.delete(currentPath);
       currentPath = null;
     }
+    deviceLock = null;
     try { if (deviceStream) deviceStream.destroy(); } catch (_err) {}
     try { if (writeStream) writeStream.end(); } catch (_err) {}
     deviceStream = null;
@@ -2921,7 +3064,8 @@ wssSerial.on('connection', function (ws) {
         send('error', { message: '无效的设备路径：' + devPath });
         return;
       }
-      if (serialLocks.has(devPath)) {
+      reconcileSerialBridgeLocks();
+      if (serialLocks.has(devPath) || currentPath) {
         send('error', { message: devPath + ' 正被其他会话占用' });
         return;
       }
@@ -2931,7 +3075,12 @@ wssSerial.on('connection', function (ws) {
       }
 
       // 先用 stty 配置，再打开文件描述符
+      const lock = { since: Date.now(), type: 'serial-debug' };
+      currentPath = devPath;
+      deviceLock = lock;
+      serialLocks.set(devPath, lock);
       runStty(devPath, payload).then(function () {
+        if (deviceLock !== lock || ws.readyState !== WebSocket.OPEN) return;
         try {
           deviceStream = fs.createReadStream(devPath, { highWaterMark: 4096 });
           writeStream = fs.createWriteStream(devPath, { flags: 'r+' });
@@ -2941,16 +3090,17 @@ wssSerial.on('connection', function (ws) {
           return;
         }
         currentPath = devPath;
-        serialLocks.set(devPath, { since: Date.now() });
 
         deviceStream.on('data', function (chunk) {
           send('output', { data: chunk.toString('base64'), encoding: 'base64' });
         });
         deviceStream.on('error', function (err) {
+          if (deviceLock !== lock) return;
           send('error', { message: '串口读取错误：' + err.message });
           closeDevice('read-error');
         });
         deviceStream.on('close', function () {
+          if (deviceLock !== lock) return;
           closeDevice('device-closed');
         });
         writeStream.on('error', function (err) {
@@ -2963,6 +3113,8 @@ wssSerial.on('connection', function (ws) {
           baudRate: normalizeBaud(payload.baudRate || 115200),
         });
       }).catch(function (err) {
+        if (deviceLock !== lock) return;
+        closeDevice('open-failed');
         send('error', { message: err.message });
       });
       return;
@@ -3350,6 +3502,85 @@ wssTcp.on('connection', function (ws) {
   appendLog(`服务启动，enabled=${config.enabled} countdown=${config.countdownSec}s`);
 })();
 
+// ===== Docker 定时重启模块 =====
+// 与“开机后自动重启 docker”保持独立：启用后按分钟循环，成功后自动进入下一轮，失败后暂停。
+(function setupDockerScheduledRestart() {
+  const DEFAULT_CONFIG_PATH = path.join(__dirname, '..', 'config', 'docker-scheduled-restart.json');
+  const CONFIG_PATH = process.env.DOCKER_SCHEDULED_RESTART_CONFIG || DEFAULT_CONFIG_PATH;
+  const LOG_PATH = process.env.DOCKER_SCHEDULED_RESTART_LOG
+    || path.join(__dirname, '..', 'logs', 'docker-scheduled-restart.log');
+
+  function readConfig() {
+    try { return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')); } catch (_error) { return {}; }
+  }
+
+  function saveConfig(next) {
+    try {
+      fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
+      fs.writeFileSync(CONFIG_PATH, JSON.stringify(next, null, 2) + '\n', 'utf8');
+    } catch (error) {
+      console.error('[docker-scheduled-restart] 写配置失败:', error.message);
+    }
+  }
+
+  function appendLog(line) {
+    try {
+      fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true });
+      fs.appendFileSync(LOG_PATH, '[' + new Date().toISOString() + '] ' + line + '\n', 'utf8');
+    } catch (_error) {}
+  }
+
+  const scheduler = createDockerScheduledRestart({
+    loadConfig: readConfig,
+    saveConfig: saveConfig,
+    appendLog: appendLog,
+    spawn: spawn,
+    beforeRestart: function (reason) {
+      if (typeof global.__smsDbPrepareForRestart === 'function') {
+        try { global.__smsDbPrepareForRestart(reason); } catch (_error) {}
+      }
+    },
+    afterRestart: function (reason) {
+      if (typeof global.__smsDbRecover === 'function') {
+        try { global.__smsDbRecover(reason); } catch (_error) {}
+      }
+    },
+  });
+
+  app.get('/api/docker-scheduled-restart/config', function (_req, res) {
+    res.json(scheduler.getState());
+  });
+
+  app.put('/api/docker-scheduled-restart/config', function (req, res) {
+    const body = req.body || {};
+    if (body.intervalMinutes !== undefined) {
+      const value = Number(body.intervalMinutes);
+      if (!Number.isFinite(value) || value < 1 || value > 10080 || Math.floor(value) !== value) {
+        return res.status(400).json({ ok: false, message: '定时重启间隔必须是 1-10080 分钟之间的整数' });
+      }
+    }
+    return res.json(scheduler.updateConfig(body));
+  });
+
+  app.post('/api/docker-scheduled-restart/cancel', function (_req, res) {
+    res.json(scheduler.cancel('user-cancel'));
+  });
+
+  app.post('/api/docker-scheduled-restart/restart-countdown', function (_req, res) {
+    res.json(scheduler.restartCountdown());
+  });
+
+  app.post('/api/docker-scheduled-restart/trigger', function (_req, res) {
+    scheduler.trigger().then(function (result) {
+      res.json(Object.assign({}, scheduler.getState(), { result: result }));
+    });
+  });
+
+  scheduler.load();
+  appendLog('服务启动，enabled=' + scheduler.getState().enabled
+    + ' intervalMinutes=' + scheduler.getState().intervalMinutes);
+})();
+
 // ===== 信创短信猫 - 数据库连接模块 =====
 // 目的：给"短信猫"功能提供一条可配置、可持久化、可开机自启的 MySQL 连接
 (function setupSmsDb() {
@@ -3515,11 +3746,13 @@ wssTcp.on('connection', function (ws) {
     }
   }
 
-  app.get('/api/sms/db/status', function (_req, res) {
+  app.get('/api/sms/db/status', function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     res.json(publicStatus());
   });
 
   app.post('/api/sms/db/connect', async function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     const body = req.body || {};
     const host = String(body.host || '').trim() || defaults.host;
     const port = Number(body.port) || defaults.port;
@@ -3556,7 +3789,8 @@ wssTcp.on('connection', function (ws) {
     }
   });
 
-  app.post('/api/sms/db/disconnect', async function (_req, res) {
+  app.post('/api/sms/db/disconnect', async function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     stopAutoRetry('手动断开');
     await closePool('manual-disconnect');
     cfg.autoStart = false;
@@ -5638,6 +5872,8 @@ wssTcp.on('connection', function (ws) {
   const MAX_PENDING_SEC_MODE0 = 120; // NotifyModeID=0 路径默认上限（更宽容）
   const MIN_PENDING_SEC = 5;
   const MAX_PENDING_SEC_LIMIT = 600;
+  const MAX_PENDING_ALARMS = 1000;
+  const PENDING_QUERY_BATCH = 200;
 
   const defaults = {
     enabled: true,
@@ -5654,8 +5890,11 @@ wssTcp.on('connection', function (ws) {
   let nextClientId = 1;
   // 等待 TextMessage 填充的新告警：Map<id, { firstSeenMs, row }>
   let pendingAlarms = new Map();
-  // 告警解除：按 CancelTime 增量，不看 id（同一条 id 被 UPDATE）
-  let lastCancelMs = 0;        // 时间戳毫秒，作为游标
+  // 告警解除：使用 CancelTime + id 复合游标，避免同一秒多条记录漏报
+  const cancelCursor = smsMonitorState.createCancelCursor(0, 0);
+  let lastCancelMs = 0;        // 兼容状态展示：时间戳毫秒
+  let lastCancelId = 0;        // 同一秒内的 id 游标
+  let monitorInitialized = false;
   let cancelBuffer = [];       // [{ clientId, row }]
   let nextCancelClientId = 1;
   let totalCancelled = 0;
@@ -5737,12 +5976,20 @@ wssTcp.on('connection', function (ws) {
     try {
       const [rows] = await pool.query('SELECT COALESCE(MAX(id),0) AS maxId FROM `' + TABLE + '`');
       lastSeenId = Number(rows[0] && rows[0].maxId) || 0;
-      // 同时把 CancelTime 游标对齐到当前最大值，避免首次把历史解除全部当成新事件
-      const [c] = await pool.query('SELECT MAX(CancelTime) AS maxT FROM `' + TABLE + '` WHERE CancelTime IS NOT NULL');
+      // 同时把复合游标对齐到当前最新解除记录，避免首次把历史解除全部当成新事件
+      const [c] = await pool.query(
+        'SELECT CancelTime AS maxT, id AS maxId FROM `' + TABLE + '`'
+          + ' WHERE CancelTime IS NOT NULL ORDER BY CancelTime DESC, id DESC LIMIT 1'
+      );
       const maxT = c[0] && c[0].maxT;
+      const maxId = Number(c[0] && c[0].maxId) || 0;
       lastCancelMs = maxT ? new Date(maxT).getTime() : 0;
-      appendLog(`初始化 lastSeenId=${lastSeenId} lastCancelMs=${lastCancelMs}`);
+      lastCancelId = maxId;
+      cancelCursor.update(lastCancelMs, lastCancelId);
+      monitorInitialized = true;
+      appendLog(`初始化 lastSeenId=${lastSeenId} lastCancelMs=${lastCancelMs} lastCancelId=${lastCancelId}`);
     } catch (err) {
+      monitorInitialized = false;
       lastError = err.message;
       appendLog(`初始化失败：${err.message}`);
       if (isConnectionError(err) && typeof global.__smsDbMarkBroken === 'function') {
@@ -5757,7 +6004,7 @@ wssTcp.on('connection', function (ws) {
     if (!pool) { lastError = '数据库未连接'; return; }
     polling = true;
     try {
-      if (lastSeenId === 0 && lastCancelMs === 0) await initLastSeenId();
+      if (!monitorInitialized) await initLastSeenId();
 
       // 1) 新告警：id > lastSeenId，但 TextMessage 可能稍后由其它进程填充，
       //    所以 TextMessage 为空时先入 pending，等下次轮询再查。
@@ -5774,7 +6021,17 @@ wssTcp.on('connection', function (ws) {
             alarmBuffer.push({ clientId: nextClientId++, row });
             notifyAlarmListeners(row);
           } else {
-            pendingAlarms.set(Number(row.id), { firstSeenMs: nowMs, row });
+            smsMonitorState.pushPendingWithLimit(
+              pendingAlarms,
+              row,
+              nowMs,
+              MAX_PENDING_ALARMS,
+              function (flushedRow, reason) {
+                alarmBuffer.push({ clientId: nextClientId++, row: flushedRow });
+                notifyAlarmListeners(flushedRow);
+                appendLog(`pending 队列达到上限，id=${flushedRow.id} 已兜底放行（${reason}）`);
+              }
+            );
           }
           if (Number(row.id) > lastSeenId) lastSeenId = Number(row.id);
         }
@@ -5786,13 +6043,16 @@ wssTcp.on('connection', function (ws) {
       // 超时阈值按当前 pending 行的 NotifyModeID 决定：>0 走 maxPendingSec，=0 走 maxPendingSecMode0
       if (pendingAlarms.size) {
         const ids = Array.from(pendingAlarms.keys());
-        const placeholders = ids.map(function () { return '?'; }).join(',');
-        const [fresh] = await pool.query(
-          'SELECT * FROM `' + TABLE + '` WHERE id IN (' + placeholders + ')',
-          ids
-        );
         const byId = new Map();
-        (fresh || []).forEach(function (r) { byId.set(Number(r.id), r); });
+        const batches = smsMonitorState.chunk(ids, PENDING_QUERY_BATCH);
+        for (const batch of batches) {
+          const placeholders = batch.map(function () { return '?'; }).join(',');
+          const [fresh] = await pool.query(
+            'SELECT * FROM `' + TABLE + '` WHERE id IN (' + placeholders + ')',
+            batch
+          );
+          (fresh || []).forEach(function (r) { byId.set(Number(r.id), r); });
+        }
         const nowMs = Date.now();
         for (const id of ids) {
           const p = pendingAlarms.get(id);
@@ -5817,20 +6077,17 @@ wssTcp.on('connection', function (ws) {
         alarmBuffer = alarmBuffer.slice(-cfg.bufferSize);
       }
 
-      // 2) 告警解除：CancelTime > lastCancelMs
-      const cursorDate = lastCancelMs > 0 ? new Date(lastCancelMs) : new Date(0);
-      const [cancels] = await pool.query(
-        'SELECT * FROM `' + TABLE + '` WHERE CancelTime IS NOT NULL AND CancelTime > ? ORDER BY CancelTime ASC LIMIT 200',
-        [cursorDate]
-      );
+      // 2) 告警解除：使用 CancelTime + id 复合游标，确保同一秒内的多条解除不漏报
+      const cancelQuery = smsMonitorState.buildCancelQuery(TABLE, cancelCursor, 200);
+      const [cancels] = await pool.query(cancelQuery.sql, cancelQuery.params);
       if (cancels && cancels.length) {
         for (const row of cancels) {
-          const t = row.CancelTime ? new Date(row.CancelTime).getTime() : 0;
-          // 防御：游标相等时跳过（mysql2 的 > 已能排除相等，这里多一层保险）
-          if (t && t <= lastCancelMs) continue;
+          if (!smsMonitorState.acceptCancelRow(cancelCursor, row)) continue;
           cancelBuffer.push({ clientId: nextCancelClientId++, row });
           notifyCancelListeners(row);
-          if (t > lastCancelMs) lastCancelMs = t;
+          const cursor = cancelCursor.value();
+          lastCancelMs = cursor.timeMs;
+          lastCancelId = cursor.id;
         }
         if (cancelBuffer.length > cfg.bufferSize) {
           cancelBuffer = cancelBuffer.slice(-cfg.bufferSize);
@@ -5891,16 +6148,21 @@ wssTcp.on('connection', function (ws) {
       totalCancelled: totalCancelled,
       lastPollAt: lastPollAt,
       lastError: lastError,
+      lastCancelId: lastCancelId,
+      pendingLimit: MAX_PENDING_ALARMS,
+      pendingQueryBatch: PENDING_QUERY_BATCH,
       dbConnected: !!getPool(),
       table: TABLE,
     };
   }
 
-  app.get('/api/sms/monitor/config', function (_req, res) {
+  app.get('/api/sms/monitor/config', function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     res.json(publicState());
   });
 
   app.put('/api/sms/monitor/config', function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     const body = req.body || {};
     if ('enabled' in body) cfg.enabled = Boolean(body.enabled);
     if ('intervalSec' in body) cfg.intervalSec = clamp(body.intervalSec, MIN_INTERVAL, MAX_INTERVAL, cfg.intervalSec);
@@ -5914,6 +6176,7 @@ wssTcp.on('connection', function (ws) {
   });
 
   app.get('/api/sms/monitor/recent', function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     const sinceClientId = Number(req.query.sinceClientId) || 0;
     const items = alarmBuffer.filter(function (e) { return e.clientId > sinceClientId; });
     const lastClientId = alarmBuffer.length
@@ -5923,6 +6186,7 @@ wssTcp.on('connection', function (ws) {
   });
 
   app.get('/api/sms/monitor/cancels', function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     const sinceClientId = Number(req.query.sinceClientId) || 0;
     const items = cancelBuffer.filter(function (e) { return e.clientId > sinceClientId; });
     const lastClientId = cancelBuffer.length
@@ -5932,6 +6196,7 @@ wssTcp.on('connection', function (ws) {
   });
 
   app.post('/api/sms/monitor/clear', function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     const scope = String((req.query && req.query.scope) || 'all');
     if (scope === 'all' || scope === 'alarms') alarmBuffer = [];
     if (scope === 'all' || scope === 'cancels') cancelBuffer = [];
@@ -6724,11 +6989,13 @@ wssTcp.on('connection', function (ws) {
   }
 
   // ===== HTTP 接口 =====
-  app.get('/api/sms/push/config', function (_req, res) {
+  app.get('/api/sms/push/config', function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     res.json(publicState());
   });
 
   app.put('/api/sms/push/config', function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     const body = req.body || {};
     // 允许 PUT 同时切换品牌：body.brand 指定要修改的品牌 key（默认改激活品牌）
     const targetKey = body.brand && DRIVERS[body.brand] ? body.brand : cfgRoot.brand;
@@ -6767,13 +7034,15 @@ wssTcp.on('connection', function (ws) {
   });
 
   // 列出全部支持的品牌（含 capabilities，前端做能力开关）
-  app.get('/api/sms/push/brands', function (_req, res) {
+  app.get('/api/sms/push/brands', function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     res.json({ ok: true, brand: cfgRoot.brand, brands: listBrands() });
   });
 
   // 切换激活品牌：参数已并存，不强制关闭其他品牌的 enabled。
   // 互斥仍由 PUT 接口 + readCfg 启动时保证：任何时候真正发送的只可能是 cfgRoot.brand 这一个。
   app.post('/api/sms/push/brand', function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     const body = req.body || {};
     const want = String(body.brand || '');
     if (!DRIVERS[want]) return res.status(400).json({ ok: false, message: '未知品牌：' + want });
@@ -6785,7 +7054,8 @@ wssTcp.on('connection', function (ws) {
   });
 
   // 列出 dcim-person（前端"收件人"按钮的只读视图，仅供查看，不再用于推送配置）
-  app.get('/api/sms/push/persons', async function (_req, res) {
+  app.get('/api/sms/push/persons', async function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     try {
       const list = await listPersons();
       res.json({
@@ -6802,6 +7072,7 @@ wssTcp.on('connection', function (ws) {
   // 调试接口：给一个 NotifyModeID，返回 alarmnotifymode 行 + 解析出的 person 列表，
   // 前端"收件人"弹窗里可以输入 modeId 直观验证联表是否正确
   app.get('/api/sms/push/resolve-mode', async function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     const id = Number(req.query && req.query.id);
     try {
       const resolved = await resolveByNotifyMode(id);
@@ -6813,6 +7084,7 @@ wssTcp.on('connection', function (ws) {
   });
 
   app.post('/api/sms/push/send', async function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     const body = req.body || {};
     try {
       const entry = await sendOne({
@@ -6831,6 +7103,7 @@ wssTcp.on('connection', function (ws) {
   });
 
   app.get('/api/sms/push/history', function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     const limit = clamp(req.query.limit, 1, MAX_HISTORY, 100);
     res.json({
       state: publicState(),
@@ -6839,6 +7112,7 @@ wssTcp.on('connection', function (ws) {
   });
 
   app.post('/api/sms/push/refresh-results', async function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     const body = req.body || {};
     try {
       const r = await refreshResults(Array.isArray(body.ids) ? body.ids : null);
@@ -6849,7 +7123,8 @@ wssTcp.on('connection', function (ws) {
     }
   });
 
-  app.get('/api/sms/push/sim-status', async function (_req, res) {
+  app.get('/api/sms/push/sim-status', async function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     try {
       const resp = await callSimStatus();
       const json = parseJsonSafe(resp.body);
@@ -6865,7 +7140,8 @@ wssTcp.on('connection', function (ws) {
     }
   });
 
-  app.post('/api/sms/push/clear-history', function (_req, res) {
+  app.post('/api/sms/push/clear-history', function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     history = [];
     res.json(publicState());
   });
@@ -7358,7 +7634,8 @@ wssTcp.on('connection', function (ws) {
 
   // ===== HTTP 接口 =====
   // GET：返回 dcim-alarmparam 当前快照 + 调度状态 + 4 项预检明细 + 下次预计触发时间
-  app.get('/api/sms/scheduled/config', async function (_req, res) {
+  app.get('/api/sms/scheduled/config', async function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     try {
       const row = await readParam();
       const guards = await evaluateGuards(row);
@@ -7398,12 +7675,14 @@ wssTcp.on('connection', function (ws) {
   });
 
   // GET：最近 N 条调度记录（默认全量返回，按时间倒序）
-  app.get('/api/sms/scheduled/recent', function (_req, res) {
+  app.get('/api/sms/scheduled/recent', function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     res.json({ ok: true, items: recent.slice().reverse() });
   });
 
   // POST：手动触发一次（不看开关、不看小时、不看防重间隔）
-  app.post('/api/sms/scheduled/trigger', async function (_req, res) {
+  app.post('/api/sms/scheduled/trigger', async function (req, res) {
+    if (!requireSettingsAuth(req, res)) return;
     try {
       const r = await evaluateAndMaybeSend('manual', true);
       res.json({ ok: true, fired: r.fired, entry: r.entry, state: publicState() });
@@ -7903,6 +8182,58 @@ wssTcp.on('connection', function (ws) {
     getCfg: function () { return cfg; },
     appendLog: appendLog,
   };
+})();
+
+// ===== 协议转换 → 企业微信群机器人 =====
+(function setupWecomForwarder() {
+  const path = require('path');
+  const crypto = require('crypto');
+  const alarms = require('./proto-conv/wecom-alarms');
+  const Forwarder = require('./proto-conv/wecom-forwarder').Forwarder;
+  const manager = new Forwarder({
+    file: process.env.WECOM_CONFIG || path.join(__dirname, 'config', 'proto-conv-wecom.json'),
+    sourceId: function () {
+      const cfg = global.__protoConv.getCfg();
+      return crypto.createHash('sha256').update(JSON.stringify([cfg.baseUrl, cfg.userName, cfg.userLsh, cfg.pathMap])).digest('hex');
+    },
+    collect: function (config, since) { return alarms.collect(global.__protoConv, config, since); },
+    loadOptions: function (fields) { return require('./proto-conv/wecom-options').loadOptions(global.__protoConv, fields); },
+  });
+  require('./proto-conv/wecom-routes').register(app, manager, requireAccount);
+  manager.start();
+})();
+
+// ===== 协议转换 → 中国联通 B 接口数据/告警转发 =====
+(function setupBInterfaceForwarder() {
+  const crypto = require('crypto');
+  const source = require('./proto-conv/b-interface-source');
+  const Forwarder = require('./proto-conv/b-interface-forwarder').Forwarder;
+  function bSourceId() {
+    const cfg = global.__protoConv.getCfg();
+    return crypto.createHash('sha256').update(JSON.stringify([cfg.baseUrl, cfg.pathMap])).digest('hex');
+  }
+  const manager = new Forwarder({
+    file: process.env.B_INTERFACE_CONFIG || path.join(__dirname, 'config', 'proto-conv-b-interface.json'),
+    sourceId: bSourceId,
+    collect: function (cfg, since, now) { return source.collect(global.__protoConv, cfg, since, now); },
+  });
+  let alarmDefinitionsBusy = false;
+  require('./proto-conv/b-interface-routes').register(app, manager, requireAccount, {
+    sourceId: bSourceId,
+    loadDevice: function (id, group, server) { return source.loadDevice(global.__protoConv, id, group, server); },
+    loadAlarmDefinitions: async function (ids) {
+      if (alarmDefinitionsBusy) throw new Error('正在读取告警定义，请稍后重试');
+      alarmDefinitionsBusy = true;
+      try {
+        const cfg = global.__protoConv.getCfg(), sourceId = bSourceId();
+        const result = await require('./proto-conv/b-interface-alarm-db').read(cfg, ids);
+        if (bSourceId() !== sourceId) throw new Error('DCIM 数据源已变化，请重新读取告警定义');
+        return Object.assign(require('./proto-conv/b-interface-alarm-definitions').build(result), { sourceId: sourceId });
+      } finally { alarmDefinitionsBusy = false; }
+    },
+    inherited: function () { return global.__modbus && global.__modbus.getCfg ? global.__modbus.getCfg().selectedDevices || [] : []; },
+  });
+  manager.start().catch(function (e) { console.error('[b-interface]', manager.safeError(e.message)); });
 })();
 
 // ===== 协议转换 → Modbus TCP 转发 =====
@@ -11343,6 +11674,8 @@ wssTcp.on('connection', function (ws) {
 // 后续 Phase B 将追加 dcim 数据源切换（本 IIFE 预留 global.__dbMgr 接口）。
 (function setupDbManager() {
   const path = require('path');
+  const kingbaseAdapter = require('./lib/kingbase-manager');
+  const kingbaseLicense = require('./lib/kingbase-license');
   const { spawn } = require('child_process');
   const accessRules = require('./lib/opengauss-access-rules');
   const wvpUtils = require('./lib/dcim-wvp');
@@ -11360,6 +11693,7 @@ wssTcp.on('connection', function (ws) {
     ssh: { host: '192.168.0.60', port: 22, username: 'root', password: '' },
     container: 'dcim',
     databases: {
+      kingbase: kingbaseAdapter.defaults,
       mysql: {
         enabled: true, host: '192.168.0.60', port: 3333,
         username: 'root', password: '',
@@ -11431,10 +11765,47 @@ wssTcp.on('connection', function (ws) {
         mysql: redactDb(cfg.databases.mysql),
         opengauss: redactDb(cfg.databases.opengauss),
         dm: redactDb(cfg.databases.dm),
+        kingbase: kingbaseAdapter.redact(cfg.databases.kingbase),
       },
     };
   }
   readCfg();
+  const kingbaseManager = kingbaseAdapter.createManager(pgLib, () => cfg.databases.kingbase);
+  function dbRuntime(dbId) {
+    const db = cfg.databases[dbId] || {};
+    return dbId === 'kingbase'
+      ? { ssh: db.ssh && db.ssh.host ? db.ssh : cfg.ssh, container: db.container || cfg.container }
+      : { ssh: cfg.ssh, container: cfg.container };
+  }
+  const kingbaseLicenseManager = kingbaseLicense.createLicenseManager({
+    getContext: () => Object.assign({ db: cfg.databases.kingbase }, dbRuntime('kingbase')),
+    query: (sql, context) => kingbaseManager.query(sql, 1, context.db.database, undefined, context.db),
+    run: (command, context, timeoutMs) => sshRun(command, { ssh: context.ssh, timeoutMs }),
+    put: async (buffer, remotePath, context) => {
+      const tempDir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'webssh-kingbase-license-'));
+      const tempFile = path.join(tempDir, 'license.dat');
+      try {
+        fs.writeFileSync(tempFile, buffer, { mode: 0o600 });
+        await sftpUpload(tempFile, remotePath, context.ssh);
+      } finally {
+        try { fs.unlinkSync(tempFile); } catch (_e) {}
+        try { fs.rmdirSync(tempDir); } catch (_e) {}
+      }
+    },
+    log: appendLog,
+  });
+  kingbaseLicense.registerLicenseRoutes(app, {
+    manager: kingbaseLicenseManager,
+    authorize: (req, res, write) => {
+      const session = requireAccount(req, res);
+      if (!session) return false;
+      if (write && session.role !== 'admin') {
+        res.status(403).json({ ok: false, message: '仅管理员可以更换数据库授权' });
+        return false;
+      }
+      return true;
+    },
+  });
   function localStamp() {
     const d = new Date();
     const p = (n) => (n < 10 ? '0' + n : '' + n);
@@ -11473,7 +11844,7 @@ wssTcp.on('connection', function (ws) {
   // SSH -> 目标机 -> 命令
   function sshRun(cmd, options) {
     return new Promise((resolve) => {
-      const sshCfg = cfg.ssh || {};
+      const sshCfg = (options && options.ssh) || cfg.ssh || {};
       const timeoutMs = Number(options && options.timeoutMs);
       if (!sshCfg.host || !sshCfg.username || !sshCfg.password) {
         return resolve({ code: -1, stdout: '', stderr: 'SSH 未配置（host/username/password 缺失）' });
@@ -11492,7 +11863,7 @@ wssTcp.on('connection', function (ws) {
     });
   }
   // 校验 dbId 合法性（mysql / opengauss / dm）
-  function validDbId(id) { return id === 'mysql' || id === 'opengauss' || id === 'dm'; }
+  function validDbId(id) { return id === 'mysql' || id === 'opengauss' || id === 'dm' || id === 'kingbase'; }
   function getDbCfg(id) { return validDbId(id) ? cfg.databases[id] : null; }
   function buildDmConnectUrl(db) {
     db = db || {};
@@ -11544,6 +11915,7 @@ wssTcp.on('connection', function (ws) {
   }
   // 三库统一执行 SQL：返回 { columns, rows, rowCount, elapsedMs, notice? }
   async function runQuery(dbId, sql, limit) {
+    if (dbId === 'kingbase') return kingbaseManager.query(sql, limit);
     const start = Date.now();
     const cap = Math.max(1, Math.min(5000, Number(limit) || 500));
     if (dbId === 'mysql') {
@@ -11597,8 +11969,9 @@ wssTcp.on('connection', function (ws) {
   }
   async function probeServiceRunning(dbId) {
     const db = getDbCfg(dbId); if (!db) return { running: false };
-    const cmd = runInContainerCmd(cfg.container, 'systemctl is-active ' + db.systemdUnit + ' 2>/dev/null');
-    const r = await sshRun(cmd);
+    const runtime = dbRuntime(dbId);
+    const cmd = runInContainerCmd(runtime.container, 'systemctl is-active ' + shellEscape(db.systemdUnit) + ' 2>/dev/null');
+    const r = await sshRun(cmd, { ssh: runtime.ssh, timeoutMs: 6000 });
     return { running: r.stdout.trim() === 'active', raw: r.stdout.trim() || r.stderr };
   }
   function withProbeTimeout(promise, dbId) {
@@ -11673,6 +12046,10 @@ wssTcp.on('connection', function (ws) {
   }
   async function probeVersion(dbId) {
     try {
+      if (dbId === 'kingbase') {
+        const r = await kingbaseManager.query('SELECT version() AS v', 1);
+        return r.rows[0] ? r.rows[0].v : '';
+      }
       if (dbId === 'mysql') {
         const r = await runQuery('mysql', 'SELECT VERSION() AS v', 1);
         return r.rows[0] ? r.rows[0].v : '';
@@ -11691,6 +12068,10 @@ wssTcp.on('connection', function (ws) {
   }
   async function probeDbCounts(dbId) {
     try {
+      if (dbId === 'kingbase') {
+        const counts = await kingbaseManager.query("SELECT (SELECT count(*) FROM pg_database WHERE NOT datistemplate AND datallowconn) AS dbs, (SELECT count(*) FROM pg_tables WHERE schemaname NOT IN ('pg_catalog','information_schema','sys_catalog','sys','sys_hm','sysmac')) AS tbls", 1);
+        return { databases: Number(counts.rows[0].dbs), tables: Number(counts.rows[0].tbls) };
+      }
       if (dbId === 'mysql') {
         const r = await runQuery('mysql',
           "SELECT COUNT(DISTINCT table_schema) AS dbs, COUNT(*) AS tbls FROM information_schema.tables " +
@@ -11713,19 +12094,22 @@ wssTcp.on('connection', function (ws) {
     return { databases: 0, tables: 0 };
   }
   async function probeAll() {
-    const [ssh, mysqlSvc, gaussSvc, dmSvc, mysqlConn, gaussConn, dmConn] = await Promise.all([
+    const [ssh, mysqlSvc, gaussSvc, dmSvc, mysqlConn, gaussConn, dmConn, kingbaseSvc, kingbaseConn] = await Promise.all([
       probeSsh(), probeServiceRunning('mysql'),
       probeServiceRunning('opengauss'), probeServiceRunning('dm'),
       probeDbConnection('mysql'), probeDbConnection('opengauss'), probeDbConnection('dm'),
+      probeServiceRunning('kingbase'), probeDbConnection('kingbase'),
     ]);
     // 版本与统计由真实连接成功触发，不能被 systemd 的错误状态阻断。
-    const [mv, gv, dv, mc, gc, dc] = await Promise.all([
+    const [mv, gv, dv, mc, gc, dc, kv, kc] = await Promise.all([
       mysqlConn.ok ? probeOptional(() => probeVersion('mysql'), 'mysql', '') : Promise.resolve(''),
       gaussConn.ok ? probeOptional(() => probeVersion('opengauss'), 'opengauss', '') : Promise.resolve(''),
       dmConn.ok ? probeOptional(() => probeVersion('dm'), 'dm', '') : Promise.resolve(''),
       mysqlConn.ok ? probeOptional(() => probeDbCounts('mysql'), 'mysql', { databases: 0, tables: 0 }) : Promise.resolve({ databases: 0, tables: 0 }),
       gaussConn.ok ? probeOptional(() => probeDbCounts('opengauss'), 'opengauss', { databases: 0, tables: 0 }) : Promise.resolve({ databases: 0, tables: 0 }),
       dmConn.ok ? probeOptional(() => probeDbCounts('dm'), 'dm', { databases: 0, tables: 0 }) : Promise.resolve({ databases: 0, tables: 0 }),
+      kingbaseConn.ok ? probeOptional(() => probeVersion('kingbase'), 'kingbase', '') : Promise.resolve(''),
+      kingbaseConn.ok ? probeOptional(() => probeDbCounts('kingbase'), 'kingbase', { databases: 0, tables: 0 }) : Promise.resolve({ databases: 0, tables: 0 }),
     ]);
     function buildDbStatus(id, label, service, connection, version, counts) {
       const health = connection.ok ? 'online' : 'offline';
@@ -11745,6 +12129,7 @@ wssTcp.on('connection', function (ws) {
         mysql: buildDbStatus('mysql', 'MySQL', mysqlSvc, mysqlConn, mv, mc),
         opengauss: buildDbStatus('opengauss', 'openGauss', gaussSvc, gaussConn, gv, gc),
         dm: buildDbStatus('dm', '达梦 DM', dmSvc, dmConn, dv, dc),
+        kingbase: buildDbStatus('kingbase', '人大金仓', kingbaseSvc, kingbaseConn, kv, kc),
       },
     };
   }
@@ -11752,10 +12137,13 @@ wssTcp.on('connection', function (ws) {
   // 服务生命周期：docker exec <container> systemctl <action> <unit>
   async function serviceAction(dbId, action) {
     if (!['start', 'stop', 'restart', 'status'].includes(action)) throw new Error('非法 action');
+    if (dbId === 'dm' && action !== 'status' && dmKeyUploadBusy) throw new Error('达梦授权更新进行中，请稍后管理服务');
+    if (dbId === 'kingbase' && action !== 'status' && kingbaseLicenseManager.isBusy()) throw new Error('授权更新进行中，请稍后管理服务');
     const db = getDbCfg(dbId); if (!db) throw new Error('未知的 dbId');
-    const cmd = runInContainerCmd(cfg.container, 'systemctl ' + action + ' ' + db.systemdUnit);
+    const runtime = dbRuntime(dbId);
+    const cmd = runInContainerCmd(runtime.container, 'systemctl ' + action + ' ' + shellEscape(db.systemdUnit));
     appendLog('service ' + dbId + ' ' + action + ' → ' + db.systemdUnit);
-    const r = await sshRun(cmd);
+    const r = await sshRun(cmd, { ssh: runtime.ssh, timeoutMs: dbId === 'kingbase' ? 360000 : undefined });
     return { code: r.code, stdout: r.stdout, stderr: r.stderr, unit: db.systemdUnit };
   }
 
@@ -11763,6 +12151,7 @@ wssTcp.on('connection', function (ws) {
   async function backupDatabase(dbId, dbName) {
     const db = getDbCfg(dbId); if (!db) throw new Error('未知的 dbId');
     if (!dbName) throw new Error('database 必填');
+    if (dbId === 'kingbase') return transferKingbase('backup', dbName);
     const ts = stampForFile();
     let remotePath, localName, dumpCmd;
     if (dbId === 'mysql') {
@@ -11818,10 +12207,10 @@ wssTcp.on('connection', function (ws) {
   }
 
   // SFTP 从目标机下载到本机
-  function sftpDownload(remotePath, localPath) {
+  function sftpDownload(remotePath, localPath, overrideSsh) {
     return new Promise((resolve, reject) => {
       const client = new Client();
-      const sshCfg = cfg.ssh || {};
+      const sshCfg = overrideSsh || cfg.ssh || {};
       client.on('ready', () => {
         client.sftp((err, sftp) => {
           if (err) { try { client.end(); } catch(_e){} return reject(err); }
@@ -11844,10 +12233,10 @@ wssTcp.on('connection', function (ws) {
     });
   }
   // SFTP 从本机上传到目标机
-  function sftpUpload(localPath, remotePath) {
+  function sftpUpload(localPath, remotePath, overrideSsh) {
     return new Promise((resolve, reject) => {
       const client = new Client();
-      const sshCfg = cfg.ssh || {};
+      const sshCfg = overrideSsh || cfg.ssh || {};
       client.on('ready', () => {
         client.sftp((err, sftp) => {
           if (err) { try { client.end(); } catch(_e){} return reject(err); }
@@ -11874,6 +12263,7 @@ wssTcp.on('connection', function (ws) {
   async function restoreDatabase(dbId, dbName, localFileName) {
     const db = getDbCfg(dbId); if (!db) throw new Error('未知的 dbId');
     if (!dbName) throw new Error('database 必填');
+    if (dbId === 'kingbase') return transferKingbase('restore', dbName, localFileName);
     // 校验文件名，避免路径穿越
     if (!/^[A-Za-z0-9._-]+$/.test(localFileName)) throw new Error('文件名非法');
     const localPath = path.join(BACKUP_DIR, localFileName);
@@ -11920,6 +12310,56 @@ wssTcp.on('connection', function (ws) {
     return { stdout: r.stdout, stderr: r.stderr };
   }
 
+  // 金仓使用独立的受限临时目录；无论成功失败都清理宿主及容器临时文件。
+  async function transferKingbase(action, database, inputFile) {
+    kingbaseAdapter.validateDatabaseName(database);
+    const db = JSON.parse(JSON.stringify(cfg.databases.kingbase));
+    const runtime = JSON.parse(JSON.stringify(dbRuntime('kingbase')));
+    const token = require('crypto').randomBytes(12).toString('hex');
+    const dir = '/tmp/webssh-kingbase-' + token;
+    const remote = dir + '/archive.dump';
+    const filename = action === 'backup' ? 'kingbase-' + database + '-' + stampForFile() + '-' + token + '.dump' : String(inputFile || '');
+    if (!/^[A-Za-z0-9_][A-Za-z0-9._-]*\.dump$/.test(filename)) throw new Error('金仓还原仅支持 sys_dump 自定义格式 .dump 文件');
+    fs.mkdirSync(BACKUP_DIR, { recursive: true });
+    const local = path.join(BACKUP_DIR, filename);
+    if (action === 'restore' && (!fs.existsSync(local) || !fs.statSync(local).isFile())) throw new Error('本地备份文件不存在');
+    const command = kingbaseAdapter.nativeCommand(db, action, database, remote);
+    const run = async commandText => {
+      const r = await sshRun(commandText, { ssh: runtime.ssh, timeoutMs: 30 * 60 * 1000 });
+      if (r.code !== 0) {
+        let detail = String(r.stderr || r.stdout || '远程命令失败');
+        [db.password, runtime.ssh.password].filter(Boolean).forEach(p => { detail = detail.split(p).join('***'); });
+        throw new Error(detail.slice(0, 500));
+      }
+      return r;
+    };
+    try {
+      await run('mkdir -m 700 ' + shellEscape(dir));
+      await run(runInContainerCmd(runtime.container, 'mkdir -m 700 ' + shellEscape(dir)));
+      if (action === 'restore') {
+        await sftpUpload(local, remote, runtime.ssh);
+        await run('docker cp ' + shellEscape(remote) + ' ' + shellEscape(runtime.container + ':' + remote));
+      }
+      const result = await run(runInContainerCmd(runtime.container, command));
+      if (action === 'backup') {
+        await run('docker cp ' + shellEscape(runtime.container + ':' + remote) + ' ' + shellEscape(remote));
+        await sftpDownload(remote, local, runtime.ssh);
+        try { fs.chmodSync(local, 0o600); } catch (_e) {}
+        appendLog('kingbase backup ok database=' + database + ' file=' + filename);
+        return { file: filename, size: fs.statSync(local).size };
+      }
+      appendLog('kingbase restore ok database=' + database + ' file=' + filename);
+      return { stdout: result.stdout, stderr: result.stderr };
+    } catch (e) {
+      if (action === 'backup') { try { fs.unlinkSync(local); } catch (_e) {} }
+      throw e;
+    } finally {
+      const cleanup = 'rm -f ' + shellEscape(remote) + '; rmdir ' + shellEscape(dir);
+      await sshRun(runInContainerCmd(runtime.container, cleanup), { ssh: runtime.ssh, timeoutMs: 10000 });
+      await sshRun(cleanup, { ssh: runtime.ssh, timeoutMs: 10000 });
+    }
+  }
+
   // ===== 路由 =====
   app.get('/api/db-manager/config', (_req, res) => {
     res.json({ ok: true, config: redactCfg(),
@@ -11938,7 +12378,7 @@ wssTcp.on('connection', function (ws) {
       }
     }
     if (typeof b.container === 'string' && b.container.trim()) next.container = b.container.trim();
-    ['mysql', 'opengauss', 'dm'].forEach((id) => {
+    ['mysql', 'opengauss', 'dm', 'kingbase'].forEach((id) => {
       if (b.databases && b.databases[id] && typeof b.databases[id] === 'object') {
         const src = b.databases[id]; const tgt = next.databases[id];
         if (typeof src.enabled === 'boolean')  tgt.enabled = src.enabled;
@@ -11949,6 +12389,15 @@ wssTcp.on('connection', function (ws) {
         if (typeof src.systemdUnit === 'string') tgt.systemdUnit = src.systemdUnit.trim();
         if (typeof src.password === 'string' && src.password !== '' && src.password !== '***') {
           tgt.password = src.password;
+        }
+        if (id === 'kingbase') {
+          ['schema', 'binDir', 'container'].forEach(key => { if (typeof src[key] === 'string') tgt[key] = src[key].trim(); });
+          if (src.containerPort != null) tgt.containerPort = Math.max(1, Math.min(65535, Number(src.containerPort) || 54321));
+          if (src.ssh && typeof src.ssh === 'object') {
+            ['host', 'username'].forEach(key => { if (typeof src.ssh[key] === 'string') tgt.ssh[key] = src.ssh[key].trim(); });
+            if (src.ssh.port != null) tgt.ssh.port = Math.max(1, Math.min(65535, Number(src.ssh.port) || 22));
+            if (typeof src.ssh.password === 'string' && src.ssh.password !== '' && src.ssh.password !== '***') tgt.ssh.password = src.ssh.password;
+          }
         }
         // DM 专属：SYSDBA 密码（授权 / license 管理用）
         if (id === 'dm' && typeof src.sysdbaPassword === 'string' &&
@@ -11987,6 +12436,12 @@ wssTcp.on('connection', function (ws) {
         return res.json(r);
       }
       if (!validDbId(target)) return res.status(400).json({ ok: false, message: '非法 target' });
+      if (target === 'kingbase') {
+        const credentials = Object.assign({}, cfg.databases.kingbase, inline || {});
+        if (!inline || !inline.password || inline.password === '***') credentials.password = cfg.databases.kingbase.password;
+        await kingbaseManager.query('SELECT 1', 1, credentials.database, undefined, credentials);
+        return res.json({ ok: true, message: '人大金仓连通' });
+      }
       // DB 直连测试：如果传了 inline 用 inline，否则用已保存的 pool
       if (inline) {
         // 用 inline 凭据临时开一个连接测（不用 pool，避免污染）
@@ -12057,6 +12512,7 @@ wssTcp.on('connection', function (ws) {
     const dbId = req.params.db;
     if (!validDbId(dbId)) return res.status(400).json({ ok: false, message: '非法 db' });
     try {
+      if (dbId === 'kingbase') return res.json({ ok: true, databases: await kingbaseManager.databases() });
       let sql;
       if (dbId === 'mysql') sql = "SELECT schema_name AS name FROM information_schema.schemata WHERE schema_name NOT IN ('mysql','information_schema','performance_schema','sys') ORDER BY schema_name";
       else if (dbId === 'opengauss') sql = "SELECT datname AS name FROM pg_database WHERE datistemplate=false ORDER BY datname";
@@ -12070,6 +12526,7 @@ wssTcp.on('connection', function (ws) {
     const dbId = req.params.db; const dbName = req.params.database;
     if (!validDbId(dbId)) return res.status(400).json({ ok: false, message: '非法 db' });
     try {
+      if (dbId === 'kingbase') return res.json({ ok: true, tables: await kingbaseManager.tables(dbName) });
       let sql;
       if (dbId === 'mysql') {
         // 用参数拼装：mysql2 pool.query 不支持 pool 级 database 切换；把 database 名内联进 SQL
@@ -12094,8 +12551,9 @@ wssTcp.on('connection', function (ws) {
   app.get('/api/db-manager/table/:db/:database/:table', async (req, res) => {
     const dbId = req.params.db; const dbName = req.params.database; const tbl = req.params.table;
     if (!validDbId(dbId)) return res.status(400).json({ ok: false, message: '非法 db' });
-    if (!/^[\w-]+$/.test(dbName) || !/^[\w-]+$/.test(tbl)) return res.status(400).json({ ok: false, message: '名称非法' });
+    if (dbId !== 'kingbase' && (!/^[\w-]+$/.test(dbName) || !/^[\w-]+$/.test(tbl))) return res.status(400).json({ ok: false, message: '名称非法' });
     try {
+      if (dbId === 'kingbase') return res.json(Object.assign({ ok: true }, await kingbaseManager.table(dbName, tbl, req.query.schema)));
       let structSql, previewSql;
       if (dbId === 'mysql') {
         structSql = "SELECT column_name AS name, column_type AS type, is_nullable AS nullable, column_default AS `default`, column_comment AS comment FROM information_schema.columns WHERE table_schema='" + dbName + "' AND table_name='" + tbl + "' ORDER BY ordinal_position";
@@ -12368,7 +12826,7 @@ wssTcp.on('connection', function (ws) {
   // ===== openGauss 一键启用 + 建 dcim 应用账号 + 局域网白名单 =====
   // 场景：初始版本的 dcim 容器里 openGauss 是 disabled+inactive，也没有可远程连的应用账号。
   // 本接口完成：启动 opengauss.service → 建/改 dcim 账号 → 改 pg_hba+listen_addresses → 重启，
-  // 让 dcim / 局域网客户端可通过 dcim/Gauss@2026 从 <CIDR> 连过来。
+  // 让 dcim / 局域网客户端可通过 dcim/YOUR_PASSWORD 从 <CIDR> 连过来。
   // 路径自适应：50.10 与 0.60 的 gauss home / data dir 目录名不同（app/bin 与 bin，dn 与 single_node）
   async function initOpenGauss(opts) {
     return queueOpenGaussAccessUpdate(() => initOpenGaussLocked(opts));
@@ -12376,7 +12834,7 @@ wssTcp.on('connection', function (ws) {
 
   async function initOpenGaussLocked(opts) {
     opts = opts || {};
-    const password = String(opts.password || 'Gauss@2026');
+    const password = String(opts.password || (process.env.WEBSSH_DCIM_OPENGAUSS_PASSWORD || ''));
     const cidr = accessRules.normalizeIpv4Cidr(opts.cidr || '192.168.0.0/24');
     const dbUser = 'dcim';
     if (password.length < 8) throw new Error('密码至少 8 位');
@@ -13250,25 +13708,31 @@ echo json_encode(array(
 
   // ===== 达梦授权 / dm.key 管理 =====
   // - GET  /api/db-manager/dm/license      查授权信息（SYSDBA 查 V$LICENSE + 探 dm.key 文件）
-  // - POST /api/db-manager/dm/upload-key   上传 dm.key（base64 content）→ 备份旧 key → 覆盖 → 重启 DM → 重查
+  // - POST /api/db-manager/dm/upload-key   上传二进制 dm.key → 备份 → 在线加载校验 → 重查；加载失败恢复文件
   const DM_KEY_PATH = '/home/dmdba/dmdbms/bin/dm.key'; // 达梦 V8 默认查找位置
   const APACHE_VHOSTS_PATH = '/www/server/apache/conf/extra/httpd-vhosts.conf';
   const APACHE_HTTPD_BIN = '/www/server/apache/bin/httpd';
-  async function queryDmLicense() {
+  async function queryDmLicense(reloadLicense, dbConfig) {
     if (!dmdbLib) throw new Error('dmdb 驱动未安装');
-    const db = cfg.databases.dm || {};
+    const db = dbConfig || cfg.databases.dm || {};
     const sysPw = (db.sysdbaPassword && db.sysdbaPassword !== '') ? db.sysdbaPassword : db.password;
     if (!sysPw) throw new Error('SYSDBA 密码未配置（在「连接信息」弹窗里填 达梦 SYSDBA 密码）');
     const connStr = buildDmConnectUrl({
       username: 'SYSDBA', password: sysPw, host: db.host, port: db.port,
-    });
-    let conn;
+    }) + (dbConfig ? '?connectTimeout=5000&socketTimeout=10000&sessionTimeout=10' : '');
+    let conn, licenseLoaded = false;
     try {
       conn = await dmdbLib.getConnection(connStr);
+      if (reloadLicense) {
+        await conn.execute('CALL SP_LOAD_LIC_INFO();');
+        licenseLoaded = true;
+      }
       // 查所有 license 字段
       const sql = 'SELECT * FROM V' + String.fromCharCode(36) + 'LICENSE';
       const r = await conn.execute(sql, [], { outFormat: dmdbLib.OUT_FORMAT_OBJECT });
       const row = (r.rows || [])[0] || {};
+      // 上传流程还要验证普通 SQL 可执行；只读授权展示不增加此查询。
+      if (dbConfig) await conn.execute('SELECT 1 FROM DUAL');
       // 版本
       let dbVersion = '';
       try {
@@ -13288,6 +13752,10 @@ echo json_encode(array(
         } else expStr = String(exp);
       }
       return { fields: row, dbVersion: dbVersion, expiredDate: expStr, daysLeft: daysLeft };
+    } catch (err) {
+      // 加载成功后查询失败与加载被拒绝不同，不能回退文件却保留新内存授权。
+      if (licenseLoaded) err.licenseLoaded = true;
+      throw err;
     } finally {
       try { if (conn) await conn.close(); } catch (_e) {}
     }
@@ -13302,61 +13770,135 @@ echo json_encode(array(
     return { exists: true, path: DM_KEY_PATH, size: Number(parts[0]), mtime: Number(parts[1]) * 1000,
       owner: parts[2], mode: parts[3] };
   }
+  let dmKeyUploadBusy = false;
   async function uploadDmKey(contentBase64) {
-    const buf = Buffer.from(contentBase64, 'base64');
+    if (dmKeyUploadBusy) {
+      const err = new Error('达梦授权更新进行中，请稍后重试');
+      err.statusCode = 409;
+      throw err;
+    }
+    const encoded = String(contentBase64 || '');
+    if (!encoded) throw new Error('文件内容为空');
+    if (encoded.length > 4 * Math.ceil(1024 * 1024 / 3)) throw new Error('授权文件超过 1MB');
+    if (encoded.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) {
+      throw new Error('文件内容不是有效的 Base64 数据');
+    }
+    const buf = Buffer.from(encoded, 'base64');
+    if (buf.toString('base64') !== encoded) throw new Error('文件内容不是有效的 Base64 数据');
     if (buf.length === 0) throw new Error('文件内容为空');
-    if (buf.length > 1024 * 1024) throw new Error('dm.key 通常 < 10KB，收到 ' + buf.length + ' 字节可能不对');
-    // 简单校验：文件里应包含 "License" 或 "AUTHORIZED" 关键字（达梦 key 是明文 KV 格式）
-    const preview = buf.slice(0, Math.min(buf.length, 500)).toString('utf8');
-    if (!/License|AUTHORIZED|SERIES|EXPIRED/i.test(preview)) {
-      appendLog('dm.key 内容首部不含预期关键字，前 200 字节：' + preview.slice(0, 200).replace(/\s+/g, ' '));
-      throw new Error('文件内容不像 dm.key（缺少 License / AUTHORIZED / SERIES 等关键字）');
-    }
-    const ts = stampForFile();
-    // 1. 写宿主 tmp
+    if (buf.length > 1024 * 1024) throw new Error('授权文件超过 1MB');
+    // dm.key 是加密二进制文件；合法性必须由达梦加载过程验证，不搜索明文关键词。
+    dmKeyUploadBusy = true;
+    const runtime = { container: cfg.container, ssh: Object.assign({}, cfg.ssh), db: Object.assign({}, cfg.databases.dm) };
+    const crypto = require('crypto');
+    const ts = stampForFile() + '-' + crypto.randomBytes(6).toString('hex');
     const hostTmp = '/tmp/dm.key.upload-' + ts;
-    fs.mkdirSync(path.dirname(path.join(__dirname, 'tmp', 'dm-key')), { recursive: true });
+    const containerTmp = '/tmp/dm.key.stage-' + ts;
     const localTmp = path.join(__dirname, 'tmp', 'dm-key', 'dm.key.upload-' + ts);
-    fs.writeFileSync(localTmp, buf);
-    await sftpUpload(localTmp, hostTmp);
-    try { fs.unlinkSync(localTmp); } catch (_e) {}
-
-    // 2. 容器内先备份现有 dm.key（若有）
     const bakPath = DM_KEY_PATH + '.bak.' + ts;
-    const bakCmd = runInContainerCmd(cfg.container,
-      'if [ -f ' + DM_KEY_PATH + ' ]; then cp -a ' + DM_KEY_PATH + ' ' + bakPath + '; fi');
-    const bakR = await sshRun(bakCmd);
-    appendLog('dm.key 旧文件备份 ' + (bakR.code === 0 ? bakPath : '失败/无原文件'));
-
-    // 3. docker cp 上传到容器
-    const cpR = await sshRun('docker cp ' + hostTmp + ' ' + shellEscape(cfg.container) + ':' + DM_KEY_PATH);
-    if (cpR.code !== 0) {
-      await sshRun('rm -f ' + shellEscape(hostTmp));
-      throw new Error('docker cp 上传失败: ' + (cpR.stderr || cpR.stdout).slice(0, 400));
+    // 与目标文件在同一目录，安装和恢复都通过 rename 原子替换。
+    const replacePath = DM_KEY_PATH + '.stage.' + ts;
+    const restorePath = DM_KEY_PATH + '.restore.' + ts;
+    const key = shellEscape(DM_KEY_PATH), backup = shellEscape(bakPath);
+    let hadOriginal = false, applyAttempted = false, loaded = false, baseline, originalHash;
+    const run = command => sshRun(command, { ssh: runtime.ssh, timeoutMs: 15000 });
+    const inContainer = command => run(runInContainerCmd(runtime.container, command));
+    function failureMessage(err) {
+      let message = String((err && err.message) || err || '未知错误');
+      [runtime.db.password, runtime.db.sysdbaPassword, runtime.ssh.password].filter(Boolean).forEach(secret => {
+        message = message.split(secret).join('***').split(encodeURIComponent(secret)).join('***');
+      });
+      return message.slice(0, 600);
     }
-    await sshRun('rm -f ' + shellEscape(hostTmp));
-
-    // 4. 容器内改属主/权限（达梦 V8 官方推荐 dmdba:dinstall 0600）
-    await sshRun(runInContainerCmd(cfg.container,
-      'chown dmdba:dinstall ' + DM_KEY_PATH + ' && chmod 0600 ' + DM_KEY_PATH));
-
-    // 5. 重启 DmServiceDMSERVER
-    const restartR = await sshRun(runInContainerCmd(cfg.container,
-      'systemctl restart DmServiceDMSERVER.service 2>&1'));
-    // 6. 等 5236 就绪
-    let ready = false;
-    for (let i = 0; i < 30; i++) {
-      const p = await sshRun(runInContainerCmd(cfg.container,
-        "ss -lntp 2>/dev/null | grep -E ':5236' | head -1"));
-      if (p.stdout.trim()) { ready = true; break; }
-      await new Promise(r => setTimeout(r, 1000));
+    function check(result, label) {
+      if (result.code !== 0) throw new Error(label + ': ' + failureMessage(result.stderr || result.stdout || ('exit ' + result.code)));
     }
-    appendLog('dm.key 上传 size=' + buf.length + ' 备份=' + bakPath + ' 重启=' + (ready ? 'OK' : 'timeout'));
-
-    // 7. 重新查授权（成功后返回给前端）
-    let license = null;
-    try { license = await queryDmLicense(); } catch (e) { license = { error: e.message }; }
-    return { ok: true, uploaded: buf.length, backup: bakPath, restarted: ready, license: license };
+    function identity(license) {
+      const fields = {};
+      Object.keys(license.fields || {}).forEach(name => { fields[name.toUpperCase()] = license.fields[name]; });
+      if (!fields.SERIES_NO) throw new Error('V$LICENSE 未返回有效的授权序列号');
+      // 同一序列号也可能改变授权能力，核对整行而非只比较序列号/到期日。
+      return JSON.stringify(Object.keys(fields).sort().map(name => {
+        const value = fields[name];
+        return [name, value instanceof Date ? value.toISOString() : String(value == null ? '' : value)];
+      }));
+    }
+    try {
+      // 确认运行中的数据库与 SYSDBA 可连接，再进行文件替换。
+      baseline = identity(await queryDmLicense(false, runtime.db));
+      fs.mkdirSync(path.dirname(localTmp), { recursive: true });
+      fs.writeFileSync(localTmp, buf, { mode: 0o600 });
+      await sftpUpload(localTmp, hostTmp, runtime.ssh);
+      check(await run('docker cp ' + shellEscape(hostTmp) + ' ' + shellEscape(runtime.container + ':' + containerTmp)), '复制授权到容器失败');
+      const digest = await inContainer('sha256sum ' + shellEscape(containerTmp));
+      check(digest, '授权文件校验失败');
+      if (String(digest.stdout || '').trim().split(/\s+/)[0] !== crypto.createHash('sha256').update(buf).digest('hex')) {
+        throw new Error('授权文件传输后 SHA256 不一致，未替换原授权');
+      }
+      const saved = await inContainer('set -e; if [ -f ' + key + ' ]; then cp -a ' + key + ' ' + backup +
+        '; echo DM_KEY_BACKUP_CREATED; sha256sum ' + backup + '; elif [ -e ' + key + ' ]; then echo DM_KEY_INVALID_TARGET; exit 1; else echo DM_KEY_NO_ORIGINAL; fi');
+      check(saved, '备份原授权失败');
+      const savedLines = String(saved.stdout || '').trim().split(/\r?\n/);
+      hadOriginal = savedLines[0] === 'DM_KEY_BACKUP_CREATED';
+      if (hadOriginal) {
+        originalHash = String(savedLines[1] || '').trim().split(/\s+/)[0];
+        if (!/^[a-f0-9]{64}$/.test(originalHash)) throw new Error('无法确认原授权备份校验值，未替换原授权');
+      } else if (savedLines[0] !== 'DM_KEY_NO_ORIGINAL') throw new Error('无法确认原授权备份状态，未替换原授权');
+      applyAttempted = true;
+      check(await inContainer('set -e; install -o dmdba -g dinstall -m 0600 ' + shellEscape(containerTmp) + ' ' + shellEscape(replacePath) +
+        '; mv -f ' + shellEscape(replacePath) + ' ' + key), '安装授权失败');
+      const license = await queryDmLicense(true, runtime.db);
+      loaded = true;
+      identity(license);
+      appendLog('dm.key 上传并加载 size=' + buf.length + ' 备份=' + (hadOriginal ? bakPath : '无原文件'));
+      return { ok: true, uploaded: buf.length, backup: hadOriginal ? bakPath : null, restarted: false, loaded: true, license: license };
+    } catch (err) {
+      const detail = failureMessage(err);
+      if (!applyAttempted) throw new Error(detail);
+      const rollback = { ok: false, fileRestored: false, databaseVerified: false, licenseRestored: false, backup: hadOriginal ? bakPath : null };
+      let restoreDetail = '';
+      try {
+        check(await inContainer(hadOriginal ? 'set -e; cp -a ' + backup + ' ' + shellEscape(restorePath) +
+          '; mv -f ' + shellEscape(restorePath) + ' ' + key : 'rm -f ' + key), '恢复授权文件失败');
+        if (hadOriginal) {
+          const restoredDigest = await inContainer('sha256sum ' + key);
+          check(restoredDigest, '恢复文件校验失败');
+          if (String(restoredDigest.stdout || '').trim().split(/\s+/)[0] !== originalHash) throw new Error('恢复文件 SHA256 与原备份不一致');
+        } else {
+          check(await inContainer('test ! -e ' + key), '撤下新授权文件验证失败');
+        }
+        rollback.fileRestored = true;
+        // 加载返回成功或结果不明确时，核对内存授权；必要时在线重载原文件。
+        // MAC/平台/过期等明确拒绝且原授权仍在生效时，不再次加载。
+        let current = await queryDmLicense(!!(loaded || err.licenseLoaded), runtime.db);
+        if (identity(current) !== baseline) current = await queryDmLicense(true, runtime.db);
+        rollback.databaseVerified = true;
+        rollback.licenseRestored = identity(current) === baseline;
+        if (!rollback.licenseRestored) throw new Error('运行中的授权与更新前不一致');
+        rollback.ok = true;
+      } catch (restoreErr) {
+        restoreDetail = failureMessage(restoreErr);
+      }
+      let hint = '';
+      if (/mac|网卡|hardware|cpu|platform|硬件|架构/i.test(detail)) hint = ' 请核对授权绑定的 MAC、硬件和平台。';
+      else if (/lic info is different|security|安全/i.test(detail)) hint = ' 请核对授权与实例的安全类型；安全版升级需单独处理。';
+      else if (/expired|过期/i.test(detail)) hint = ' 请使用有效期内的授权。';
+      const error = new Error('授权更新失败：' + detail + '。' + (rollback.ok
+        ? (hadOriginal ? '已恢复原授权文件，' : '已撤下新授权文件，') + '原授权和数据库查询已验证正常。'
+        : (rollback.fileRestored ? '原文件已恢复，但数据库或原授权未确认正常：' : '授权文件恢复未完成：') + restoreDetail +
+          (hadOriginal ? '，备份位置：' + bakPath : '') + '，请人工核查。') + hint);
+      error.rollback = rollback;
+      // 回滚成功时新授权不再生效；未知状态提示重新查询，不谎报已加载。
+      error.licenseLoaded = !rollback.ok && !!(loaded || err.licenseLoaded);
+      appendLog('dm.key 加载失败，文件恢复=' + rollback.fileRestored + ' 原授权验证=' + rollback.licenseRestored + ' 数据库查询=' + rollback.databaseVerified);
+      throw error;
+    } finally {
+      try { fs.unlinkSync(localTmp); } catch (_e) {}
+      try { await run('rm -f ' + shellEscape(hostTmp)); } catch (_e) {}
+      try { await inContainer('rm -f ' + shellEscape(containerTmp)); } catch (_e) {}
+      try { await inContainer('rm -f ' + shellEscape(replacePath) + ' ' + shellEscape(restorePath)); } catch (_e) {}
+      dmKeyUploadBusy = false;
+    }
   }
 
   async function uploadDmApacheVhosts(fileName, contentBase64) {
@@ -13471,7 +14013,8 @@ echo json_encode(array(
       res.json(r);
     } catch (e) {
       appendLog('dm/upload-key 失败: ' + e.message);
-      res.status(400).json({ ok: false, message: e.message });
+      res.status(e.statusCode || 400).json({ ok: false, message: e.message,
+        rollback: e.rollback || null, loaded: !!e.licenseLoaded });
     }
   });
 
@@ -13504,14 +14047,14 @@ echo json_encode(array(
   const DS_DEFAULT_DBCONFIG = {
     mysql: {
       type: 'mysql', host: '127.0.0.1', port: 3306, name: 'dcim',
-      user: 'dcim', password: '3seckmG7eKstTCRz', charset: 'UTF8',
+      user: 'dcim', password: (process.env.WEBSSH_DCIM_MYSQL_PASSWORD || ''), charset: 'UTF8',
       schema: 'public', pdo_options: {},
       pool_min: 1, pool_max: 128, pool_max_connections: 0, pool_max_usage: 0,
       pool_blocking: true, pool_setsession: '', timeout: 5,
     },
     opengauss: {
       type: 'opengauss', host: '127.0.0.1', port: 5432, name: 'dcim',
-      user: 'dcim', password: 'Gauss@2026', charset: 'UTF8',
+      user: 'dcim', password: (process.env.WEBSSH_DCIM_OPENGAUSS_PASSWORD || ''), charset: 'UTF8',
       schema: 'public',
       pdo_options: { '1002': "SET client_encoding TO 'UTF8'" },
       pool_min: 1, pool_max: 128, pool_max_connections: 0, pool_max_usage: 0,
@@ -13519,7 +14062,7 @@ echo json_encode(array(
     },
     dm: {
       type: 'dm', host: '127.0.0.1', port: 5236, name: 'DCIM',
-      user: 'dcim', password: '3seckmG7eKstTCRz', charset: 'UTF8',
+      user: 'dcim', password: (process.env.WEBSSH_DCIM_DM_PASSWORD || ''), charset: 'UTF8',
       schema: 'DCIM', pdo_options: {},
       pool_min: 1, pool_max: 128, pool_max_connections: 0, pool_max_usage: 0,
       pool_blocking: true, pool_setsession: '', timeout: 5,
@@ -13909,6 +14452,8 @@ echo json_encode(array(
 const port = Number(process.env.PORT || 3000);
 server.listen(port, function () {
   serviceOverview.start();
+  startPersistedSerialBridges();
+
   console.log('Web SSH running at http://0.0.0.0:' + port);
 });
 
@@ -13917,6 +14462,7 @@ function shutdownServiceOverview() {
   if (serviceOverviewShuttingDown) return;
   serviceOverviewShuttingDown = true;
   serviceOverview.stop();
+  serialBridgeManager.stopAll().catch(function () {});
 
   const shutdownTimeout = setTimeout(function () {
     process.exit(1);

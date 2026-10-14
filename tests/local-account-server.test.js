@@ -61,9 +61,9 @@ async function run() {
     loginIpAllowlist: ['127.0.0.1/32'],
     users: [
       { id: 'u-admin', username: 'admin', role: 'admin', enabled: true, password: password,
-        passwordChangedAt: '2026-07-01T00:00:00.000Z', sessionVersion: 1, loginIpAllowlist: ['127.0.0.1/32'] },
+        passwordChangedAt: new Date().toISOString(), sessionVersion: 1, loginIpAllowlist: ['127.0.0.1/32'] },
       { id: 'u-denied', username: 'denied', role: 'viewer', enabled: true, password: password,
-        passwordChangedAt: '2026-07-01T00:00:00.000Z', sessionVersion: 1, loginIpAllowlist: ['192.168.0.0/24'] },
+        passwordChangedAt: new Date().toISOString(), sessionVersion: 1, loginIpAllowlist: ['192.168.0.0/24'] },
       { id: 'u-expired', username: 'expired', role: 'viewer', enabled: true, password: password,
         passwordChangedAt: '2020-01-01T00:00:00.000Z', sessionVersion: 1, loginIpAllowlist: ['127.0.0.1/32'] },
     ], temporaryGrants: [],

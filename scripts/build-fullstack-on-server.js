@@ -134,6 +134,7 @@ async function main() {
     await exec(conn, `cp -a /opt/webssh/app/sms ${STAGE_DIR}/app/ 2>/dev/null || true`);
     await exec(conn, `cp -a /opt/webssh/app/ha ${STAGE_DIR}/app/ 2>/dev/null || true`);
     await exec(conn, `cp -a /opt/webssh/app/overview ${STAGE_DIR}/app/`);
+    await exec(conn, `test -f /opt/webssh/app/dcim-settings/index.html && cp -a /opt/webssh/app/dcim-settings ${STAGE_DIR}/app/`);
     await exec(conn, `cp -a /opt/webssh/app/proto-conv ${STAGE_DIR}/app/ 2>/dev/null || true`);
     await exec(conn, `cp -a /opt/webssh/app/video ${STAGE_DIR}/app/ 2>/dev/null || true`);
     await exec(conn, `cp -a /opt/webssh/app/db ${STAGE_DIR}/app/ 2>/dev/null || true`);

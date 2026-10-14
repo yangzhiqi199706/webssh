@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>DCIM设置</title><link rel="stylesheet" href="style.css"></head>
+<body>
+<header><h1>DCIM设置</h1><span id="target"></span><div class="actions"><button id="connection">连接信息</button><button id="reload">刷新</button><button id="restart" class="danger">重启采集</button></div></header>
+<div id="notice" role="status" aria-live="polite">正在读取连接信息…</div>
+<div id="fileChanges" role="status" aria-live="polite" hidden></div>
+<div class="layout"><nav id="files" aria-label="配置文件"></nav><main><div class="toolbar"><h2 id="fileTitle">配置项</h2><input id="search" type="search" placeholder="搜索配置项" aria-label="搜索配置项"><span id="dirty"></span><button id="discard" disabled>放弃修改</button><button id="save" class="primary" disabled>保存修改</button></div><div id="fields"></div></main></div>
+<dialog id="connectionDialog"><form id="connectionForm"><h2>目标连接</h2><label>SSH地址<input name="host" required></label><label>SSH端口<input name="port" type="number" min="1" max="65535" required></label><label>用户名<input name="username" required autocomplete="username"></label><label>密码<input name="password" type="password" autocomplete="new-password" placeholder="留空保持已保存密码"></label><label>配置目录<input name="directory" required></label><label>容器名称<input name="container" required></label><div class="actions"><button type="button" id="cancelConnection">取消</button><button class="primary">保存连接</button></div></form></dialog>
+<script src="change-tracker.js"></script><script src="settings.js"></script>
+</body></html>

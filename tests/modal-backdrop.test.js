@@ -15,6 +15,7 @@ const sourceFiles = [
   'sms/assets/js/sms-push.js',
   'sms/assets/js/sms-scheduled.js',
   'proto-conv/assets/js/pc-config.js',
+  'proto-conv/assets/js/pc-b-interface.js',
   'proto-conv/assets/js/pc-iec104.js',
   'proto-conv/assets/js/pc-modbus-control.js',
   'proto-conv/assets/js/pc-modbus.js',

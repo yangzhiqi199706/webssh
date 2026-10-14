@@ -729,13 +729,22 @@
     }
 
     // ======== 串口列表 ========
+    let portsRequestActive = false;
     function fetchPorts(probe) {
+        if (portsRequestActive) return Promise.resolve();
+        portsRequestActive = true;
+        const controller = new AbortController();
+        const timeout = setTimeout(function () { controller.abort(); }, 12000);
+        el.buttonScanPorts.disabled = true;
+        el.buttonRefreshPorts.disabled = true;
         // 用绝对路径 + cache:no-store，避免 iframe/缓存导致命中静态资源兜底
         const url = location.origin + '/api/serial/ports'
             + (probe ? '?probe=1&t=' : '?t=') + Date.now();
-        return fetch(url, { cache: 'no-store', headers: { 'Accept': 'application/json' } })
+        return fetch(url, { cache: 'no-store', signal: controller.signal, headers: { 'Accept': 'application/json' } })
             .then(function (resp) {
-                if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                if (!resp.ok) return resp.json().catch(function () { return {}; }).then(function (body) {
+                    throw new Error(body.message || 'HTTP ' + resp.status);
+                });
                 const ct = resp.headers.get('content-type') || '';
                 if (ct.indexOf('application/json') < 0) {
                     throw new Error('响应非 JSON（' + ct + '），可能命中了静态页面，请硬刷新页面');
@@ -752,7 +761,14 @@
                 }
             })
             .catch(function (err) {
-                terminal.writeln('\x1b[31m拉取串口列表失败：' + err.message + '\x1b[0m');
+                const message = err.name === 'AbortError' ? '请求超时，请检查服务状态后重试' : err.message;
+                terminal.writeln('\x1b[31m拉取串口列表失败：' + message + '\x1b[0m');
+            })
+            .finally(function () {
+                clearTimeout(timeout);
+                portsRequestActive = false;
+                el.buttonScanPorts.disabled = false;
+                el.buttonRefreshPorts.disabled = false;
             });
     }
 

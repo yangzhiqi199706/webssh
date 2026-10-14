@@ -50,6 +50,7 @@ function upgradePayloadEntries() {
     'proto-conv',
     'video',
     'db',
+    'dcim-settings',
     'snmp-bundle',
     'node_modules',
   ];

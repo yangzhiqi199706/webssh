@@ -1,0 +1,14 @@
+'use strict';
+const assert = require('assert');
+const { inferType } = require('../proto-conv/assets/js/pc-point-types');
+assert.strictEqual(inferType({ dataType: '模拟量' }), 'AI');
+assert.strictEqual(inferType({ dataType: '开关量' }), 'DI');
+assert.strictEqual(inferType({ dataType: '状态量' }), 'DI');
+assert.strictEqual(inferType({ DataType: ' 状态量 ' }), 'DI');
+assert.strictEqual(inferType({ dataType: 'di' }), 'DI');
+assert.strictEqual(inferType({ dataType: 'AI' }), 'AI');
+assert.strictEqual(inferType({ dataType: 'float' }), null, 'storage numeric type is not signal classification');
+assert.strictEqual(inferType({ dataType: 'int', value: 1, paraName: '报警' }), null, 'cannot guess from value/name');
+assert.strictEqual(inferType({ dataType: 1 }), null);
+assert.strictEqual(inferType({}), null);
+console.log('PASS B interface signal classification: analog/digital metadata, aliases and unknown type guard');

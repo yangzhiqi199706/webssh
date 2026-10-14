@@ -25,7 +25,7 @@
 - 串口调试：`/ws/serial`，服务端原生串口 + 浏览器 WebSerial 双支持
 - TCP 调试：`/ws/tcp`
 - 信创短信猫：MySQL 监测告警 + 短信推送（`sms/` 子站）
-- docker 自动重启：开机倒计时执行 `systemctl restart docker`
+- docker 自动重启：开机倒计时执行 `systemctl restart docker`；运维板块另有按分钟循环的 Docker 定时重启
 - **协议助手反代**：`/protocol/*` → `127.0.0.1:5000`（用 `http-proxy@1.18.1`）
 
 **协议助手 5 个模块**（全部走 `/protocol` 子路径）：
@@ -184,7 +184,7 @@ module4 的预览弹窗）。
 | Host | 192.168.0.22 |
 | OS | Kylin Linux V10 (Halberd), glibc 2.28, x86_64 |
 | SSH | 22 |
-| 账号 | root / `<DEPLOY_PASSWORD>` |
+| 账号 | root / `YOUR_PASSWORD` |
 | 安装目录 | /opt/webssh |
 | HTTP 端口 | 3010（对外）|
 | 服务 | systemd 双服务 `webssh` + `webssh-protocol`（开机自启） |
@@ -200,7 +200,7 @@ module4 的预览弹窗）。
 WEBSSH_HOST=192.168.0.22 \
 WEBSSH_PORT=22 \
 WEBSSH_USER=root \
-WEBSSH_DEPLOY_PASS='<DEPLOY_PASSWORD>' \
+WEBSSH_DEPLOY_PASS='YOUR_PASSWORD' \
 node scripts/deploy-upgrade.js
 ```
 脚本做的事：
@@ -218,11 +218,11 @@ node scripts/deploy-upgrade.js
 ### 3.3 协议助手：一键部署（推荐）
 ```powershell
 # PowerShell
-$env:WEBSSH_DEPLOY_PASS = '<DEPLOY_PASSWORD>'
+$env:WEBSSH_DEPLOY_PASS = 'YOUR_PASSWORD'
 node scripts/deploy-protocol.js
 
 # Bash
-WEBSSH_DEPLOY_PASS='<DEPLOY_PASSWORD>' node scripts/deploy-protocol.js
+WEBSSH_DEPLOY_PASS='YOUR_PASSWORD' node scripts/deploy-protocol.js
 ```
 脚本做的事（`scripts/deploy-protocol.js`）：
 1. 本地打 `webssh-protocol-<stamp>.tar.gz`：
@@ -250,11 +250,11 @@ WEBSSH_DEPLOY_PASS='<DEPLOY_PASSWORD>' node scripts/deploy-protocol.js
 
 复用模式（不重打 Python/wheels，加快速度）：
 ```bash
-SKIP_BUILD=1 WEBSSH_DEPLOY_PASS='<DEPLOY_PASSWORD>' node scripts/deploy-protocol.js
+SKIP_BUILD=1 WEBSSH_DEPLOY_PASS='YOUR_PASSWORD' node scripts/deploy-protocol.js
 ```
 仅推协议助手，不动主壳：
 ```bash
-SKIP_MAIN_SYNC=1 WEBSSH_DEPLOY_PASS='<DEPLOY_PASSWORD>' node scripts/deploy-protocol.js
+SKIP_MAIN_SYNC=1 WEBSSH_DEPLOY_PASS='YOUR_PASSWORD' node scripts/deploy-protocol.js
 ```
 
 ### 3.4 部署后验证
@@ -332,6 +332,7 @@ journalctl -u webssh-protocol -n 200 --no-pager
 tail -f /opt/webssh/logs/webssh.out.log
 tail -f /opt/webssh/logs/protocol.out.log
 tail -f /opt/webssh/logs/docker-restart.log
+tail -f /opt/webssh/logs/docker-scheduled-restart.log
 ```
 
 ------------------------------------------------------------
@@ -432,13 +433,13 @@ webssh 主壳用的旧版 Node（系统遗留），不要升。`http-proxy@1.18.
 
 ### 6.1 改了 webssh 主壳（server.js / index.html / serial / sms）
 ```bash
-WEBSSH_HOST=192.168.0.22 WEBSSH_DEPLOY_PASS='<DEPLOY_PASSWORD>' \
+WEBSSH_HOST=192.168.0.22 WEBSSH_DEPLOY_PASS='YOUR_PASSWORD' \
   node scripts/deploy-upgrade.js
 ```
 
 ### 6.2 改了协议助手（protocol_app/）
 ```powershell
-$env:WEBSSH_DEPLOY_PASS = '<DEPLOY_PASSWORD>'
+$env:WEBSSH_DEPLOY_PASS = 'YOUR_PASSWORD'
 node scripts/deploy-protocol.js
 ```
 
@@ -448,7 +449,7 @@ node scripts/deploy-protocol.js
 ### 6.4 同时改了主壳 + 协议助手
 直接走 `deploy-protocol.js`（默认会同步主壳代码 + 重启主服务）：
 ```powershell
-$env:WEBSSH_DEPLOY_PASS = '<DEPLOY_PASSWORD>'
+$env:WEBSSH_DEPLOY_PASS = 'YOUR_PASSWORD'
 node scripts/deploy-protocol.js
 ```
 
@@ -561,7 +562,7 @@ INSTALL.md
 
 打包流程（一行命令）：
 ```powershell
-$env:WEBSSH_DEPLOY_PASS = '<DEPLOY_PASSWORD>'
+$env:WEBSSH_DEPLOY_PASS = 'YOUR_PASSWORD'
 node scripts/build-fullstack-on-server.js
 ```
 脚本做的事：在 192.168.0.22 服务器上 stage `/opt/webssh/{app,protocol,runtime}/`
@@ -1043,7 +1044,7 @@ UI 操作后用上面 3 条 firewall-cmd 复核，规则应已生效且 `--perma
 ### 10.5 部署
 属于主壳改动，走 `deploy-upgrade.js`：
 ```bash
-WEBSSH_HOST=192.168.0.22 WEBSSH_DEPLOY_PASS='<DEPLOY_PASSWORD>' \
+WEBSSH_HOST=192.168.0.22 WEBSSH_DEPLOY_PASS='YOUR_PASSWORD' \
   node scripts/deploy-upgrade.js
 ```
 或者用 `deploy-protocol.js`（会顺带同步主壳代码）。
@@ -1095,7 +1096,7 @@ WEBSSH_HOST=192.168.0.22 WEBSSH_DEPLOY_PASS='<DEPLOY_PASSWORD>' \
 ### 11.4 部署
 属于 webssh 主壳改动，走 `deploy-upgrade.js`：
 ```bash
-WEBSSH_HOST=192.168.0.22 WEBSSH_DEPLOY_PASS='<DEPLOY_PASSWORD>' \
+WEBSSH_HOST=192.168.0.22 WEBSSH_DEPLOY_PASS='YOUR_PASSWORD' \
   node scripts/deploy-upgrade.js
 ```
 或者用 `deploy-protocol.js`（会顺带同步主壳代码）。
@@ -1507,7 +1508,7 @@ journalctl -u webssh-wvp -f       # wvp 日志，grep "注册请求" 看 401/403
 **日志**：`logs/db-manager.log`。
 
 **openGauss 一键启用**（前端概览页 openGauss 卡片的「🚀 启用 & 建 dcim 用户」按钮）：
-- body：`{ password: 'Gauss@2026', cidr: '192.168.0.0/24' }`（都有默认值）
+- body：`{ password: 'YOUR_PASSWORD', cidr: '192.168.0.0/24' }`（都有默认值）
 - 流程：路径自适应探测（`find gaussdb` 定位 `$GAUSSHOME`）→ `systemctl enable+start opengauss` → 等 5432 就绪 → 容器内 omm 用户跑 gsql 建 `dcim` 用户 + `GRANT CONNECT ON DATABASE postgres` + `search_path=public` → 改 `postgresql.conf` `listen_addresses='*'` → `pg_hba.conf` 加白名单 → `systemctl restart opengauss` → 用 dcim 密码登录验证
 - **密码强度校验**（openGauss 硬要求）：≥ 8 位，包含大小写/数字/特殊字符至少 3 类
 - **成功后**自动把 db-manager 配置里的 opengauss.username/password 同步为 dcim/新密码
@@ -1552,7 +1553,7 @@ journalctl -u webssh-wvp -f       # wvp 日志，grep "注册请求" 看 401/403
 ```bash
 PORT=3010 node server.js
 # 浏览器 http://127.0.0.1:3010/  → 左菜单「数据库管理」
-# 1. 「连接信息」录 SSH（0.60/root/<DEPLOY_PASSWORD>）+ 三库凭据 → 保存
+# 1. 「连接信息」录 SSH（0.60/root/YOUR_PASSWORD）+ 三库凭据 → 保存
 # 2. 概览 tab → MySQL/openGauss 绿灯，DM 灰灯 + 显示「一键启动 DM」按钮
 # 3. SQL 控制台切 MySQL → SHOW DATABASES → 出 6 库（含 dcim/wvp）
 # 4. 库表浏览切 MySQL → 点 dcim → 148 张表列出 → 点任一表 → 结构 + 100 行预览
@@ -1568,7 +1569,7 @@ curl -s http://127.0.0.1:3010/api/db-manager/status | jq
 ### 12.10 部署
 属于主壳改动，走 `deploy-upgrade.js`：
 ```bash
-WEBSSH_HOST=192.168.0.22 WEBSSH_DEPLOY_PASS='<DEPLOY_PASSWORD>' \
+WEBSSH_HOST=192.168.0.22 WEBSSH_DEPLOY_PASS='YOUR_PASSWORD' \
   node scripts/deploy-upgrade.js
 ```
 **注意**：新装了 `pg` + `dmdb` 两个 npm 包，`deploy-upgrade.js` 会把整个 `node_modules` 同步过去。若目标机磁盘紧张可以先本地 `npm prune --production` 再打包。
@@ -1581,3 +1582,45 @@ WEBSSH_HOST=192.168.0.22 WEBSSH_DEPLOY_PASS='<DEPLOY_PASSWORD>' \
 4. dcim 是否原生支持三种 DB 方言（如果只支持 MySQL 则需要业务侧适配层）
 
 用户已确认走「人工迁移」路线：Phase B 只做「改配置 → 重启服务」，数据迁移由用户在 Phase A 的备份/还原能力里手动做完。
+
+------------------------------------------------------------
+
+## 十三、功能章节归档规范（2026-08-03 起执行）
+
+### 13.1 目的与位置
+
+所有面向用户的新功能、功能性修复和运维能力扩展，都必须在
+`docs/development-chapters/` 留下按章节编号递增的交付记录。目录
+`docs/development-chapters/README.md` 是唯一的章节索引；旧章节是历史事实，
+不得通过回写旧章节掩盖后续变更。
+
+### 13.2 创建下一章
+
+在代码、测试和实际验证完成后、提交或部署之前执行：
+
+```powershell
+npm run docs:chapter -- --title "功能名称" --summary "本次交付的结果" --scope "能力一,能力二" --files "server.js,index.html" --verification "npm test,手工验证步骤"
+```
+
+该命令自动计算下一章编号、以 `第NN章-YYYY-MM-DD-主题.md` 创建标准模板，
+并刷新章节目录。创建后必须把模板中的验证记录和后续注意事项补成真实结果。
+
+### 13.3 章节内容与例外
+
+每章至少包含：功能目标、开发范围、关联文件、实现摘要、验证记录、已知风险或
+后续注意事项。禁止写入账号密码、令牌、会话信息、真实数据库连接串或其他敏感配置。
+
+仅修改拼写、排版、注释或不改变运行行为的锁文件时，不需要新章节；一旦影响用户
+可见功能、接口行为、部署方式、运行稳定性或运维操作，即使是缺陷修复也必须新建章节。
+
+------------------------------------------------------------
+
+## 十四、x86 与 ARM 版本同步更新规范
+
+**强制要求：x86（x86_64）版本更新功能后，ARM（ARM64/aarch64）版本必须同步更新，不能只交付 x86 版本。**
+
+- 新功能、缺陷修复、界面调整和稳定性优化均适用。默认保持两种架构的功能、接口、配置及版本说明一致。
+- 共用源码的改动应同时进入两种架构的交付流程；涉及架构专用代码、依赖、安装或打包脚本时，必须同步检查并更新 ARM 对应实现，不能把共用源码已修改等同于 ARM 安装包已更新。
+- 打包或发布新版本时，必须同步更新 x86 与 ARM 产物，并核查各自包含最新业务代码。运行时、原生依赖及二进制文件必须匹配目标架构，禁止直接复用 x86 二进制作为 ARM 依赖。
+- 验证时分别记录两种架构的测试、打包和部署结果；功能章节及交付说明必须明确两端的同步状态。缺少 ARM 环境或素材时，明确列出未验证、未打包或未部署的事项，不得声称双架构交付完成。
+- 部署仍以用户指定的目标机器和范围为准；本规则不代表可以自行连接或更新未指定的生产服务器。

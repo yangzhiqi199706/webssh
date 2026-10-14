@@ -139,8 +139,8 @@
     .pill.warn { color: #fcd34d; border-color: rgba(251,191,36,.35); background: rgba(251,191,36,.08); }
     .pill.err { color: #fca5a5; border-color: rgba(248,113,113,.4); background: rgba(248,113,113,.08); }
 
-    /* 3 库并排卡片 */
-    .db-row { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 12px; }
+    /* 数据库概览卡片 */
+    .db-row { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 12px; }
     @media (max-width: 1100px) { .db-row { grid-template-columns: 1fr; } }
     .db-card .card-title .icon { font-size: 16px; }
 
@@ -276,7 +276,7 @@
   <div id="app">
     <header class="top-bar">
       <div class="title">数据库管理</div>
-      <div class="subtitle">MySQL · openGauss · 达梦 DM 三库统一管理台</div>
+      <div class="subtitle">MySQL · openGauss · 达梦 DM · 人大金仓</div>
       <div class="spacer"></div>
       <div class="switch" id="sshLed" title="SSH 通道状态"><span class="led"></span><span id="sshLedText">SSH: 未连</span></div>
       <button class="btn" id="btnRefresh" type="button" title="刷新状态">↻</button>
@@ -291,7 +291,7 @@
       <button data-tab="datasource">数据源切换</button>
     </nav>
 
-    <!-- 概览：三库并排卡片 -->
+    <!-- 概览：数据库卡片 -->
     <section class="tab-pane active" data-pane="overview">
       <div class="db-row">
         <div class="card db-card" id="cardMysql">
@@ -306,11 +306,15 @@
           <div class="card-title"><span class="dot" id="dmDot"></span><span class="name">达梦 DM</span><span class="actions" id="dmActions"></span></div>
           <div class="kv-list" id="dmKv"><div class="kv-row"><span class="k">状态</span><span class="v">未探测</span><span></span></div></div>
         </div>
+        <div class="card db-card" id="cardKingbase">
+          <div class="card-title"><span class="dot" id="kingbaseDot"></span><span class="name">人大金仓</span><span class="actions" id="kingbaseActions"></span></div>
+          <div class="kv-list" id="kingbaseKv"><div class="kv-row"><span class="k">状态</span><span class="v">未探测</span><span></span></div></div>
+        </div>
       </div>
       <div class="card">
         <div class="card-title"><span class="dot on"></span><span>说明</span></div>
         <div class="hint">
-          点击「连接信息」录入 SSH（目标机 root）与三库凭据。三库都通过 SSH 转发 <code>docker exec dcim systemctl</code> 操作服务。SQL 控制台走各库对应 npm 驱动直连（MySQL/mysql2、openGauss/pg、达梦/dmdb）。备份走容器内原生工具（mysqldump/gs_dump/dexp）→ SFTP 拉回本机。<b>docker restart dcim 会重启 3 套数据库</b>，请配合「设置 → docker 重启」注意时机。
+          点击「连接信息」配置 SSH、容器及数据库凭据。人大金仓可单独指定 SSH 主机和容器，留空时使用公共配置。金仓备份使用 sys_dump 自定义格式（.dump），还原使用 sys_restore，建议还原到已创建的空库。金仓表数为默认库的业务表数。<b>重启或停止数据库会中断相关业务。</b>
         </div>
       </div>
     </section>
@@ -322,6 +326,7 @@
           <button data-db="mysql" class="active">MySQL</button>
           <button data-db="opengauss">openGauss</button>
           <button data-db="dm">达梦 DM</button>
+          <button data-db="kingbase">人大金仓</button>
         </div>
         <div class="sql-toolbar">
           <button class="btn primary" id="btnRunSql" type="button">执行 (Ctrl+Enter)</button>
@@ -349,6 +354,7 @@ SHOW DATABASES;"></textarea>
               <option value="mysql">MySQL</option>
               <option value="opengauss">openGauss</option>
               <option value="dm">达梦 DM</option>
+              <option value="kingbase">人大金仓</option>
             </select>
           </label>
           <label class="field"><span>库/Schema 名</span>
@@ -385,6 +391,7 @@ SHOW DATABASES;"></textarea>
               <option value="mysql">MySQL</option>
               <option value="opengauss">openGauss</option>
               <option value="dm">达梦 DM</option>
+              <option value="kingbase">人大金仓</option>
             </select>
           </label>
           <label class="field"><span>目标库/Schema</span>
@@ -407,6 +414,7 @@ SHOW DATABASES;"></textarea>
         <button data-db="mysql" class="active">MySQL</button>
         <button data-db="opengauss">openGauss</button>
         <button data-db="dm">达梦 DM</button>
+          <button data-db="kingbase">人大金仓</button>
         <button class="btn sm" id="btnReloadTree" type="button" style="margin-left:auto">重新加载</button>
       </div>
       <div class="browser-shell">
@@ -518,6 +526,29 @@ SHOW DATABASES;"></textarea>
             <span class="hint" id="hintDm">未测试</span>
           </div>
 
+
+          <div class="section-title">人大金仓 KingbaseES</div>
+          <div class="form-grid">
+            <label class="field"><span>Host</span><input id="cfKingbaseHost" type="text" placeholder="数据库 IP" /></label>
+            <label class="field"><span>Port</span><input id="cfKingbasePort" type="number" placeholder="54321" /></label>
+            <label class="field"><span>Username</span><input id="cfKingbaseUser" type="text" placeholder="dcim" /></label>
+            <label class="field"><span>Password（留空保持原值）</span><input id="cfKingbasePass" type="password" placeholder="" /></label>
+            <label class="field"><span>默认库</span><input id="cfKingbaseDb" type="text" placeholder="dcim" /></label>
+            <label class="field"><span>默认 Schema</span><input id="cfKingbaseSchema" type="text" placeholder="public" /></label>
+            <label class="field"><span>systemd Unit</span><input id="cfKingbaseUnit" type="text" placeholder="kingbase.service" /></label>
+            <label class="field"><span>容器内端口</span><input id="cfKingbaseContainerPort" type="number" placeholder="54321" /></label>
+            <label class="field"><span>容器工具目录（bin）</span><input id="cfKingbaseBinDir" type="text" placeholder="/opt/Kingbase/ES/V8/.../Server/bin" /></label>
+            <label class="field"><span>独立容器名（留空使用公共配置）</span><input id="cfKingbaseContainer" type="text" placeholder="dcim" /></label>
+            <label class="field"><span>独立 SSH Host（留空使用公共配置）</span><input id="cfKingbaseSshHost" type="text" placeholder="" /></label>
+            <label class="field"><span>独立 SSH Port</span><input id="cfKingbaseSshPort" type="number" placeholder="22" /></label>
+            <label class="field"><span>独立 SSH Username</span><input id="cfKingbaseSshUser" type="text" placeholder="root" /></label>
+            <label class="field"><span>独立 SSH Password（留空保持原值）</span><input id="cfKingbaseSshPass" type="password" placeholder="" /></label>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:2px">
+            <button class="btn" id="btnTestKingbase" type="button">测试数据库连接</button>
+            <span class="hint" id="hintKingbase">未测试</span>
+          </div>
+
           <div class="actions" style="justify-content:flex-end;margin-top:8px">
             <button class="btn" id="btnReloadCfg" type="button">重载</button>
             <button class="btn primary" id="btnSaveCfg" type="button">保存</button>
@@ -548,14 +579,14 @@ SHOW DATABASES;"></textarea>
           </div>
           <div class="form-grid">
             <label class="field"><span>dcim 账号密码</span>
-              <input id="giPassword" value="Gauss@2026" placeholder="Gauss@2026" />
+              <input id="giPassword" value="YOUR_PASSWORD" placeholder="YOUR_PASSWORD" />
             </label>
             <label class="field"><span>允许访问的 CIDR</span>
               <input id="giCidr" value="192.168.0.0/24" placeholder="192.168.0.0/24" />
             </label>
           </div>
           <div class="hint">
-            <b>密码要求</b>：≥ 8 位，包含大小写/数字/特殊字符至少 3 类。默认 <code>Gauss@2026</code> 满足。<br>
+            <b>密码要求</b>：≥ 8 位，包含大小写/数字/特殊字符至少 3 类。默认 <code>YOUR_PASSWORD</code> 满足。<br>
             <b>CIDR</b>：默认允许 <code>192.168.0.0/24</code>。如现场客户端在其他网段（例如 <code>192.168.1.0/24</code>）请改。
           </div>
           <div class="danger-banner">⚠ 会重启 openGauss。如有客户端正在连，会短暂中断（约 3-5 秒）。</div>
@@ -591,6 +622,7 @@ SHOW DATABASES;"></textarea>
           </div>
           <div class="status-box" id="gaAccessStatus" style="display:none"></div>
         </div>
+
       </div>
     </div>
     <!-- WVP openGauss 运行状态弹窗 -->
@@ -632,7 +664,7 @@ SHOW DATABASES;"></textarea>
             在 openGauss <b>dcim</b> 库的 <code>public</code> schema 里新建 <b>15 张 WVP 业务表</b>：<br>
             <span class="v mono" id="wvpTableList" style="display:block;padding:6px 10px;background:#0b1020;border-radius:6px;font-size:11px;margin-top:6px">加载中…</span>
             并插入 2 条初始数据（admin 账号 + admin 角色，密码 hash 为 <code>21232f297a57a5a743894a0e4a801fc3</code> = MD5(admin)）。<br>
-            SQL 直接来自 WVP 官方 <code>初始化.sql</code>（本身已是 PostgreSQL 语法），用 <code>dcim/Gauss@2026</code> 账号执行。
+            SQL 直接来自 WVP 官方 <code>初始化.sql</code>（本身已是 PostgreSQL 语法），用 <code>dcim/YOUR_PASSWORD</code> 账号执行。
           </div>
 
           <div class="section-title">当前 openGauss dcim 库中 wvp_ 表状态</div>
@@ -696,6 +728,22 @@ SHOW DATABASES;"></textarea>
       </div>
     </div>
 
+    <div class="modal-mask" id="kingbaseLicenseModal" aria-hidden="true">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="kingbaseLicenseTitle">
+        <div class="modal-head"><h3 id="kingbaseLicenseTitle">🔑 人大金仓授权信息</h3><button class="btn" id="btnCloseKingbaseLicense" type="button">关闭</button></div>
+        <div class="modal-body">
+          <div class="section-title">授权详情 <button class="btn sm" id="btnRefreshKingbaseLicense" type="button">刷新查询</button></div>
+          <div class="kv-list" id="kingbaseLicenseKv"></div>
+          <div class="hint">有效期以数据库返回为准；浮动基准日期授权不按生产日期推算到期日。</div>
+          <div class="section-title">当前 license.dat 文件</div><div class="kv-list" id="kingbaseLicenseFileKv"></div>
+          <div class="section-title">上传新授权（仅管理员）</div>
+          <div class="danger-banner">上传后将校验文件、备份旧授权、替换并重启数据库，再查询确认。业务连接会中断，失败时尝试恢复旧授权。</div>
+          <label class="field"><span>选择 license.dat（最大 1MB）</span><input type="file" id="kingbaseLicenseFile" accept=".dat" /></label>
+          <button class="btn danger" id="btnUploadKingbaseLicense" type="button" disabled>上传并重启生效</button>
+          <div class="status-box" id="kingbaseLicenseStatus" role="status" style="white-space:pre-wrap;margin-top:10px"></div>
+        </div>
+      </div>
+    </div>
     <!-- 达梦授权信息弹窗 -->
     <div class="modal-mask" id="dmLicenseModal" aria-hidden="true">
       <div class="modal">
@@ -726,7 +774,7 @@ SHOW DATABASES;"></textarea>
           </div>
 
           <div class="section-title">上传新 dm.key 授权文件</div>
-          <div class="danger-banner">⚠ 上传后会：备份旧 dm.key → 覆盖 → 重启 DmServiceDMSERVER → 重新查授权。业务中断约 5-10 秒。</div>
+          <div class="danger-banner">上传后备份旧授权，由达梦在线校验并加载。MAC、硬件、版本等不匹配或更新失败时，自动恢复原文件并核对原授权及数据库查询；无法确认恢复结果时会明确提示。请确认新授权与当前数据库匹配。</div>
           <div class="form-grid" style="grid-template-columns:1fr auto;margin-top:8px">
             <label class="field"><span>选择本地 dm.key 文件</span>
               <input type="file" id="dmKeyFile" accept=".key,application/octet-stream" />
@@ -735,7 +783,7 @@ SHOW DATABASES;"></textarea>
               <button class="btn danger" id="btnUploadDmKey" type="button" disabled>上传并生效</button>
             </label>
           </div>
-          <div class="hint" id="dmKeyHint">选文件后点「上传并生效」；文件通常在 1-10 KB。</div>
+          <div class="hint" id="dmKeyHint">支持加密二进制 .key 文件（可小于 1 KB），最大 1 MB。需要运行中的数据库及有效的 SYSDBA 密码。</div>
           <div class="status-box" id="dmKeyStatus" style="display:none;max-height:250px;overflow:auto"></div>
         </div>
       </div>
@@ -826,7 +874,7 @@ SHOW DATABASES;"></textarea>
         $$('#consoleDbTabs button[data-db]').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         activeConsoleDb = btn.dataset.db;
-        $('sqlHint').textContent = '当前库：' + btn.textContent + '（仅执行第一条语句）';
+        $('sqlHint').textContent = '当前库：' + btn.textContent + (activeConsoleDb === 'kingbase' ? '（多条语句显示最后一条结果）' : '（仅执行第一条语句）');
       });
     });
     $$('#browserDbTabs button[data-db]').forEach((btn) => {
@@ -839,8 +887,8 @@ SHOW DATABASES;"></textarea>
     });
 
     // ========== 连接信息弹窗 ==========
-    function openConfig() { $('configModal').classList.add('open'); loadConfig(); }
-    function closeConfig() { $('configModal').classList.remove('open'); }
+    function openConfig() { $('configModal').classList.add('open'); $('configModal').setAttribute('aria-hidden', 'false'); loadConfig(); }
+    function closeConfig() { $('configModal').classList.remove('open'); $('configModal').setAttribute('aria-hidden', 'true'); }
     $('btnConfig').addEventListener('click', openConfig);
     $('btnCloseConfig').addEventListener('click', closeConfig);
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeConfig(); });
@@ -857,8 +905,8 @@ SHOW DATABASES;"></textarea>
       $('cfSshPass').placeholder = ssh.hasPassword ? '(保持原值)' : '';
       $('cfContainer').value = c.container || 'dcim';
       const dbs = c.databases || {};
-      ['mysql', 'gauss', 'dm'].forEach((short, idx) => {
-        const map = { mysql: 'mysql', gauss: 'opengauss', dm: 'dm' };
+      ['mysql', 'gauss', 'dm', 'kingbase'].forEach((short, idx) => {
+        const map = { mysql: 'mysql', gauss: 'opengauss', dm: 'dm', kingbase: 'kingbase' };
         const d = dbs[map[short]] || {};
         $('cf' + cap(short) + 'Host').value = d.host || '';
         $('cf' + cap(short) + 'Port').value = d.port || '';
@@ -868,6 +916,18 @@ SHOW DATABASES;"></textarea>
         $('cf' + cap(short) + 'Unit').value = d.systemdUnit || '';
         if (short === 'gauss') $('cfGaussDb').value = d.database || 'dcim';
       });
+      const kb = dbs.kingbase || {};
+      const ks = kb.ssh || {};
+      $('cfKingbaseDb').value = kb.database || 'dcim';
+      $('cfKingbaseSchema').value = kb.schema || 'public';
+      $('cfKingbaseBinDir').value = kb.binDir || '';
+      $('cfKingbaseContainerPort').value = kb.containerPort || 54321;
+      $('cfKingbaseContainer').value = kb.container || '';
+      $('cfKingbaseSshHost').value = ks.host || '';
+      $('cfKingbaseSshPort').value = ks.port || 22;
+      $('cfKingbaseSshUser').value = ks.username || 'root';
+      $('cfKingbaseSshPass').value = '';
+      $('cfKingbaseSshPass').placeholder = ks.hasPassword ? '(保持原值)' : '';
       const dv = r.drivers || {};
       const driversMsg = 'npm 驱动：mysql2 ' + (dv.mysql2 ? '✓' : '✗') +
         '，pg ' + (dv.pg ? '✓' : '✗') + '，dmdb ' + (dv.dmdb ? '✓' : '✗');
@@ -889,6 +949,16 @@ SHOW DATABASES;"></textarea>
         },
         container: $('cfContainer').value.trim() || 'dcim',
         databases: {
+          kingbase: {
+            host: $('cfKingbaseHost').value.trim(), port: Number($('cfKingbasePort').value) || 54321,
+            username: $('cfKingbaseUser').value.trim(), password: $('cfKingbasePass').value,
+            database: $('cfKingbaseDb').value.trim() || 'dcim', schema: $('cfKingbaseSchema').value.trim() || 'public',
+            systemdUnit: $('cfKingbaseUnit').value.trim(), binDir: $('cfKingbaseBinDir').value.trim(),
+            containerPort: Number($('cfKingbaseContainerPort').value) || 54321,
+            container: $('cfKingbaseContainer').value.trim(),
+            ssh: { host: $('cfKingbaseSshHost').value.trim(), port: Number($('cfKingbaseSshPort').value) || 22,
+              username: $('cfKingbaseSshUser').value.trim(), password: $('cfKingbaseSshPass').value },
+          },
           mysql: {
             host: $('cfMysqlHost').value.trim(), port: Number($('cfMysqlPort').value) || 3333,
             username: $('cfMysqlUser').value.trim(), password: $('cfMysqlPass').value || '',
@@ -923,13 +993,14 @@ SHOW DATABASES;"></textarea>
         return { host: $('cfSshHost').value.trim(), port: Number($('cfSshPort').value) || 22,
           username: $('cfSshUser').value.trim(), password: pw };
       }
-      const map = { mysql: 'Mysql', opengauss: 'Gauss', dm: 'Dm' };
+      const map = { mysql: 'Mysql', opengauss: 'Gauss', dm: 'Dm', kingbase: 'Kingbase' };
       const short = map[target]; if (!short) return null;
       const pw = $('cf' + short + 'Pass').value;
-      if (!pw) return null;
+      if (!pw && target !== 'kingbase') return null;
       const cr = { host: $('cf' + short + 'Host').value.trim(), port: Number($('cf' + short + 'Port').value) || 0,
         username: $('cf' + short + 'User').value.trim(), password: pw };
       if (target === 'opengauss') cr.database = $('cfGaussDb').value.trim() || 'dcim';
+      if (target === 'kingbase') cr.database = $('cfKingbaseDb').value.trim() || 'dcim';
       return cr;
     }
     async function testTarget(target, hintId) {
@@ -945,6 +1016,7 @@ SHOW DATABASES;"></textarea>
     $('btnTestSsh').addEventListener('click', () => testTarget('ssh', 'hintSsh'));
     $('btnTestMysql').addEventListener('click', () => testTarget('mysql', 'hintMysql'));
     $('btnTestGauss').addEventListener('click', () => testTarget('opengauss', 'hintGauss'));
+    $('btnTestKingbase').addEventListener('click', () => testTarget('kingbase', 'hintKingbase'));
     $('btnTestDm').addEventListener('click', () => testTarget('dm', 'hintDm'));
 
     // ========== 状态概览 ==========
@@ -960,6 +1032,7 @@ SHOW DATABASES;"></textarea>
       renderDbCard('mysql', 'Mysql', st.databases && st.databases.mysql);
       renderDbCard('gauss', 'Gauss', st.databases && st.databases.opengauss);
       renderDbCard('dm', 'Dm', st.databases && st.databases.dm);
+      renderDbCard('kingbase', 'Kingbase', st.databases && st.databases.kingbase);
       return true;
     }
     function setLed(elId, textId, cls, text) {
@@ -982,7 +1055,7 @@ SHOW DATABASES;"></textarea>
         : '<span class="pill err">已停</span>';
       const items = [
         ['状态', statusText],
-        ['版本', info.version || '—'],
+        ['版本', esc(info.version || '—')],
         ['库数', info.databases != null ? String(info.databases) : '—'],
         ['表数', info.tables != null ? String(info.tables) : '—'],
       ];
@@ -1013,7 +1086,9 @@ SHOW DATABASES;"></textarea>
         btns += '<button class="btn sm" id="btnDmLicense" title="查看到期时间 / 上传 dm.key 授权文件">🔑 授权信息</button>';
         btns += '<button class="btn sm danger" id="btnDmApacheVhosts" title="上传 httpd-vhosts.conf，通过语法检查后重载 Apache">⬆ Apache 配置</button>';
       }
+      if (dbId === 'kingbase') btns += '<button class="btn sm" id="btnKingbaseLicense">🔑 授权信息</button>';
       actions.innerHTML = btns;
+      if (dbId === 'kingbase') actions.querySelector('#btnKingbaseLicense').addEventListener('click', openKingbaseLicenseModal);
       actions.querySelectorAll('button[data-svc]').forEach(b => b.addEventListener('click', () => doService(b.dataset.svc, b.dataset.action)));
       if (dbId === 'opengauss') {
         const gi = actions.querySelector('#btnGaussInit');
@@ -1043,6 +1118,69 @@ SHOW DATABASES;"></textarea>
         if (da) da.addEventListener('click', openDmApacheVhostsModal);
       }
     }
+    let kingbaseLicenseUploading = false;
+    function licenseRows(values) {
+      return Object.keys(values).map(k => '<div class="kv-row"><span class="k">' + esc(k) + '</span><span class="v">' + esc(values[k]) + '</span><span></span></div>').join('');
+    }
+    async function refreshKingbaseLicense() {
+      $('btnRefreshKingbaseLicense').disabled = true;
+      $('kingbaseLicenseKv').innerHTML = licenseRows({状态: '查询中…'});
+      try {
+        const r = await jfetch(API + '/kingbase/license');
+        const v = r.license;
+        $('kingbaseLicenseKv').innerHTML = licenseRows(v ? Object.assign({}, v.fields, {'数据库返回剩余天数': v.daysLeft == null ? '未提供' : v.daysLeft, '数据库版本': v.dbVersion}) : {状态: r.licenseError || r.message || '查询失败'});
+        const f = r.keyFile;
+        $('kingbaseLicenseFileKv').innerHTML = licenseRows(f ? {路径: f.path, 状态: f.exists ? '存在' : '不存在', 大小: f.exists ? fmtBytes(f.size) : '—', 修改时间: f.exists ? fmtTime(f.mtime) : '—', '属主 UID:GID': f.owner || '—', 权限: f.mode || '—'} : {状态: r.fileError || '未获取文件信息'});
+      } catch (e) { $('kingbaseLicenseKv').innerHTML = licenseRows({状态: e.message}); }
+      finally { $('btnRefreshKingbaseLicense').disabled = false; }
+    }
+    function openKingbaseLicenseModal() {
+      $('kingbaseLicenseModal').classList.add('open');
+      $('kingbaseLicenseModal').setAttribute('aria-hidden', 'false');
+      refreshKingbaseLicense();
+    }
+    $('btnCloseKingbaseLicense').addEventListener('click', () => {
+      $('kingbaseLicenseModal').classList.remove('open');
+      $('kingbaseLicenseModal').setAttribute('aria-hidden', 'true');
+    });
+    $('btnRefreshKingbaseLicense').addEventListener('click', refreshKingbaseLicense);
+    $('kingbaseLicenseFile').addEventListener('change', () => {
+      const f = $('kingbaseLicenseFile').files[0];
+      const valid = f && f.name === 'license.dat' && f.size > 0 && f.size <= 1048576;
+      $('btnUploadKingbaseLicense').disabled = kingbaseLicenseUploading || !valid;
+      $('kingbaseLicenseStatus').textContent = valid ? '已选择 ' + f.name + '，' + fmtBytes(f.size) : '请选择非空的 license.dat，最大 1MB。';
+    });
+    $('btnUploadKingbaseLicense').addEventListener('click', async () => {
+      const f = $('kingbaseLicenseFile').files[0];
+      if (kingbaseLicenseUploading || !f || f.name !== 'license.dat' || !f.size || f.size > 1048576) return;
+      if (!confirm('确认更新人大金仓授权？将校验并备份旧文件、替换授权、重启数据库并查询验证。业务连接会中断，失败时尝试回滚。')) return;
+      kingbaseLicenseUploading = true;
+      $('btnUploadKingbaseLicense').disabled = true;
+      $('kingbaseLicenseFile').disabled = true;
+      $('kingbaseLicenseStatus').textContent = '正在上传、校验并更新，请勿重复提交…';
+      try {
+        const content = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result).split(',')[1]);
+          reader.onerror = () => reject(new Error('读取文件失败'));
+          reader.readAsDataURL(f);
+        });
+        const r = await jfetch(API + '/kingbase/upload-license', {method: 'POST', body: {fileName: f.name, contentBase64: content, confirmRestart: true}});
+        if (!r.ok) {
+          $('kingbaseLicenseStatus').textContent = '更新失败：' + (r.message || '未知错误') + (r.rollback ? '\n回滚：' + (r.rollback.ok ? '已恢复并验证' : '未完成，需人工恢复') + '\n备份：' + r.rollback.backup : '');
+          return;
+        }
+        $('kingbaseLicenseStatus').textContent = '授权更新成功，数据库已重启并验证。\n旧授权备份：' + r.backup;
+        $('kingbaseLicenseFile').value = '';
+        await refreshKingbaseLicense();
+        await refreshStatus();
+      } catch (e) { $('kingbaseLicenseStatus').textContent = '未能确认更新结果：' + e.message + '。请刷新授权信息核实，勿重复上传。'; }
+      finally {
+        kingbaseLicenseUploading = false;
+        $('kingbaseLicenseFile').disabled = false;
+        $('btnUploadKingbaseLicense').disabled = !$('kingbaseLicenseFile').files.length;
+      }
+    });
     async function doService(dbId, action) {
       if (action === 'stop' && !confirm('确定停止 ' + dbId + ' 服务？dcim 业务可能会失败。')) return;
       const r = await jfetch(API + '/service/' + dbId + '/' + action, { method: 'POST' });
@@ -1708,7 +1846,7 @@ SHOW DATABASES;"></textarea>
     $('btnUploadDmKey').addEventListener('click', async () => {
       const file = $('dmKeyFile').files[0]; if (!file) return;
       if (file.size > 1024 * 1024) { alert('文件超过 1MB，太大了，请确认是 dm.key 授权文件'); return; }
-      if (!confirm('确定用「' + file.name + '」(' + file.size + ' bytes) 覆盖 dm.key？会重启 DmServiceDMSERVER 服务，业务中断 5-10 秒。')) return;
+      if (!confirm('确定上传并加载「' + file.name + '」(' + file.size + ' bytes)？会备份旧授权，失败时恢复并验证原授权及数据库查询。')) return;
       const btn = $('btnUploadDmKey'); btn.disabled = true;
       const box = $('dmKeyStatus'); box.style.display = ''; box.innerHTML = '读取文件 → base64 → 上传 …';
       try {
@@ -1722,17 +1860,25 @@ SHOW DATABASES;"></textarea>
           fr.onerror = () => reject(new Error('读文件失败'));
           fr.readAsDataURL(file);
         });
-        box.innerHTML = '上传中，服务重启 + 探活约 10-20 秒 …';
+        box.innerHTML = '上传中，正在校验文件、备份并加载授权 …';
         const r = await jfetch(API + '/dm/upload-key', { method: 'POST', body: { contentBase64: b64 } });
         if (r.ok) {
-          box.innerHTML = '<span style="color:#a7f3d0">✓ 上传成功</span>\n' +
+          box.innerHTML = '<span style="color:#a7f3d0">✓ 授权已加载并验证</span>\n' +
             '<b>大小</b>: ' + r.uploaded + ' bytes\n' +
             '<b>旧文件备份</b>: ' + esc(r.backup || '(无原文件)') + '\n' +
-            '<b>服务重启</b>: ' + (r.restarted ? '✓ 就绪' : '⚠ 超时') + '\n';
+            '<b>授权加载</b>: ' + (r.loaded ? '✓ 已生效' : '⚠ 未确认') + '\n' +
+            '<b>到期日期</b>: ' + esc(r.license && r.license.expiredDate || '无到期日期') + '\n';
           // 重查授权信息展示新的到期时间
           setTimeout(loadDmLicense, 1500);
         } else {
           box.innerHTML = '<span class="err">✗ 失败: ' + esc(r.message || '') + '</span>';
+          if (r.rollback) {
+            box.innerHTML += '\n<b>原文件恢复</b>: ' + (r.rollback.fileRestored ? '✓ 已验证' : '⚠ 未完成') +
+              '\n<b>原授权验证</b>: ' + (r.rollback.licenseRestored ? '✓ 保持原授权' : '⚠ 未确认') +
+              '\n<b>数据库查询</b>: ' + (r.rollback.databaseVerified ? '✓ 正常' : '⚠ 未确认，请人工核查') +
+              '\n<b>旧文件备份</b>: ' + esc(r.rollback.backup || '(原为默认授权，无 key 文件)');
+          }
+          if (r.loaded || r.rollback) await loadDmLicense();
         }
       } catch (e) {
         box.innerHTML = '<span class="err">✗ 异常: ' + esc(e.message) + '</span>';
@@ -1845,6 +1991,7 @@ SHOW DATABASES;"></textarea>
       const cmds = {
         mysql: 'docker exec dcim mysqldump ' + (name || '<database>') + ' > /tmp/…',
         opengauss: 'docker exec dcim sudo -u omm gs_dump -F c ' + (name || '<database>') + ' -f /tmp/…',
+        kingbase: 'sys_dump -F c ' + (name || '<database>') + ' -f /tmp/…',
         dm: 'docker exec dcim dexp SCHEMAS=' + (name || '<schema>') + ' FILE=/tmp/…',
       };
       $('bkPreviewCmd').value = cmds[id] || '';
@@ -1956,21 +2103,21 @@ SHOW DATABASES;"></textarea>
       if (!tbls.length) { detail.innerHTML = '<div class="empty">该库无表</div>'; return; }
       detail.innerHTML = '<div class="card"><div class="card-title"><span class="dot on"></span><span>' + esc(dbName) + '（共 ' + tbls.length + ' 张表）</span></div>' +
         '<table class="result-table"><thead><tr><th>表名</th><th>行数</th><th>大小</th><th style="width:80px">操作</th></tr></thead><tbody>' +
-        tbls.map(t => '<tr><td class="mono">' + esc(t.name) + '</td>' +
+        tbls.map(t => '<tr><td class="mono">' + esc((t.schema ? t.schema + '.' : '') + t.name) + '</td>' +
           '<td>' + (t.rows != null ? t.rows : '—') + '</td>' +
           '<td>' + (t.bytes != null ? fmtBytes(t.bytes) : '—') + '</td>' +
-          '<td><button class="btn sm" data-tbl="' + esc(t.name) + '">查看</button></td></tr>').join('') + '</tbody></table></div>';
-      detail.querySelectorAll('button[data-tbl]').forEach(b => b.addEventListener('click', () => viewTable(dbName, b.dataset.tbl)));
+          '<td><button class="btn sm" data-tbl="' + esc(t.name) + '" data-schema="' + esc(t.schema || '') + '">查看</button></td></tr>').join('') + '</tbody></table></div>';
+      detail.querySelectorAll('button[data-tbl]').forEach(b => b.addEventListener('click', () => viewTable(dbName, b.dataset.tbl, b.dataset.schema)));
     }
 
-    async function viewTable(dbName, tblName) {
+    async function viewTable(dbName, tblName, schema) {
       const detail = $('browserDetail');
       detail.innerHTML = '<div class="empty">加载表结构中…</div>';
-      const r = await jfetch(API + '/table/' + activeBrowserDb + '/' + encodeURIComponent(dbName) + '/' + encodeURIComponent(tblName));
+      const r = await jfetch(API + '/table/' + activeBrowserDb + '/' + encodeURIComponent(dbName) + '/' + encodeURIComponent(tblName) + (schema ? '?schema=' + encodeURIComponent(schema) : ''));
       if (!r.ok) { detail.innerHTML = '<div class="empty" style="color:#fca5a5">✗ ' + esc(r.message) + '</div>'; return; }
       const cols = r.columns || [];
       const prev = r.preview || { columns: [], rows: [] };
-      let html = '<div class="card"><div class="card-title"><span class="dot on"></span><span>' + esc(dbName) + '.' + esc(tblName) + '</span>' +
+      let html = '<div class="card"><div class="card-title"><span class="dot on"></span><span>' + esc(dbName) + '.' + (schema ? esc(schema) + '.' : '') + esc(tblName) + '</span>' +
         '<span class="actions"><button class="btn sm" id="btnBackToTables">← 返回表列表</button></span></div>' +
         '<div class="section-title">列（' + cols.length + '）</div>' +
         '<table class="result-table"><thead><tr><th>字段</th><th>类型</th><th>可空</th><th>默认</th><th>注释</th></tr></thead><tbody>' +

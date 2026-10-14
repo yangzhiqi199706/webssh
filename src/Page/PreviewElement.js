@@ -288,7 +288,7 @@ const PreviewElement = ({ shapeProps, id, wheight, wwidth, wscale, onhandleResiz
                 let element = clickEvnt[i];
                 let onlycode = await httpsend.getData('GetDeviceDetailKey', {
                     id: element.devkey,
-                    token: 'b57b88e5af6331d7b9d7151119ccbfda'
+                    token: ''
                 });
                 let paramCommand = {
                     DevID: element.devkey,
@@ -300,7 +300,7 @@ const PreviewElement = ({ shapeProps, id, wheight, wwidth, wscale, onhandleResiz
                     paramCommand.RecvData = t('auto.k0204')
                     paramCommand.SendState = '1'
                     let serverip = await httpsend.getData('GetServerListKey', {
-                        token: 'b57b88e5af6331d7b9d7151119ccbfda',
+                        token: '',
                         ComboBox: 'all'
                     });
                     if (serverip) {

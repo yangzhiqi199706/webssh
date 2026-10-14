@@ -33,6 +33,15 @@ assert.ok(/function showView\(view\)[\s\S]*?isOverview/.test(mainHtml), 'showVie
 assert.ok(overviewHtml.includes('<h1>服务总览</h1>'), '服务总览页面必须使用“服务总览”标题');
 assert.ok(overviewHtml.includes('class="top-bar"'), '服务总览必须使用统一的顶栏基元');
 assert.ok(overviewHtml.includes('class="btn primary refresh-button"'), '服务总览刷新按钮必须使用统一按钮基元');
+assert.ok(
+  /\.dashboard-content\s*\{\s*width:100%;\s*margin:0;/.test(overviewCss),
+  '服务总览内容区必须占满父级宽度，不得居中限宽',
+);
+assert.strictEqual(
+  overviewCss.includes('width:min(1500px, 100%)'),
+  false,
+  '服务总览不得保留 1500px 的桌面端最大宽度',
+);
 [
   '--bg:#020617',
   '--panel:#0f172a',

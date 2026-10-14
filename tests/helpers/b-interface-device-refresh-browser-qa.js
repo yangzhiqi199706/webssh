@@ -1,0 +1,31 @@
+async (page) => {
+  await page.setExtraHTTPHeaders({});
+  await page.goto('http://127.0.0.1:3037/proto-conv/index.html');
+  await page.evaluate(() => fetch('/fixture/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ count: 2, points: 2 }) }));
+  await page.getByRole('button', { name: 'B接口转发', exact: true }).click();
+  await page.getByRole('tab', { name: '设备和测点', exact: true }).click();
+  await page.locator('[data-bi-open-device="4"]').click();
+  const device = page.locator('.bi-device');
+  if (!(await device.locator('.bi-device-meta').textContent()).includes('分组 ID：1')) throw new Error('Configured group ID not displayed');
+  await device.getByRole('textbox', { name: '联通五位设备编码', exact: true }).fill('10042');
+  await device.getByRole('textbox', { name: '设备资管编码', exact: true }).fill('keep-asset');
+  await device.getByRole('textbox', { name: '12 位 ID', exact: true }).nth(0).fill('100299901000');
+  await device.getByRole('combobox', { name: '测点类型', exact: true }).nth(0).selectOption('DI');
+  await device.getByRole('checkbox', { name: '转发 参数2', exact: true }).uncheck();
+  await page.locator('#biSourceTools > summary').click();
+  await page.locator('#biDeviceId').fill('4'); await page.locator('#biGroupId').fill(''); await page.locator('#biServerCode').fill('7');
+  await page.getByRole('button', { name: '读取 DCIM 测点', exact: true }).click();
+  await page.getByRole('alert').filter({ hasText: '已有设备的分组和 serverCode 已更新' }).waitFor();
+  if (!(await device.locator('.bi-device-meta').textContent()).includes('分组 ID：未设置')) throw new Error('Empty group ID not displayed after refresh');
+  if (await device.getByRole('textbox', { name: '联通五位设备编码', exact: true }).inputValue() !== '10042' || await device.getByRole('textbox', { name: '设备资管编码', exact: true }).inputValue() !== 'keep-asset') throw new Error('Reading points erased codes');
+  if (await device.getByRole('combobox', { name: '测点类型', exact: true }).nth(0).inputValue() !== 'DI' || await device.getByRole('checkbox', { name: '转发 参数2', exact: true }).isChecked()) throw new Error('Reading points erased type/selection');
+  await page.getByRole('button', { name: '保存设备和测点', exact: true }).click(); await page.getByRole('alert').filter({ hasText: '配置已保存' }).waitFor();
+  await page.getByRole('button', { name: '导入 Modbus 已选设备', exact: true }).click(); await page.getByRole('alert').filter({ hasText: '导入' }).waitFor();
+  await page.getByRole('button', { name: '保存设备和测点', exact: true }).click(); await page.getByRole('alert').filter({ hasText: '配置已保存' }).waitFor();
+  const saved = await page.evaluate(() => fetch('/fixture/saved').then(r => r.json()));
+  const final = saved[saved.length - 1].devices.find(v => v.deviceId === '4');
+  if (final.groupId !== '' || final.serverCode !== '7') throw new Error('Explicit read did not refresh metadata, or import overwrote it');
+  if (final.bDeviceId !== '10042' || final.rId !== 'keep-asset' || final.params[0].signalId !== '100299901000' || final.params[0].type !== 'DI') throw new Error('Codes/type lost');
+  await page.screenshot({ path: 'output/playwright/b-interface-device-refresh.png' });
+  return 'PASS refresh existing group/serverCode while preserving device name, codes, types, selections; ordinary Modbus import preserves refreshed metadata';
+}
